@@ -5,6 +5,7 @@ from .base import (
 )
 from .concat import ConcatTransform
 from .language import LanguageRemovePrefix, LanguageTransform
+from .multi_agent import MultiAgentStackTransform
 from .state_action import (
     PerHorizonActionTransform,
     StateActionDropout,
