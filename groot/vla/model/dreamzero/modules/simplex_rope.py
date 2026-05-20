@@ -1,0 +1,281 @@
+"""Simplex Rotary Agent Encoding (Gamma-World §3.3) and 4D RoPE.
+
+This module provides a parameter-free way to encode agent identity along a new
+rotary axis without breaking the permutation symmetry between agents. Agents
+are placed at the vertices of a regular simplex in rotary angle space; the
+pairwise angular distance is identical for every pair of distinct agents.
+
+The 4D rotary layout is ``(t, p, h, w)``. To stay compatible with a 3D-RoPE
+pretrained checkpoint, the agent band is allocated from the *low-frequency
+end* of the temporal band (ReRoPE-style), leaving the high-frequency temporal
+slots and the full spatial bands intact.
+
+Math reference: Gamma-World paper, Appendix B.
+"""
+
+import math
+
+import torch
+import torch.nn as nn
+
+
+def build_simplex_vertices(V: int, d: int) -> torch.Tensor:
+    """Construct ``V`` regular-simplex vertices in :math:`\\mathbb{R}^d`.
+
+    All vertices are unit norm and pairwise equidistant:
+
+    * ``||s_v||_2 = 1`` for every ``v``
+    * ``||s_v - s_w||_2^2 = 2V/(V-1)`` for every ``v != w``
+    * ``<s_v, s_w> = -1/(V-1)`` for ``v != w``
+
+    Construction follows Gamma-World Appendix B: take centered one-hot
+    vectors ``\\bar s_v = e_v - 1/V \\cdot \\mathbf{1}`` in :math:`\\mathbb{R}^V`,
+    normalise by ``sqrt(V/(V-1))``, then zero-pad to ``d`` dimensions. The
+    zero padding preserves equidistance because every pairwise difference has
+    the same non-zero coordinate pattern up to permutation.
+
+    Args:
+        V: Simplex pool size (number of vertices / max agent identities).
+            Must be ``>= 2``.
+        d: Embedding dimension. Must satisfy ``d >= V`` for the simple
+            zero-padded construction used here.
+
+    Returns:
+        A ``(V, d)`` float tensor of vertex coordinates.
+    """
+    if V < 2:
+        raise ValueError(f"Simplex needs V >= 2 vertices, got V={V}")
+    if d < V:
+        raise ValueError(
+            f"build_simplex_vertices requires d >= V; got d={d}, V={V}. "
+            f"Increase the agent rotary band width or shrink the simplex pool."
+        )
+
+    centered = torch.eye(V) - 1.0 / V  # row v = e_v - 1/V * 1, shape [V, V]
+    vertices = math.sqrt(V / (V - 1)) * centered  # unit-norm, equidistant
+    if d > V:
+        pad = torch.zeros(V, d - V, dtype=vertices.dtype)
+        vertices = torch.cat([vertices, pad], dim=-1)
+    return vertices
+
+
+class SimplexRotaryPositionEmbedding4D(nn.Module):
+    """4D rotary position embedding over ``(t, p, h, w)``.
+
+    The agent band of width ``agent_dim`` is carved out of the *low-frequency*
+    end of the temporal band, so the spatial bands and the high-frequency
+    temporal slots match the layout of the underlying 3D-RoPE checkpoint
+    (ReRoPE-style allocation, Gamma-World §3.3 last paragraph).
+
+    Frequency contract per token at coordinate ``(t, p, h, w)`` (channels are
+    written left to right along ``head_dim``):
+
+    * temporal active slots  (high freqs)  -- rotated by ``t * freq_t``
+    * agent slots            (low temporal) -- rotated by simplex phase
+                                                ``alpha * s_{perm(p)}``
+    * h slots                              -- rotated by ``h * freq_h``
+    * w slots                              -- rotated by ``w * freq_w``
+
+    The returned freq tensor layout matches the existing 3D RoPE consumers
+    (:func:`rope_apply_no_polar_op` / :func:`rope_apply_polar_op` in
+    :mod:`wan_video_dit`): shape ``(2 * N, 1, head_dim/2)`` with cosine in
+    the first ``N`` rows and sine in the second ``N`` rows. ``N`` indexes
+    ``(t, p, h, w)`` in C-order with ``w`` innermost.
+
+    Args:
+        num_heads: Number of attention heads (kept for parity with the 3D
+            RoPE class; unused in the freq computation itself).
+        head_dim: Per-head dimension. Must be even.
+        simplex_pool_size: Maximum number of distinct agent identities
+            (``V`` in the paper). Defaults to ``4``, matching Gamma-World §D.
+        agent_dim: Width of the agent rotary band, carved out of the temporal
+            band. Must be even and ``<= temporal_dim``. Defaults to ``16``
+            (i.e. ``agent_dim/2 = 8`` complex slots per vertex).
+        alpha: Scale factor on the simplex phase (Equation 9 in the paper).
+            Defaults to ``1.0``.
+        end_t: Maximum supported temporal length for the precomputed table.
+        end_hw: Maximum supported spatial length for the precomputed tables.
+        theta: RoPE base. Defaults to the standard ``10000.0``.
+    """
+
+    def __init__(
+        self,
+        num_heads: int,
+        head_dim: int,
+        simplex_pool_size: int = 4,
+        agent_dim: int = 16,
+        alpha: float = 1.0,
+        end_t: int = 1024,
+        end_hw: int = 1024,
+        theta: float = 10000.0,
+    ):
+        super().__init__()
+        if head_dim % 2 != 0:
+            raise ValueError(f"head_dim must be even, got {head_dim}")
+        if agent_dim % 2 != 0:
+            raise ValueError(f"agent_dim must be even, got {agent_dim}")
+        if simplex_pool_size < 2:
+            raise ValueError(f"simplex_pool_size must be >= 2, got {simplex_pool_size}")
+        if agent_dim // 2 < simplex_pool_size:
+            raise ValueError(
+                f"agent_dim/2 ({agent_dim // 2}) must be >= simplex_pool_size "
+                f"({simplex_pool_size}) for the zero-padded simplex construction"
+            )
+
+        self.num_heads = num_heads
+        self.head_dim = head_dim
+        self.simplex_pool_size = simplex_pool_size
+        self.agent_dim = agent_dim
+        self.alpha = alpha
+
+        # 3D RoPE channel split, matching `precompute_freqs_cis_3d` in
+        # :class:`RotaryPositionEmbeddingNoPolarOp` so spatial slots line up
+        # exactly with the pretrained checkpoint.
+        d_h = head_dim // 3
+        d_w = head_dim // 3
+        d_t_full = head_dim - d_h - d_w
+        if agent_dim > d_t_full:
+            raise ValueError(
+                f"agent_dim ({agent_dim}) exceeds temporal band size "
+                f"({d_t_full}); pick a smaller agent_dim or a larger head_dim."
+            )
+
+        self.d_t_full = d_t_full
+        self.d_t_active = d_t_full - agent_dim  # post-ReRoPE temporal width
+        self.d_h = d_h
+        self.d_w = d_w
+
+        # Per-axis frequency tables. The temporal table covers the full
+        # ``d_t_full`` width using the *original* schedule; we'll select only
+        # the high-freq prefix at runtime so the active temporal slots match
+        # the 3D layout bit-for-bit.
+        t_cos, t_sin = self._precompute_1d(d_t_full, end_t, theta)
+        h_cos, h_sin = self._precompute_1d(d_h, end_hw, theta)
+        w_cos, w_sin = self._precompute_1d(d_w, end_hw, theta)
+        self.register_buffer("t_cos", t_cos, persistent=False)
+        self.register_buffer("t_sin", t_sin, persistent=False)
+        self.register_buffer("h_cos", h_cos, persistent=False)
+        self.register_buffer("h_sin", h_sin, persistent=False)
+        self.register_buffer("w_cos", w_cos, persistent=False)
+        self.register_buffer("w_sin", w_sin, persistent=False)
+
+        # Simplex phases per vertex, shape [V, agent_dim/2].
+        simplex_phase = alpha * build_simplex_vertices(simplex_pool_size, agent_dim // 2)
+        self.register_buffer("simplex_cos", torch.cos(simplex_phase), persistent=False)
+        self.register_buffer("simplex_sin", torch.sin(simplex_phase), persistent=False)
+
+    @staticmethod
+    def _precompute_1d(dim: int, end: int, theta: float):
+        inv_freq = 1.0 / (
+            theta ** (torch.arange(0, dim, 2)[: dim // 2].float() / dim)
+        )
+        angles = torch.outer(torch.arange(end).float(), inv_freq)  # [end, dim/2]
+        return torch.cos(angles), torch.sin(angles)
+
+    def forward(
+        self,
+        f: int,
+        p: int,
+        h: int,
+        w: int,
+        agent_perm: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Build the freqs tensor for an ``(F, P, H, W)`` token grid.
+
+        Args:
+            f: Number of temporal positions.
+            p: Number of active agents at runtime. Must be ``<= simplex_pool_size``.
+            h: Number of vertical spatial positions.
+            w: Number of horizontal spatial positions.
+            agent_perm: Optional ``LongTensor[p]`` mapping each runtime agent
+                slot to a simplex vertex index (``0 <= v < simplex_pool_size``).
+                Defaults to the identity permutation ``[0, 1, ..., p-1]``.
+
+        Returns:
+            A ``(2 * F * P * H * W, 1, head_dim/2)`` float tensor with cos in
+            rows ``[0, N)`` and sin in rows ``[N, 2N)``, matching the layout
+            expected by :func:`rope_apply_no_polar_op`.
+        """
+        if p > self.simplex_pool_size:
+            raise ValueError(
+                f"Active agents p={p} exceeds simplex_pool_size="
+                f"{self.simplex_pool_size}"
+            )
+
+        device = self.t_cos.device
+        if agent_perm is None:
+            agent_perm = torch.arange(p, device=device)
+        else:
+            agent_perm = agent_perm.to(device=device, dtype=torch.long)
+            if agent_perm.shape != (p,):
+                raise ValueError(
+                    f"agent_perm must have shape ({p},), got {tuple(agent_perm.shape)}"
+                )
+            if (agent_perm < 0).any() or (agent_perm >= self.simplex_pool_size).any():
+                raise ValueError(
+                    f"agent_perm contains out-of-range vertex index; valid "
+                    f"range is [0, {self.simplex_pool_size})"
+                )
+
+        d_t_full_half = self.d_t_full // 2
+        d_t_active_half = self.d_t_active // 2
+
+        # Temporal slots: shape [F, d_t_full/2]
+        t_cos = self.t_cos[:f]
+        t_sin = self.t_sin[:f]
+        # Simplex slots for the active agents: shape [P, agent_dim/2]
+        p_cos = self.simplex_cos[agent_perm]
+        p_sin = self.simplex_sin[agent_perm]
+
+        # Build the joint (F, P) temporal+agent band: high-freq slots use the
+        # temporal phase (independent of p); low-freq slots use the simplex
+        # phase (independent of t).
+        upper_cos = t_cos[:, :d_t_active_half].unsqueeze(1).expand(f, p, d_t_active_half)
+        upper_sin = t_sin[:, :d_t_active_half].unsqueeze(1).expand(f, p, d_t_active_half)
+        lower_cos = p_cos.unsqueeze(0).expand(f, p, self.agent_dim // 2)
+        lower_sin = p_sin.unsqueeze(0).expand(f, p, self.agent_dim // 2)
+        tp_cos = torch.cat([upper_cos, lower_cos], dim=-1)  # [F, P, d_t_full/2]
+        tp_sin = torch.cat([upper_sin, lower_sin], dim=-1)
+
+        # Spatial bands.
+        h_cos = self.h_cos[:h]  # [H, d_h/2]
+        h_sin = self.h_sin[:h]
+        w_cos = self.w_cos[:w]  # [W, d_w/2]
+        w_sin = self.w_sin[:w]
+
+        # Broadcast everything to [F, P, H, W, head_dim/2] then flatten the
+        # leading axes. W is innermost (C-order).
+        f4, p4, h4, w4 = f, p, h, w
+        freqs_cos = torch.cat(
+            [
+                tp_cos.view(f4, p4, 1, 1, -1).expand(f4, p4, h4, w4, -1),
+                h_cos.view(1, 1, h4, 1, -1).expand(f4, p4, h4, w4, -1),
+                w_cos.view(1, 1, 1, w4, -1).expand(f4, p4, h4, w4, -1),
+            ],
+            dim=-1,
+        ).reshape(f4 * p4 * h4 * w4, 1, -1)
+        freqs_sin = torch.cat(
+            [
+                tp_sin.view(f4, p4, 1, 1, -1).expand(f4, p4, h4, w4, -1),
+                h_sin.view(1, 1, h4, 1, -1).expand(f4, p4, h4, w4, -1),
+                w_sin.view(1, 1, 1, w4, -1).expand(f4, p4, h4, w4, -1),
+            ],
+            dim=-1,
+        ).reshape(f4 * p4 * h4 * w4, 1, -1)
+
+        return torch.cat([freqs_cos, freqs_sin], dim=0)
+
+    def post_initialize(self):
+        """Move precomputed buffers to CUDA, matching the existing RoPE API."""
+        device = torch.device("cuda")
+        for name in (
+            "t_cos",
+            "t_sin",
+            "h_cos",
+            "h_sin",
+            "w_cos",
+            "w_sin",
+            "simplex_cos",
+            "simplex_sin",
+        ):
+            setattr(self, name, getattr(self, name).to(device))
