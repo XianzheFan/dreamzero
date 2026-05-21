@@ -140,15 +140,14 @@ def test_inference_writes_kv_cache(cuda_available):
 
     assert returned_cache is not None
     assert len(returned_cache) == num_layers
-    # Each populated slot is a [2, B, L_seq, n_heads, head_dim] tensor.
-    # L_seq is the multi-agent sequence length:
-    #   P * F_g * H_g * W_g (video)
-    # + P * (T_a + T_s)     (register; here state has T_s=1)
-    # + F_g * K_hub         (hub)
+    # PR 6e: each populated slot is a [2, B, L_seq, n_heads, head_dim]
+    # tensor where register positions have been stripped from the
+    # persistent cache (so future chunks only attend to past video +
+    # past hub K/V). L_seq is therefore:
+    #   P * F_g * H_g * W_g (video) + F_g * K_hub (hub)
     F_g, H_g, W_g = F_lat, H // 2, W // 2
     K_hub = model.num_hub_tokens
-    T_s = inputs["state"].shape[2] if "state" in inputs else 0
-    expected_L = (P * F_g * H_g * W_g) + (P * (T_a + T_s)) + (F_g * K_hub)
+    expected_L = (P * F_g * H_g * W_g) + (F_g * K_hub)
     n_heads = model.num_heads
     head_dim = model.dim // model.num_heads
     for layer, slot in enumerate(returned_cache):
@@ -193,16 +192,15 @@ def test_streaming_accepts_action_register_tokens(cuda_available):
     assert torch.isfinite(video).all()
     assert torch.isfinite(action_pred_stream).all()
 
-    # Cache layer 0 should have grown by exactly one full call's tokens
-    # (video + per-agent register + hub) compared with cache_after_warm.
+    # PR 6e: cache layer 0 should hold *video + hub only* from BOTH
+    # calls (register positions stripped between calls).
     F_g = inputs_warm["x"].shape[3]
     H_g = inputs_warm["x"].shape[4] // 2
     W_g = inputs_warm["x"].shape[5] // 2
-    T_s = 0  # _make_inputs() does not pass state in this test setup.
-    per_call = P * F_g * H_g * W_g + P * (T_a + T_s) + F_g * model.num_hub_tokens
-    assert cache_after[0].shape[2] == 2 * per_call, (
+    per_call_video_hub = P * F_g * H_g * W_g + F_g * model.num_hub_tokens
+    assert cache_after[0].shape[2] == 2 * per_call_video_hub, (
         f"cache layer 0 grew to {cache_after[0].shape[2]}, expected "
-        f"{2 * per_call}"
+        f"{2 * per_call_video_hub} (video+hub only, no register)"
     )
 
 
@@ -262,7 +260,7 @@ def test_streaming_two_call_grows_cache(cuda_available):
         )
 
     assert video.shape == inputs_stream["x"].shape[:2] + (8,) + inputs_stream["x"].shape[3:]
-    assert action_pred is None  # no action in streaming yet (PR 6d)
+    assert action_pred is None  # no action passed -> no action_pred
     # Cache should now hold warm + stream tokens.
     expected_total_len = 2 * expected_call_len
     assert cache_after_stream[0].shape[2] == expected_total_len, (
@@ -281,6 +279,61 @@ def test_streaming_two_call_grows_cache(cuda_available):
             current_start_frame=0,
         )
     assert model._cached_token_agent_id.shape == (expected_call_len,)
+
+
+def test_pr6e_strips_register_from_cache(cuda_available):
+    """PR 6e: after a streaming call with action, the persistent cache
+    must not contain register positions -- only video + hub.
+
+    We check three things:
+      1. cache length increase per call equals video + hub tokens only
+         (NOT video + register + hub);
+      2. ``_cached_token_agent_id`` matches the cache length;
+      3. no entry of ``_cached_token_agent_id`` carries a "register"
+         marker beyond what video / hub would (verified indirectly via
+         the cache shape).
+    """
+    torch.manual_seed(0)
+    model = _make_model(num_agents=2)
+    inputs_warm = _make_inputs()  # includes action
+    num_layers = len(model.blocks)
+
+    B, P, T_a, D_a = inputs_warm["action"].shape
+    F_lat = inputs_warm["x"].shape[3]
+    H_g, W_g = inputs_warm["x"].shape[4] // 2, inputs_warm["x"].shape[5] // 2
+    K_hub = model.num_hub_tokens
+    expected_video_hub = P * F_lat * H_g * W_g + F_lat * K_hub
+
+    with torch.no_grad():
+        _, _, cache1 = model(
+            **inputs_warm,
+            kv_cache=[None] * num_layers,
+            crossattn_cache=[None] * num_layers,
+            current_start_frame=0,
+        )
+    # First call: cache should hold only video + hub (register stripped).
+    assert cache1[0].shape[2] == expected_video_hub, (
+        f"warm-up cache len {cache1[0].shape[2]} != video+hub only "
+        f"{expected_video_hub}"
+    )
+    assert model._cached_token_agent_id.shape == (expected_video_hub,)
+
+    # Streaming call with action+state. Same expected delta.
+    inputs_stream = _make_inputs()
+    with torch.no_grad():
+        _, action_pred, cache2 = model(
+            **inputs_stream,
+            kv_cache=cache1,
+            crossattn_cache=[None] * num_layers,
+            current_start_frame=F_lat,
+        )
+    assert action_pred.shape == (B, P, T_a, D_a)
+    # Cache should now hold *2 * (video + hub)*, no register accumulation.
+    assert cache2[0].shape[2] == 2 * expected_video_hub, (
+        f"streaming cache len {cache2[0].shape[2]} != 2*(video+hub) = "
+        f"{2 * expected_video_hub}"
+    )
+    assert model._cached_token_agent_id.shape == (2 * expected_video_hub,)
 
 
 def test_inference_matches_training_when_stateless(cuda_available):

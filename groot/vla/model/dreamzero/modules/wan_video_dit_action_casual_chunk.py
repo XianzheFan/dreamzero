@@ -2278,7 +2278,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         :meth:`_forward_multi_agent_body` (which is the real implementation
         and also serves inference). Returns ``(video_pred, action_pred)``.
         """
-        video_pred, action_pred, _, _ = self._forward_multi_agent_body(
+        video_pred, action_pred, _, _, _ = self._forward_multi_agent_body(
             x=x,
             timestep=timestep,
             context=context,
@@ -2753,13 +2753,21 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             B, P, C_out, video_flat.shape[2], video_flat.shape[3], video_flat.shape[4]
         )
 
-        # Return the per-token agent_id of the *new* tokens so streaming
-        # callers can extend their cached_token_agent_id across calls.
+        # Return the per-token agent_id of the *new* tokens plus the
+        # per-section token counts so streaming callers can extend the
+        # cached_token_agent_id and (PR 6e) strip register K/V from the
+        # cache between calls.
+        new_chunk_token_counts = {
+            "video": P * L_per_agent,
+            "register": register_token_count,
+            "hub": hub_token_count,
+        }
         return (
             video_noise_pred,
             action_noise_pred,
             updated_kv_caches,
             new_token_agent_id,
+            new_chunk_token_counts,
         )
 
     def _forward_inference_multi_agent(
@@ -2803,12 +2811,10 @@ class CausalWanModel(ModelMixin, ConfigMixin):
 
         Action / state register tokens are allowed during streaming
         (PR 6d). They participate in the current chunk's attention and
-        are appended to the cache alongside video and hub K/V. The
-        resulting cross-call attention over *past* register K/V is a
-        known approximation -- those past register tokens encoded the
-        noisy action being denoised at that earlier step, not a clean
-        signal. Stripping per-call register positions from the cache
-        between calls is tracked as PR 6e.
+        are appended to the cache during the call. **PR 6e** strips
+        them from the persistent cache once the call returns, so future
+        chunks' queries only see past *video + hub* K/V -- matching the
+        Gamma-World §3.4 "per-agent video + shared hub" cache semantics.
 
         Args, returns: see :meth:`_forward_inference` and
         :meth:`_forward_train_multi_agent`.
@@ -2854,32 +2860,81 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             self._cached_token_agent_id if streaming else None
         )
 
-        video_pred, action_pred, updated_kv, new_token_agent_id = (
-            self._forward_multi_agent_body(
-                x=x,
-                timestep=timestep,
-                context=context,
-                seq_len=seq_len,
-                agent_perm=agent_perm,
-                action=action,
-                timestep_action=timestep_action,
-                state=state,
-                embodiment_id=embodiment_id,
-                kv_cache=kv_cache,
-                start_frame=current_start_frame,
-                cached_token_agent_id=cached_token_agent_id,
-            )
+        (
+            video_pred,
+            action_pred,
+            updated_kv,
+            new_token_agent_id,
+            new_chunk_counts,
+        ) = self._forward_multi_agent_body(
+            x=x,
+            timestep=timestep,
+            context=context,
+            seq_len=seq_len,
+            agent_perm=agent_perm,
+            action=action,
+            timestep_action=timestep_action,
+            state=state,
+            embodiment_id=embodiment_id,
+            kv_cache=kv_cache,
+            start_frame=current_start_frame,
+            cached_token_agent_id=cached_token_agent_id,
         )
 
+        # PR 6e: strip per-call register positions from the persistent
+        # cache. Register tokens encode the noisy action being denoised
+        # in *this* chunk -- they should not be visible to future chunks'
+        # queries. The current call still attended over them (the body
+        # built the mask from the full new_token_agent_id), so the
+        # current step is unchanged; we just keep them out of the cache.
+        num_video = new_chunk_counts["video"]
+        num_register = new_chunk_counts["register"]
+        num_hub = new_chunk_counts["hub"]
+        if cache_present and num_register > 0 and updated_kv is not None:
+            cached_len = (
+                cached_token_agent_id.shape[0]
+                if cached_token_agent_id is not None
+                else 0
+            )
+            reg_start = cached_len + num_video
+            reg_end = reg_start + num_register
+            stripped_kv = []
+            for layer_cache in updated_kv:
+                # Each layer's cache is [2, B, L_total, n_heads, head_dim].
+                # Drop the register slice along the sequence dim.
+                stripped = torch.cat(
+                    [
+                        layer_cache[:, :, :reg_start],
+                        layer_cache[:, :, reg_end:],
+                    ],
+                    dim=2,
+                )
+                stripped_kv.append(stripped)
+            updated_kv = stripped_kv
+            # And drop the register positions from the new chunk's
+            # agent_id before extending the session tracker.
+            new_video_hub_agent_id = torch.cat(
+                [
+                    new_token_agent_id[:num_video],
+                    new_token_agent_id[num_video + num_register:],
+                ],
+                dim=0,
+            )
+        else:
+            new_video_hub_agent_id = new_token_agent_id
+
         # Extend the session's agent_id tracker so the next call's mask is
-        # right. We store on CPU to keep this off the GPU memory budget;
-        # it's recopied to ``x.device`` inside the body when needed.
+        # right. Store on CPU to keep this off the GPU memory budget;
+        # it is re-copied to ``x.device`` inside the body when needed.
         if cache_present:
             if cached_token_agent_id is None:
-                self._cached_token_agent_id = new_token_agent_id.detach().cpu()
+                self._cached_token_agent_id = new_video_hub_agent_id.detach().cpu()
             else:
                 self._cached_token_agent_id = torch.cat(
-                    [cached_token_agent_id.cpu(), new_token_agent_id.detach().cpu()],
+                    [
+                        cached_token_agent_id.cpu(),
+                        new_video_hub_agent_id.detach().cpu(),
+                    ],
                     dim=0,
                 )
         return video_pred, action_pred, updated_kv
