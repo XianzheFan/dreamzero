@@ -1290,7 +1290,11 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                  diffusion_model_pretrained_path=None,
                  num_action_per_block=32,
                  num_state_per_block=1,
-                 concat_first_frame_latent=True):
+                 concat_first_frame_latent=True,
+                 num_agents=1,
+                 simplex_pool_size=4,
+                 agent_dim=16,
+                 simplex_alpha=1.0):
         r"""
         Initialize the diffusion model backbone.
 
@@ -1361,6 +1365,10 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         self.num_action_per_block = num_action_per_block
         self.num_state_per_block = num_state_per_block
         self.concat_first_frame_latent = concat_first_frame_latent
+        self.num_agents = num_agents
+        self.simplex_pool_size = simplex_pool_size
+        self.agent_dim = agent_dim
+        self.simplex_alpha = simplex_alpha
 
         max_num_embodiments = 1
 
@@ -1419,6 +1427,27 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         ]
         if model_type in ('i2v', 'ti2v'):
             self.img_emb = MLPProj(1280, dim)
+
+        # Multi-agent: simplex 4D RoPE (lazy attribute, only built when used).
+        # P=1 keeps the original 3D RoPE path bit-for-bit; P>1 routes through
+        # ``_forward_train_multi_agent`` which uses this module to build freqs
+        # over a (P, F, H, W) token grid.
+        if num_agents > 1:
+            from groot.vla.model.dreamzero.modules.simplex_rope import (
+                SimplexRotaryPositionEmbedding4D,
+            )
+            self.simplex_rope = SimplexRotaryPositionEmbedding4D(
+                num_heads=num_heads,
+                head_dim=d,
+                simplex_pool_size=simplex_pool_size,
+                agent_dim=agent_dim,
+                alpha=simplex_alpha,
+                # Match the runtime rope_apply path: polar (complex) by
+                # default; no-polar when ENABLE_TENSORRT is set.
+                polar_output=not ENABLE_TENSORRT,
+            )
+        else:
+            self.simplex_rope = None
 
         # initialize weights
         self.init_weights()
@@ -2161,6 +2190,132 @@ class CausalWanModel(ModelMixin, ConfigMixin):
 
         return video_noise_pred, action_noise_pred
 
+    def _forward_train_multi_agent(
+        self,
+        x,
+        timestep,
+        context,
+        seq_len,
+        agent_perm=None,
+        **_unused,
+    ):
+        r"""Multi-agent training forward (PR 3a: video-only, dense attention).
+
+        Threads an explicit agent axis ``P`` through patchify, builds
+        simplex 4D RoPE freqs over the ``(P, F, H, W)`` token grid, and
+        runs the existing transformer blocks over the sequence-concatenated
+        tokens ``[agent_0, agent_1, ..., agent_{P-1}]``.
+
+        This branch is intentionally minimal:
+          * Action / state conditioning is not supported yet (PR 5).
+          * Cross-agent attention is dense; sparse hub routing is PR 4.
+          * The inference / serving path (:meth:`_forward_inference`) is
+            unaffected.
+
+        Args:
+            x: ``[B, P, C_in, F, H, W]`` -- per-agent latent video.
+            timestep: ``[B, F]`` -- per-frame diffusion timestep, shared
+                across agents.
+            context: ``[B, text_len, text_dim]`` -- shared language tokens.
+            seq_len: ``P * F_grid * H_grid * W_grid``.
+            agent_perm: Optional ``LongTensor[P]`` assigning runtime agents
+                to simplex vertices. Defaults to identity.
+
+        Returns:
+            ``[B, P, C_out, F, H, W]`` video noise prediction.
+        """
+        assert x.ndim == 6, (
+            f"multi-agent forward expects x of shape [B, P, C, F, H, W]; "
+            f"got {tuple(x.shape)}"
+        )
+        B, P, C_in, F_lat, H_lat, W_lat = x.shape
+        assert P == self.num_agents, (
+            f"num_agents mismatch: config={self.num_agents}, input P={P}"
+        )
+
+        # Patchify per agent. The Conv3d operator is shared (a single set of
+        # learned weights) so we collapse the agent axis into the batch axis,
+        # patchify, then split it back out.
+        x_flat = x.reshape(B * P, C_in, F_lat, H_lat, W_lat)
+        x_flat = self.patch_embedding(x_flat)  # [B*P, dim, F_g, H_g, W_g]
+        _, dim, F_g, H_g, W_g = x_flat.shape
+
+        # Flatten spatial-temporal into a per-agent token sequence, then
+        # concatenate agents along that sequence in agent-major order:
+        # [agent_0 (F_g*H_g*W_g tokens), agent_1 (...), ...].
+        x_flat = x_flat.flatten(start_dim=2).transpose(1, 2)  # [B*P, F_g*H_g*W_g, dim]
+        L_per_agent = F_g * H_g * W_g
+        x = x_flat.reshape(B, P * L_per_agent, dim)
+        assert x.shape[1] == seq_len, (
+            f"seq_len mismatch: expected P*F*H*W={P * L_per_agent}, got seq_len={seq_len}"
+        )
+
+        # Simplex 4D RoPE freqs over the (P, F, H, W) grid.
+        freqs = self.simplex_rope(
+            f=F_g, p=P, h=H_g, w=W_g, agent_perm=agent_perm,
+        )
+
+        # Time embeddings (shared across agents). Each frame's timestep is
+        # broadcast over all spatial tokens AND over all P agents.
+        timestep = timestep.unsqueeze(-1).expand(B, F_lat, L_per_agent // F_lat)
+        # ``timestep`` now has F_lat * (H_g*W_g) entries per sample; we need
+        # ``seq_len`` entries total (one per token in the sequence). Repeat
+        # the per-frame timeline P times so each agent inherits the same
+        # shared schedule.
+        timestep = timestep.reshape(B, L_per_agent).repeat(1, P)
+        e = self.time_embedding(
+            sinusoidal_embedding_1d(self.freq_dim, timestep.flatten()).type_as(x)
+        )
+        e = e.unflatten(dim=0, sizes=(B, -1))
+        e0 = self.time_projection(e)
+        e0 = e0.unflatten(dim=2, sizes=(6, self.dim))
+
+        # Text context (shared).
+        assert context.shape[1] == self.text_len
+        context = self.text_embedding(context)
+
+        kwargs = dict(
+            e=e0,
+            freqs=freqs,
+            freqs_action=self.freqs_action,
+            freqs_state=self.freqs_state,
+            action_register_length=None,
+            context=context,
+            is_tf=False,
+        )
+
+        for block in self.blocks:
+            if torch.is_grad_enabled() and self.gradient_checkpointing:
+                def _ckpt_block(*inputs, b=block, k=kwargs):
+                    out, updated = b(*inputs, **k)
+                    assert updated is None
+                    return out
+                x = torch.utils.checkpoint.checkpoint(
+                    _ckpt_block, x, use_reentrant=False,
+                )
+            else:
+                x, updated_kv_cache = block(x, **kwargs)
+                assert updated_kv_cache is None
+
+        # Split tokens back into per-agent blocks: [B, P*L, dim] -> [B, P, L, dim]
+        x = x.reshape(B, P, L_per_agent, dim)
+        e_video = e.reshape(B, P, L_per_agent, e.shape[-1])
+
+        # Head + unpatchify per agent. Collapse the agent axis into batch.
+        x_flat = x.reshape(B * P, L_per_agent, dim)
+        e_flat = e_video.reshape(B * P, L_per_agent, e_video.shape[-1])
+        x_flat = self.head(x_flat, e_flat.unsqueeze(2))
+
+        grid_size = torch.tensor([F_g, H_g, W_g], dtype=torch.long)
+        video_flat = self.unpatchify(x_flat, grid_size)  # [B*P, C_out, F, H, W]
+        C_out = video_flat.shape[1]
+        video_noise_pred = video_flat.reshape(
+            B, P, C_out, video_flat.shape[2], video_flat.shape[3], video_flat.shape[4]
+        )
+
+        # action_noise_pred not produced in this branch yet (PR 5).
+        return video_noise_pred, None
+
     def forward(
         self,
         *args,
@@ -2168,8 +2323,11 @@ class CausalWanModel(ModelMixin, ConfigMixin):
     ):
         if kwargs.get('kv_cache', None) is not None:
             return self._forward_inference(*args, **kwargs)
-        else:
-            return self._forward_train(*args, **kwargs)
+        # Multi-agent dispatch: P=1 keeps the original 3D RoPE path
+        # (byte-identical). P>1 routes through the multi-agent branch.
+        if self.num_agents > 1:
+            return self._forward_train_multi_agent(*args, **kwargs)
+        return self._forward_train(*args, **kwargs)
 
     def unpatchify(self, x, grid_size):
         r"""

@@ -242,7 +242,7 @@ class WanSelfAttention(nn.Module):
 
 class WanT2VCrossAttention(WanSelfAttention):
 
-    def forward(self, x, context, context_lens, crossattn_cache=None):
+    def forward(self, x, context, context_lens=None, crossattn_cache=None):
         r"""
         Args:
             x(Tensor): Shape [B, L1, C]

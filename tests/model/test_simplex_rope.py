@@ -127,8 +127,8 @@ def test_agent_permutation_swaps_per_agent_slices():
     freqs_a = rope.forward(f, p, h, w, agent_perm=torch.tensor([0, 1]))
     freqs_b = rope.forward(f, p, h, w, agent_perm=torch.tensor([1, 0]))
 
-    # Layout is (F, P, H, W) C-order. With f=h=w=1, indices 0,1 are agent 0,1.
-    # cos block lives in rows [0, N); sin block in [N, 2N) where N = F*P*H*W = 2.
+    # Layout is (P, F, H, W) C-order. With f=h=w=1, rows 0,1 are agent 0,1.
+    # cos block lives in rows [0, N); sin block in [N, 2N) where N = P*F*H*W = 2.
     N = f * p * h * w
     cos_a = freqs_a[:N]
     cos_b = freqs_b[:N]
@@ -152,12 +152,12 @@ def test_active_temporal_band_independent_of_p():
     # Within t_band, the FIRST d_t_active/2 channels are the temporal slots
     # (shared across agents); the remaining agent_dim/2 channels are agent.
     d_t_active_half = rope.d_t_active // 2
-    # Cos block rows: layout C-order (F, P, H, W). With h=w=1, row index is f*P + p_idx.
+    # Cos block rows: layout C-order (P, F, H, W). With h=w=1, row index is p_idx*F + f_idx.
     cos = freqs[:N]
     for f_idx in range(f):
-        ref = cos[f_idx * p + 0, 0, :d_t_active_half]
+        ref = cos[0 * f + f_idx, 0, :d_t_active_half]
         for p_idx in range(1, p):
-            cur = cos[f_idx * p + p_idx, 0, :d_t_active_half]
+            cur = cos[p_idx * f + f_idx, 0, :d_t_active_half]
             torch.testing.assert_close(cur, ref)
 
 
@@ -172,9 +172,9 @@ def test_agent_band_independent_of_t():
 
     cos = freqs[:N]
     for p_idx in range(p):
-        ref = cos[0 * p + p_idx, 0, d_t_active_half:d_t_full_half]
+        ref = cos[p_idx * f + 0, 0, d_t_active_half:d_t_full_half]
         for f_idx in range(1, f):
-            cur = cos[f_idx * p + p_idx, 0, d_t_active_half:d_t_full_half]
+            cur = cos[p_idx * f + f_idx, 0, d_t_active_half:d_t_full_half]
             torch.testing.assert_close(cur, ref)
 
 
@@ -231,6 +231,49 @@ def test_simplex_phases_use_alpha():
     assert not torch.allclose(cos_a, cos_b), (
         "Different alpha values must produce different simplex phases"
     )
+
+
+def test_polar_output_matches_no_polar():
+    """polar_output=True must yield cos + i*sin of the no-polar output."""
+    rope_real = _make_rope(V=4, agent_dim=16)
+    rope_polar = SimplexRotaryPositionEmbedding4D(
+        num_heads=8, head_dim=126, simplex_pool_size=4, agent_dim=16,
+        polar_output=True,
+    )
+    f, p, h, w = 2, 3, 2, 2
+    real_freqs = rope_real.forward(f, p, h, w)
+    polar_freqs = rope_polar.forward(f, p, h, w)
+
+    N = p * f * h * w
+    assert polar_freqs.shape == (N, 1, 63), polar_freqs.shape
+    assert polar_freqs.dtype.is_complex, polar_freqs.dtype
+
+    # cos / sin packed into the complex tensor must match the real stacks.
+    torch.testing.assert_close(polar_freqs.real, real_freqs[:N])
+    torch.testing.assert_close(polar_freqs.imag, real_freqs[N:])
+
+
+def test_layout_is_agent_major():
+    """Sanity-check the (P, F, H, W) C-order. With f=2, p=3, the first F rows
+    must belong to agent 0, the next F rows to agent 1, etc."""
+    rope = _make_rope(V=4, agent_dim=16)
+    f, p, h, w = 2, 3, 1, 1
+    freqs = rope.forward(f, p, h, w)
+    N = p * f * h * w
+    d_t_active_half = rope.d_t_active // 2
+    d_t_full_half = rope.d_t_full // 2
+
+    cos = freqs[:N]
+    # Within each agent's contiguous block, the agent-band slots must be constant.
+    for p_idx in range(p):
+        block = cos[p_idx * f : (p_idx + 1) * f, 0, d_t_active_half:d_t_full_half]
+        for row in block[1:]:
+            torch.testing.assert_close(row, block[0])
+
+    # Across distinct agent blocks, the agent-band slots must differ.
+    block_a = cos[0 * f, 0, d_t_active_half:d_t_full_half]
+    block_b = cos[1 * f, 0, d_t_active_half:d_t_full_half]
+    assert not torch.allclose(block_a, block_b)
 
 
 def test_rope_rejects_unsupported_dims():

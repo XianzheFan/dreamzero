@@ -108,6 +108,7 @@ class SimplexRotaryPositionEmbedding4D(nn.Module):
         end_t: int = 1024,
         end_hw: int = 1024,
         theta: float = 10000.0,
+        polar_output: bool = False,
     ):
         super().__init__()
         if head_dim % 2 != 0:
@@ -127,6 +128,7 @@ class SimplexRotaryPositionEmbedding4D(nn.Module):
         self.simplex_pool_size = simplex_pool_size
         self.agent_dim = agent_dim
         self.alpha = alpha
+        self.polar_output = polar_output
 
         # 3D RoPE channel split, matching `precompute_freqs_cis_3d` in
         # :class:`RotaryPositionEmbeddingNoPolarOp` so spatial slots line up
@@ -180,7 +182,13 @@ class SimplexRotaryPositionEmbedding4D(nn.Module):
         w: int,
         agent_perm: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Build the freqs tensor for an ``(F, P, H, W)`` token grid.
+        """Build the freqs tensor for a ``(P, F, H, W)`` token grid.
+
+        The output layout is **agent-major**, matching the Gamma-World
+        "PTL agent tokens" convention (§3.3): each agent's ``(F, H, W)``
+        token block is contiguous in the flattened sequence, so the model
+        can sequence-concatenate agents as
+        ``[agent_0_tokens, agent_1_tokens, ...]``.
 
         Args:
             f: Number of temporal positions.
@@ -192,9 +200,15 @@ class SimplexRotaryPositionEmbedding4D(nn.Module):
                 Defaults to the identity permutation ``[0, 1, ..., p-1]``.
 
         Returns:
-            A ``(2 * F * P * H * W, 1, head_dim/2)`` float tensor with cos in
+            If ``polar_output`` is ``False`` (default): a
+            ``(2 * P * F * H * W, 1, head_dim/2)`` float tensor with cos in
             rows ``[0, N)`` and sin in rows ``[N, 2N)``, matching the layout
-            expected by :func:`rope_apply_no_polar_op`.
+            of :func:`rope_apply_no_polar_op`.
+
+            If ``polar_output`` is ``True``: a
+            ``(P * F * H * W, 1, head_dim/2)`` complex tensor where each
+            element is ``cos + i*sin``, matching the layout of
+            :func:`rope_apply_polar_op`.
         """
         if p > self.simplex_pool_size:
             raise ValueError(
@@ -243,26 +257,46 @@ class SimplexRotaryPositionEmbedding4D(nn.Module):
         w_cos = self.w_cos[:w]  # [W, d_w/2]
         w_sin = self.w_sin[:w]
 
-        # Broadcast everything to [F, P, H, W, head_dim/2] then flatten the
+        # Build freqs in (P, F, H, W) C-order so each agent's (F, H, W)
+        # token block is contiguous in the flattened sequence. The temporal+
+        # agent band ``tp_*`` is indexed (F, P, ...) above; transpose to
+        # (P, F, ...) before broadcasting against spatial.
+        # tp_*: [F, P, d_t_full/2] -> [P, F, d_t_full/2]
+        tp_cos = tp_cos.transpose(0, 1).contiguous()
+        tp_sin = tp_sin.transpose(0, 1).contiguous()
+
+        # Broadcast everything to [P, F, H, W, head_dim/2] then flatten the
         # leading axes. W is innermost (C-order).
-        f4, p4, h4, w4 = f, p, h, w
         freqs_cos = torch.cat(
             [
-                tp_cos.view(f4, p4, 1, 1, -1).expand(f4, p4, h4, w4, -1),
-                h_cos.view(1, 1, h4, 1, -1).expand(f4, p4, h4, w4, -1),
-                w_cos.view(1, 1, 1, w4, -1).expand(f4, p4, h4, w4, -1),
+                tp_cos.view(p, f, 1, 1, -1).expand(p, f, h, w, -1),
+                h_cos.view(1, 1, h, 1, -1).expand(p, f, h, w, -1),
+                w_cos.view(1, 1, 1, w, -1).expand(p, f, h, w, -1),
             ],
             dim=-1,
-        ).reshape(f4 * p4 * h4 * w4, 1, -1)
+        ).reshape(p * f * h * w, 1, -1)
         freqs_sin = torch.cat(
             [
-                tp_sin.view(f4, p4, 1, 1, -1).expand(f4, p4, h4, w4, -1),
-                h_sin.view(1, 1, h4, 1, -1).expand(f4, p4, h4, w4, -1),
-                w_sin.view(1, 1, 1, w4, -1).expand(f4, p4, h4, w4, -1),
+                tp_sin.view(p, f, 1, 1, -1).expand(p, f, h, w, -1),
+                h_sin.view(1, 1, h, 1, -1).expand(p, f, h, w, -1),
+                w_sin.view(1, 1, 1, w, -1).expand(p, f, h, w, -1),
             ],
             dim=-1,
-        ).reshape(f4 * p4 * h4 * w4, 1, -1)
+        ).reshape(p * f * h * w, 1, -1)
 
+        if self.polar_output:
+            # Pack cos / sin into a single complex tensor with shape
+            # [P*F*H*W, 1, head_dim/2] -- matches rope_apply_polar_op.
+            # ``torch.complex`` only supports Half / Float / Double, so we
+            # promote bfloat16 buffers (which appear when the surrounding
+            # model is cast to bf16) up to float32 here. Downstream
+            # ``rope_apply_polar_op`` converts the *input* tensor to float64
+            # before multiplying with these freqs, so this upcast does not
+            # change end-to-end precision.
+            if freqs_cos.dtype == torch.bfloat16:
+                freqs_cos = freqs_cos.float()
+                freqs_sin = freqs_sin.float()
+            return torch.complex(freqs_cos, freqs_sin)
         return torch.cat([freqs_cos, freqs_sin], dim=0)
 
     def post_initialize(self):
