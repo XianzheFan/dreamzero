@@ -2673,15 +2673,71 @@ class CausalWanModel(ModelMixin, ConfigMixin):
 
         return video_noise_pred, action_noise_pred
 
+    def _forward_inference_multi_agent(
+        self,
+        x,
+        timestep,
+        context,
+        seq_len,
+        kv_cache: list[torch.Tensor],
+        crossattn_cache: list[torch.Tensor] | None = None,
+        current_start_frame: int = 0,
+        y=None,
+        clip_feature=None,
+        action=None,
+        timestep_action=None,
+        state=None,
+        embodiment_id=None,
+        agent_perm=None,
+        **_unused,
+    ) -> tuple[torch.Tensor, torch.Tensor | None, list[torch.Tensor]]:
+        r"""Stateless multi-agent inference (PR 6a).
+
+        Dispatch endpoint for the websocket / sim-eval servers when
+        ``num_agents > 1``. Routes the full multi-agent sequence through
+        the same training-time forward (``_forward_train_multi_agent``)
+        in ``torch.no_grad`` -- the per-agent ``kv_cache`` and
+        ``crossattn_cache`` arguments are accepted to match the
+        single-agent inference signature, **but they are passed through
+        unchanged**: every call recomputes the full history.
+
+        Real streaming with per-agent KV caches and a shared hub KV cache
+        (Gamma-World §3.4) requires composing the hub ``attn_mask`` with
+        the existing single-agent KV-cache code path in
+        :class:`CausalWanSelfAttention`, which currently rejects the
+        combination. That lands in PR 6b.
+
+        Args, returns: see :meth:`_forward_inference` and
+        :meth:`_forward_train_multi_agent`. The ``kv_cache`` /
+        ``crossattn_cache`` lists are returned **as-is**.
+        """
+        del y, clip_feature, crossattn_cache, current_start_frame
+        video_pred, action_pred = self._forward_train_multi_agent(
+            x=x,
+            timestep=timestep,
+            context=context,
+            seq_len=seq_len,
+            agent_perm=agent_perm,
+            action=action,
+            timestep_action=timestep_action,
+            state=state,
+            embodiment_id=embodiment_id,
+        )
+        return video_pred, action_pred, kv_cache
+
     def forward(
         self,
         *args,
         **kwargs
     ):
+        # Multi-agent dispatch:
+        #   * P=1 keeps the original single-agent paths bit-for-bit.
+        #   * P>1 routes to the multi-agent training or inference variant
+        #     depending on whether the caller passed a ``kv_cache``.
         if kwargs.get('kv_cache', None) is not None:
+            if self.num_agents > 1:
+                return self._forward_inference_multi_agent(*args, **kwargs)
             return self._forward_inference(*args, **kwargs)
-        # Multi-agent dispatch: P=1 keeps the original 3D RoPE path
-        # (byte-identical). P>1 routes through the multi-agent branch.
         if self.num_agents > 1:
             return self._forward_train_multi_agent(*args, **kwargs)
         return self._forward_train(*args, **kwargs)
