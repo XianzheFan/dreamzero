@@ -1347,7 +1347,8 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                  agent_dim=16,
                  simplex_alpha=1.0,
                  num_hub_tokens=8,
-                 use_sparse_hub_attention=True):
+                 use_sparse_hub_attention=True,
+                 num_roles=8):
         r"""
         Initialize the diffusion model backbone.
 
@@ -1424,6 +1425,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         self.simplex_alpha = simplex_alpha
         self.num_hub_tokens = num_hub_tokens
         self.use_sparse_hub_attention = use_sparse_hub_attention
+        self.num_roles = num_roles
 
         max_num_embodiments = 1
 
@@ -1510,9 +1512,22 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                 )
             else:
                 self.hub_tokens = None
+            # PR 7: per-agent role embedding for asymmetric tasks
+            # (holder / manipulator / passer / ...). Decoupled from the
+            # simplex agent identity so the role signal can travel with
+            # an agent slot under permutation augmentation. When
+            # ``role_id`` is None or all-zero in forward, the embedding
+            # for vertex 0 ("peer") is used uniformly and the bias is a
+            # no-op modulo learned init.
+            if num_roles > 0:
+                self.role_embedding = nn.Embedding(num_roles, dim)
+                nn.init.normal_(self.role_embedding.weight, mean=0.0, std=0.02)
+            else:
+                self.role_embedding = None
         else:
             self.simplex_rope = None
             self.hub_tokens = None
+            self.role_embedding = None
 
         # Multi-agent streaming inference session state (PR 6c). Reset on
         # every call with ``current_start_frame == 0``. Stored as a CPU
@@ -2272,6 +2287,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         timestep_action=None,
         state=None,
         embodiment_id=None,
+        role_id=None,
         **_unused,
     ):
         """Training-time multi-agent forward. Thin 2-tuple wrapper around
@@ -2289,6 +2305,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             state=state,
             embodiment_id=embodiment_id,
             kv_cache=None,
+            role_id=role_id,
         )
         return video_pred, action_pred
 
@@ -2306,6 +2323,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         kv_cache=None,
         start_frame: int = 0,
         cached_token_agent_id: torch.Tensor | None = None,
+        role_id: torch.Tensor | None = None,
     ):
         r"""Multi-agent forward body shared by training and inference.
 
@@ -2377,6 +2395,17 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             state: Optional ``[B, P, T_s, D_s]`` per-agent proprio state.
             embodiment_id: Optional ``[B]`` long tensor; broadcast to all
                 agents. Defaults to zeros (single embodiment).
+            role_id: Optional ``[B, P]`` long tensor (PR 7). Each entry
+                selects a learnable role embedding (``self.role_embedding``)
+                that is added as an AdaLN bias to that agent's video
+                tokens before the transformer blocks. Used for
+                **asymmetric** tasks (holder / manipulator / passer /
+                ...) where different agents play semantically different
+                roles. The role signal is decoupled from the simplex
+                agent identity so it can travel under agent-slot
+                permutation augmentation -- callers MUST permute
+                ``role_id`` along the P axis whenever they permute
+                ``agent_perm``. When ``None``, no role bias is added.
 
         Returns:
             ``(video_noise_pred, action_noise_pred)`` where
@@ -2409,6 +2438,25 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         assert x.shape[1] == seq_len, (
             f"seq_len mismatch: expected P*F*H*W={P * L_per_agent}, got seq_len={seq_len}"
         )
+
+        # PR 7: per-agent role token (asymmetric task semantics).
+        # The role embedding is broadcast across this agent's video
+        # tokens so the role signal enters as an input bias. It is
+        # injected BEFORE action / state conditioning so action features
+        # can mix with the role-conditioned representation in the
+        # subsequent block forwards.
+        if role_id is not None:
+            assert self.role_embedding is not None, (
+                "role_id was passed but the model was built with num_roles=0"
+            )
+            assert role_id.shape == (B, P), (
+                f"role_id must have shape [B, P]={(B, P)}; got {tuple(role_id.shape)}"
+            )
+            role_bias = self.role_embedding(role_id.to(x.device, dtype=torch.long))
+            role_bias = role_bias.to(dtype=x.dtype)  # [B, P, dim]
+            x = x.reshape(B, P, L_per_agent, dim)
+            x = x + role_bias.unsqueeze(2)
+            x = x.reshape(B, P * L_per_agent, dim)
 
         # Per-agent action / state conditioning (PR 5a bias + PR 5b
         # register tokens). The action encoder is run once and its output
@@ -2786,6 +2834,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         state=None,
         embodiment_id=None,
         agent_perm=None,
+        role_id=None,
         **_unused,
     ) -> tuple[torch.Tensor, torch.Tensor | None, list[torch.Tensor]]:
         r"""Multi-agent inference dispatcher (PR 6a + PR 6b).
@@ -2879,6 +2928,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             kv_cache=kv_cache,
             start_frame=current_start_frame,
             cached_token_agent_id=cached_token_agent_id,
+            role_id=role_id,
         )
 
         # PR 6e: strip per-call register positions from the persistent
