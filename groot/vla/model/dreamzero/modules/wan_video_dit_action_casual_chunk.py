@@ -2252,6 +2252,8 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         context,
         seq_len,
         agent_perm=None,
+        action=None,
+        timestep_action=None,
         **_unused,
     ):
         r"""Multi-agent training forward with optional Sparse Hub Attention.
@@ -2261,22 +2263,35 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         runs the existing transformer blocks over the sequence-concatenated
         tokens ``[agent_0, agent_1, ..., agent_{P-1}, hub_tokens]``.
 
-        When ``use_sparse_hub_attention`` is on (default) and
-        ``num_hub_tokens > 0``, an extra block of ``F_g * K_hub`` learnable
-        hub tokens is appended to the sequence and a hub-mediated attention
-        mask is built so that:
+        Per-agent action conditioning (PR 5a)
+          When an ``action`` tensor of shape ``[B, P, T_a, D_a]`` is
+          provided, each agent's action stream is encoded by the *shared*
+          ``self.action_encoder`` and the resulting features are pooled
+          over time into a single per-agent bias of shape ``[B, P, dim]``.
+          That bias is added (broadcast across spatial tokens) to the
+          corresponding agent's video tokens *before* the transformer
+          blocks, so action conditioning enters as a Gamma-World style
+          AdaLN bias rather than via separate register tokens. Action
+          register tokens / per-agent action prediction land in PR 5b.
 
-          * agent tokens attend only to their own stream and to hub tokens;
-          * hub tokens attend to all agents and to other hub tokens.
+        Sparse Hub Attention
+          When ``use_sparse_hub_attention`` is on (default) and
+          ``num_hub_tokens > 0``, an extra block of ``F_g * K_hub`` learnable
+          hub tokens is appended to the sequence and a hub-mediated
+          attention mask is built so that:
 
-        Direct attention between distinct agent streams is masked out,
-        matching Gamma-World §3.3.
+            * agent tokens attend only to their own stream and to hub tokens;
+            * hub tokens attend to all agents and to other hub tokens.
+
+          Direct attention between distinct agent streams is masked out
+          (Gamma-World §3.3).
 
         Limitations of this branch:
-          * Action / state conditioning is not supported yet (PR 5).
-          * The block-causal mask is NOT composed in this branch yet (the
-            attention is dense within the hub topology); composing the two
-            is straightforward and will land alongside the action plumbing.
+          * No action / state register tokens, no action prediction output
+            yet (PR 5b).
+          * The block-causal mask is NOT composed with the hub mask in
+            this branch yet (the attention is dense within the hub
+            topology).
           * The inference / serving path (:meth:`_forward_inference`) is
             unaffected.
 
@@ -2289,6 +2304,9 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                 hub tokens are added.
             agent_perm: Optional ``LongTensor[P]`` assigning runtime agents
                 to simplex vertices. Defaults to identity.
+            action: Optional ``[B, P, T_a, D_a]`` per-agent action stream.
+            timestep_action: Optional ``[B, T_a]`` action-timeline timestep
+                shared across agents.
 
         Returns:
             ``[B, P, C_out, F, H, W]`` video noise prediction.
@@ -2318,6 +2336,43 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         assert x.shape[1] == seq_len, (
             f"seq_len mismatch: expected P*F*H*W={P * L_per_agent}, got seq_len={seq_len}"
         )
+
+        # Per-agent action conditioning (PR 5a). We feed each agent's
+        # action stream through the shared action encoder by collapsing the
+        # agent axis into the batch dim, encode, pool over T_a into a
+        # single bias of shape [B, P, dim], and broadcast-add it to that
+        # agent's video tokens. action_register tokens / per-agent action
+        # prediction land in PR 5b.
+        if action is not None:
+            assert action.dim() == 4 and action.shape[1] == P, (
+                f"multi-agent action must be [B, P, T_a, D_a]; got {tuple(action.shape)}"
+            )
+            B_a, _, T_a, D_a = action.shape
+            assert B_a == B
+            assert timestep_action is not None, (
+                "timestep_action is required when action is provided"
+            )
+            assert timestep_action.shape == (B, T_a), (
+                f"timestep_action must be [B, T_a]={(B, T_a)}; "
+                f"got {tuple(timestep_action.shape)}"
+            )
+            action_flat = action.reshape(B * P, T_a, D_a).to(dtype=x.dtype)
+            ts_flat = (
+                timestep_action.unsqueeze(1)
+                .expand(B, P, T_a)
+                .reshape(B * P, T_a)
+                .to(dtype=torch.float32)
+            )
+            eid_flat = torch.zeros(B * P, dtype=torch.long, device=x.device)
+            action_features = self.action_encoder(
+                action_flat, ts_flat, eid_flat
+            )  # [B*P, T_a, dim]
+            action_bias = action_features.mean(dim=1).to(dtype=x.dtype)  # [B*P, dim]
+            action_bias = action_bias.reshape(B, P, dim)
+            # Broadcast over L_per_agent and add to each agent's slice.
+            x = x.reshape(B, P, L_per_agent, dim)
+            x = x + action_bias.unsqueeze(2)
+            x = x.reshape(B, P * L_per_agent, dim)
 
         # Decide whether the Sparse-Hub branch is active. Hub tokens are
         # only appended when the model was built with them.
