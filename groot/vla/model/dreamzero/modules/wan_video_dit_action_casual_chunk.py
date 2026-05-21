@@ -820,12 +820,9 @@ class CausalWanSelfAttention(nn.Module):
         updated_kv_cache: torch.Tensor | None = None
 
         if attn_mask is not None:
-            # Multi-agent sparse-hub-attention path. The mask already encodes
-            # the desired token-routing topology (same-agent OR hub-mediated)
+            # Multi-agent sparse-hub-attention path. The mask encodes the
+            # desired token-routing topology (same-agent OR hub-mediated)
             # composed with any block-causal logic the caller wanted.
-            assert kv_cache is None, (
-                "attn_mask path does not support KV-cached streaming yet"
-            )
             assert action_register_length is None, (
                 "attn_mask path does not yet plumb action/state registers"
             )
@@ -843,10 +840,25 @@ class CausalWanSelfAttention(nn.Module):
                 freqs_state=freqs_state,
                 action_register_length=None,
             ).type_as(v)
+            if kv_cache is not None:
+                # PR 6b: single-call cache *write*. The cache is populated
+                # with this call's rotated K and raw V so a future call
+                # (PR 6c) can concat them with new tokens. Reading the
+                # cached K/V for cross-chunk streaming (Lq=L_new,
+                # Lk=L_cached+L_new) lands in PR 6c, which also handles
+                # the attn_mask reshape and the temporal-freq offset.
+                if kv_cache.numel() != 0:
+                    raise NotImplementedError(
+                        "Multi-call streaming (kv_cache already populated) "
+                        "is not supported in PR 6b. Pass an empty cache "
+                        "(torch.empty(2, B, 0, n, d)) for the first call; "
+                        "PR 6c will add cross-chunk reads."
+                    )
+                updated_kv_cache = torch.stack([roped_key, v], dim=0)
             x = self.attn(roped_query, roped_key, v, attn_mask=attn_mask)
             x = x.flatten(2)
             x = self.o(x)
-            return x, None
+            return x, updated_kv_cache
 
         if kv_cache is None:
             if is_tf:
@@ -2258,7 +2270,38 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         embodiment_id=None,
         **_unused,
     ):
-        r"""Multi-agent training forward with optional Sparse Hub Attention.
+        """Training-time multi-agent forward. Thin 2-tuple wrapper around
+        :meth:`_forward_multi_agent_body` (which is the real implementation
+        and also serves inference). Returns ``(video_pred, action_pred)``.
+        """
+        video_pred, action_pred, _ = self._forward_multi_agent_body(
+            x=x,
+            timestep=timestep,
+            context=context,
+            seq_len=seq_len,
+            agent_perm=agent_perm,
+            action=action,
+            timestep_action=timestep_action,
+            state=state,
+            embodiment_id=embodiment_id,
+            kv_cache=None,
+        )
+        return video_pred, action_pred
+
+    def _forward_multi_agent_body(
+        self,
+        x,
+        timestep,
+        context,
+        seq_len,
+        agent_perm=None,
+        action=None,
+        timestep_action=None,
+        state=None,
+        embodiment_id=None,
+        kv_cache=None,
+    ):
+        r"""Multi-agent forward body shared by training and inference.
 
         Threads an explicit agent axis ``P`` through patchify, builds
         simplex 4D RoPE freqs over the ``(P, F, H, W)`` token grid, and
@@ -2603,7 +2646,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         else:
             attn_mask = None
 
-        kwargs = dict(
+        base_kwargs = dict(
             e=e0,
             freqs=freqs,
             freqs_action=self.freqs_action,
@@ -2614,9 +2657,19 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             attn_mask=attn_mask,
         )
 
-        for block in self.blocks:
-            if torch.is_grad_enabled() and self.gradient_checkpointing:
-                def _ckpt_block(*inputs, b=block, k=kwargs):
+        updated_kv_caches: list[torch.Tensor] | None = (
+            [] if kv_cache is not None else None
+        )
+        for layer_idx, block in enumerate(self.blocks):
+            block_kwargs = dict(base_kwargs)
+            if kv_cache is not None:
+                block_kwargs["kv_cache"] = kv_cache[layer_idx]
+            if (
+                kv_cache is None
+                and torch.is_grad_enabled()
+                and self.gradient_checkpointing
+            ):
+                def _ckpt_block(*inputs, b=block, k=block_kwargs):
                     out, updated = b(*inputs, **k)
                     assert updated is None
                     return out
@@ -2624,8 +2677,11 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                     _ckpt_block, x, use_reentrant=False,
                 )
             else:
-                x, updated_kv_cache = block(x, **kwargs)
-                assert updated_kv_cache is None
+                x, updated_kv = block(x, **block_kwargs)
+                if updated_kv_caches is not None:
+                    updated_kv_caches.append(updated_kv)
+                else:
+                    assert updated_kv is None
 
         # Strip hub tokens (internal communication state only) and split
         # into video block + register block.
@@ -2671,7 +2727,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             B, P, C_out, video_flat.shape[2], video_flat.shape[3], video_flat.shape[4]
         )
 
-        return video_noise_pred, action_noise_pred
+        return video_noise_pred, action_noise_pred, updated_kv_caches
 
     def _forward_inference_multi_agent(
         self,
@@ -2691,28 +2747,59 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         agent_perm=None,
         **_unused,
     ) -> tuple[torch.Tensor, torch.Tensor | None, list[torch.Tensor]]:
-        r"""Stateless multi-agent inference (PR 6a).
+        r"""Multi-agent inference dispatcher (PR 6a + PR 6b).
 
-        Dispatch endpoint for the websocket / sim-eval servers when
-        ``num_agents > 1``. Routes the full multi-agent sequence through
-        the same training-time forward (``_forward_train_multi_agent``)
-        in ``torch.no_grad`` -- the per-agent ``kv_cache`` and
-        ``crossattn_cache`` arguments are accepted to match the
-        single-agent inference signature, **but they are passed through
-        unchanged**: every call recomputes the full history.
+        Routes the full multi-agent sequence through the same forward as
+        training and returns the 3-tuple
+        ``(video_pred, action_pred, updated_kv_cache)`` the websocket /
+        sim-eval servers expect. The numerics match
+        :meth:`_forward_train_multi_agent` exactly (modulo gradients).
 
-        Real streaming with per-agent KV caches and a shared hub KV cache
-        (Gamma-World §3.4) requires composing the hub ``attn_mask`` with
-        the existing single-agent KV-cache code path in
-        :class:`CausalWanSelfAttention`, which currently rejects the
-        combination. That lands in PR 6b.
+        KV cache behaviour (PR 6b):
+
+          * ``kv_cache=None``                  -> stateless inference. No
+            cache is populated. Backwards compatible with PR 6a.
+          * ``kv_cache=[None, None, ...]``     -> single-call **cache
+            write**. After the call, each entry holds the layer's
+            rotated K and raw V from this chunk so a future call (PR 6c)
+            can read them. Requires ``current_start_frame == 0``.
+          * Any layer's cache slot already populated -> *cross-chunk
+            streaming*, which is PR 6c. ``CausalWanSelfAttention``
+            currently raises ``NotImplementedError`` for that case.
 
         Args, returns: see :meth:`_forward_inference` and
-        :meth:`_forward_train_multi_agent`. The ``kv_cache`` /
-        ``crossattn_cache`` lists are returned **as-is**.
+        :meth:`_forward_train_multi_agent`.
         """
-        del y, clip_feature, crossattn_cache, current_start_frame
-        video_pred, action_pred = self._forward_train_multi_agent(
+        del y, clip_feature, crossattn_cache
+
+        # Empty caches (list of all-None slots) become an empty tensor per
+        # layer so blocks know to *write* without reading any past KV.
+        write_cache = kv_cache is not None and all(
+            slot is None for slot in kv_cache
+        )
+        if write_cache:
+            assert current_start_frame == 0, (
+                "PR 6b single-call cache write requires current_start_frame=0; "
+                f"got {current_start_frame}. Cross-chunk streaming is PR 6c."
+            )
+            B = x.shape[0]
+            n = self.num_heads
+            d = self.dim // self.num_heads
+            kv_cache = [
+                torch.empty(2, B, 0, n, d, device=x.device, dtype=x.dtype)
+                for _ in range(len(self.blocks))
+            ]
+        elif kv_cache is not None and any(
+            slot is not None and slot.numel() != 0 for slot in kv_cache
+        ):
+            raise NotImplementedError(
+                "Cross-chunk multi-agent streaming (PR 6c) is not "
+                "implemented yet. Pass kv_cache=None for stateless "
+                "inference or kv_cache=[None]*num_layers for a single-call "
+                "cache write."
+            )
+
+        video_pred, action_pred, updated_kv = self._forward_multi_agent_body(
             x=x,
             timestep=timestep,
             context=context,
@@ -2722,8 +2809,9 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             timestep_action=timestep_action,
             state=state,
             embodiment_id=embodiment_id,
+            kv_cache=kv_cache,
         )
-        return video_pred, action_pred, kv_cache
+        return video_pred, action_pred, updated_kv
 
     def forward(
         self,

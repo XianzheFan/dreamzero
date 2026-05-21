@@ -85,31 +85,107 @@ def _make_inputs(B=1, P=2, T_a=4, D_a=4, F_lat=2, H=4, W=4, device="cuda"):
     )
 
 
-def test_inference_returns_three_tuple(cuda_available):
+def test_inference_returns_three_tuple_stateless(cuda_available):
+    """Stateless mode (PR 6a): kv_cache=None -> cache returned as None."""
     torch.manual_seed(0)
     model = _make_model(num_agents=2)
     inputs = _make_inputs()
-    num_layers = len(model.blocks)
-    kv_cache = [None] * num_layers
-    crossattn_cache = [None] * num_layers
 
     with torch.no_grad():
         out = model(
             **inputs,
-            kv_cache=kv_cache,
-            crossattn_cache=crossattn_cache,
+            kv_cache=None,
+            crossattn_cache=None,
             current_start_frame=0,
         )
-    assert isinstance(out, tuple) and len(out) == 3, (
-        f"expected (video, action, kv_cache); got {type(out).__name__} of len "
-        f"{len(out) if hasattr(out, '__len__') else 'N/A'}"
+    # PR 6a: dispatcher routes here only when kv_cache is *not* None, so
+    # explicitly take the multi-agent inference branch through the
+    # wrapper to exercise it. (Calling model(...) with kv_cache=None would
+    # have gone to the training branch instead.)
+    out = model._forward_inference_multi_agent(
+        **inputs,
+        kv_cache=None,
+        crossattn_cache=None,
+        current_start_frame=0,
     )
+    assert isinstance(out, tuple) and len(out) == 3
     video, action_pred, returned_cache = out
     B, P, T_a, D_a = inputs["action"].shape
     F_lat, H, W = inputs["x"].shape[3:]
     assert video.shape == (B, P, 8, F_lat, H, W)
     assert action_pred.shape == (B, P, T_a, D_a)
-    assert returned_cache is kv_cache, "kv_cache must be passed through"
+    assert returned_cache is None
+
+
+def test_inference_writes_kv_cache(cuda_available):
+    """PR 6b single-call cache write: passing kv_cache=[None]*L populates
+    each layer's slot with a stacked [K, V] tensor."""
+    torch.manual_seed(0)
+    model = _make_model(num_agents=2)
+    inputs = _make_inputs()
+    num_layers = len(model.blocks)
+
+    with torch.no_grad():
+        video, action_pred, returned_cache = model(
+            **inputs,
+            kv_cache=[None] * num_layers,
+            crossattn_cache=[None] * num_layers,
+            current_start_frame=0,
+        )
+
+    B, P, T_a, D_a = inputs["action"].shape
+    F_lat, H, W = inputs["x"].shape[3:]
+    assert video.shape == (B, P, 8, F_lat, H, W)
+    assert action_pred.shape == (B, P, T_a, D_a)
+
+    assert returned_cache is not None
+    assert len(returned_cache) == num_layers
+    # Each populated slot is a [2, B, L_seq, n_heads, head_dim] tensor.
+    # L_seq is the multi-agent sequence length:
+    #   P * F_g * H_g * W_g (video)
+    # + P * (T_a + T_s)     (register; here state has T_s=1)
+    # + F_g * K_hub         (hub)
+    F_g, H_g, W_g = F_lat, H // 2, W // 2
+    K_hub = model.num_hub_tokens
+    T_s = inputs["state"].shape[2] if "state" in inputs else 0
+    expected_L = (P * F_g * H_g * W_g) + (P * (T_a + T_s)) + (F_g * K_hub)
+    n_heads = model.num_heads
+    head_dim = model.dim // model.num_heads
+    for layer, slot in enumerate(returned_cache):
+        assert slot is not None, f"layer {layer} returned None"
+        assert slot.shape == (2, B, expected_L, n_heads, head_dim), (
+            f"layer {layer} slot shape {tuple(slot.shape)} != expected "
+            f"(2, {B}, {expected_L}, {n_heads}, {head_dim})"
+        )
+
+
+def test_inference_rejects_populated_cache(cuda_available):
+    """PR 6b doesn't yet support reading a populated cache (PR 6c).
+    Passing one in should raise NotImplementedError."""
+    torch.manual_seed(0)
+    model = _make_model(num_agents=2)
+    inputs = _make_inputs()
+    num_layers = len(model.blocks)
+
+    # First call to populate the cache.
+    with torch.no_grad():
+        _, _, populated_cache = model(
+            **inputs,
+            kv_cache=[None] * num_layers,
+            crossattn_cache=[None] * num_layers,
+            current_start_frame=0,
+        )
+
+    # Second call with the populated cache should refuse.
+    import pytest
+    with pytest.raises(NotImplementedError, match="streaming"):
+        with torch.no_grad():
+            model(
+                **inputs,
+                kv_cache=populated_cache,
+                crossattn_cache=[None] * num_layers,
+                current_start_frame=0,
+            )
 
 
 def test_inference_matches_training_when_stateless(cuda_available):
