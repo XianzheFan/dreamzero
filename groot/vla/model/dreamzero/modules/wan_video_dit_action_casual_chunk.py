@@ -2788,7 +2788,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         sim-eval servers expect. The numerics match
         :meth:`_forward_train_multi_agent` exactly (modulo gradients).
 
-        KV cache behaviour (PR 6a + PR 6b + PR 6c):
+        KV cache behaviour (PR 6a + PR 6b + PR 6c + PR 6d):
 
           * ``kv_cache=None``                  -> stateless inference. No
             cache is populated. Backwards compatible with PR 6a.
@@ -2801,9 +2801,14 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             is maintained on the model as session state, and is reset
             whenever ``current_start_frame == 0``.
 
-        Action register tokens are forbidden in streaming mode for now
-        (PR 6d will add them); passing ``action`` along with a populated
-        cache raises ``NotImplementedError``.
+        Action / state register tokens are allowed during streaming
+        (PR 6d). They participate in the current chunk's attention and
+        are appended to the cache alongside video and hub K/V. The
+        resulting cross-call attention over *past* register K/V is a
+        known approximation -- those past register tokens encoded the
+        noisy action being denoised at that earlier step, not a clean
+        signal. Stripping per-call register positions from the cache
+        between calls is tracked as PR 6e.
 
         Args, returns: see :meth:`_forward_inference` and
         :meth:`_forward_train_multi_agent`.
@@ -2816,12 +2821,17 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             slot is not None and slot.numel() != 0 for slot in kv_cache
         )
 
-        if streaming and action is not None:
-            raise NotImplementedError(
-                "Action register tokens in cross-chunk streaming are not "
-                "implemented yet (PR 6d). Pass action=None during streaming "
-                "or use stateless inference."
-            )
+        # PR 6d: action / state register tokens are allowed in streaming.
+        # NOTE on semantics -- the body appends per-call register tokens
+        # to the sequence and writes their K/V into the cache along with
+        # video and hub. A future chunk's queries therefore attend to
+        # PAST register K/V, which encoded that PAST chunk's *noisy*
+        # action being denoised at the time. This is not what
+        # Gamma-World §3.4 prescribes (per-agent video + shared hub
+        # only, no register accumulation). For now the resulting attention
+        # over stale register tokens is left as a known approximation;
+        # stripping register positions from the cache after each call is
+        # tracked as PR 6e.
 
         # Reset session state on a new rollout (current_start_frame == 0).
         if current_start_frame == 0:

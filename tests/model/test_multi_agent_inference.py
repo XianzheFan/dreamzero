@@ -159,34 +159,51 @@ def test_inference_writes_kv_cache(cuda_available):
         )
 
 
-def test_inference_rejects_action_during_streaming(cuda_available):
-    """PR 6c streams video-only; action register tokens in a populated
-    cache are PR 6d. Passing both should raise NotImplementedError."""
+def test_streaming_accepts_action_register_tokens(cuda_available):
+    """PR 6d: action / state register tokens are allowed during
+    streaming. A warm-up call followed by a streaming call that BOTH
+    carry action+state should succeed and return per-agent action
+    predictions with correct shapes."""
     torch.manual_seed(0)
     model = _make_model(num_agents=2)
-    inputs = _make_inputs()
+    inputs_warm = _make_inputs()
     num_layers = len(model.blocks)
 
-    # First call to populate the cache (action is fine on the first
-    # call -- the rejection only kicks in when the cache is reused).
     with torch.no_grad():
-        _, _, populated_cache = model(
-            **inputs,
+        _, action_pred_warm, populated_cache = model(
+            **inputs_warm,
             kv_cache=[None] * num_layers,
             crossattn_cache=[None] * num_layers,
             current_start_frame=0,
         )
+    B, P, T_a, D_a = inputs_warm["action"].shape
+    assert action_pred_warm.shape == (B, P, T_a, D_a)
 
-    # Second call with the populated cache *and* action should refuse.
-    import pytest
-    with pytest.raises(NotImplementedError, match="streaming"):
-        with torch.no_grad():
-            model(
-                **inputs,
-                kv_cache=populated_cache,
-                crossattn_cache=[None] * num_layers,
-                current_start_frame=inputs["x"].shape[3],
-            )
+    # Cross-chunk streaming with action+state -- PR 6d's positive case.
+    inputs_stream = _make_inputs()
+    with torch.no_grad():
+        video, action_pred_stream, cache_after = model(
+            **inputs_stream,
+            kv_cache=populated_cache,
+            crossattn_cache=[None] * num_layers,
+            current_start_frame=inputs_warm["x"].shape[3],
+        )
+    assert video.shape == inputs_stream["x"].shape[:2] + (8,) + inputs_stream["x"].shape[3:]
+    assert action_pred_stream.shape == (B, P, T_a, D_a)
+    assert torch.isfinite(video).all()
+    assert torch.isfinite(action_pred_stream).all()
+
+    # Cache layer 0 should have grown by exactly one full call's tokens
+    # (video + per-agent register + hub) compared with cache_after_warm.
+    F_g = inputs_warm["x"].shape[3]
+    H_g = inputs_warm["x"].shape[4] // 2
+    W_g = inputs_warm["x"].shape[5] // 2
+    T_s = 0  # _make_inputs() does not pass state in this test setup.
+    per_call = P * F_g * H_g * W_g + P * (T_a + T_s) + F_g * model.num_hub_tokens
+    assert cache_after[0].shape[2] == 2 * per_call, (
+        f"cache layer 0 grew to {cache_after[0].shape[2]}, expected "
+        f"{2 * per_call}"
+    )
 
 
 def _make_inputs_no_action(
