@@ -238,16 +238,31 @@ class AttentionModule(torch.nn.Module):
         self.backend = backend
 
         if backend == "torch":
-            def _torch_impl(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+            def _torch_impl(
+                q: torch.Tensor,
+                k: torch.Tensor,
+                v: torch.Tensor,
+                attn_mask: Optional[torch.Tensor] = None,
+            ) -> torch.Tensor:
                 out_dtype = q.dtype
                 q = q.transpose(1, 2).to(dtype)
                 k = k.transpose(1, 2).to(dtype)
                 v = v.transpose(1, 2).to(dtype)
 
+                if attn_mask is not None:
+                    is_causal_arg = False
+                    attn_mask = attn_mask.to(q.device)
+                    # sdpa requires a bool / float mask broadcastable to
+                    # [B, n_heads, Lq, Lk]; bool semantics: True = keep.
+                    if attn_mask.dtype != torch.bool:
+                        attn_mask = attn_mask.to(dtype)
+                else:
+                    is_causal_arg = causal
+
                 out = torch.nn.functional.scaled_dot_product_attention(
                     q, k, v,
-                    attn_mask=None,
-                    is_causal=causal,
+                    attn_mask=attn_mask,
+                    is_causal=is_causal_arg,
                     dropout_p=dropout_p,
                     scale=softmax_scale,
                 )
@@ -333,6 +348,7 @@ class AttentionModule(torch.nn.Module):
         v: torch.Tensor,
         q_lens: Optional[torch.Tensor] = None,
         k_lens: Optional[torch.Tensor] = None,
+        attn_mask: Optional[torch.Tensor] = None,
     ):
         if (
             self.backend == "torch" or
@@ -343,6 +359,17 @@ class AttentionModule(torch.nn.Module):
                 warnings.warn(
                     'Padding mask is disabled when using scaled_dot_product_attention. It can have a significant impact on performance.'
                 )
+            if attn_mask is not None and self.backend == "torch":
+                return self.attn_func(q, k, v, attn_mask=attn_mask)  # type: ignore[call-arg]
+            if attn_mask is not None:
+                raise NotImplementedError(
+                    f"attn_mask is only supported on the 'torch' backend; "
+                    f"got backend='{self.backend}'."
+                )
             return self.attn_func(q, k, v)  # type: ignore[call-arg]
         else:
+            if attn_mask is not None:
+                raise NotImplementedError(
+                    f"attn_mask is not supported on backend='{self.backend}'."
+                )
             return self.attn_func(q, k, v, q_lens, k_lens)  # type: ignore[call-arg]

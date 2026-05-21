@@ -793,12 +793,18 @@ class CausalWanSelfAttention(nn.Module):
         kv_cache: torch.Tensor | None = None,
         current_start_frame: int = 0,
         is_tf: bool = True,
+        attn_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         r"""
         Args:
             x(Tensor): Shape [B, L, num_heads, C / num_heads]
             seq_lens(Tensor): Shape [B]
             freqs(Tensor): Rope freqs, shape [1024, C / num_heads / 2]
+            attn_mask: Optional ``[B, n_heads, Lq, Lk]`` (or broadcastable) bool
+                mask used by the multi-agent / sparse-hub path. When set the
+                self-attention bypasses the block-causal flash code path and
+                does a single masked attention call instead. Defaults to
+                ``None`` to preserve single-agent behaviour.
         """
         b, s, n, d = *x.shape[:2], self.num_heads, self.head_dim
 
@@ -812,6 +818,35 @@ class CausalWanSelfAttention(nn.Module):
         q, k, v = qkv_fn(x)
 
         updated_kv_cache: torch.Tensor | None = None
+
+        if attn_mask is not None:
+            # Multi-agent sparse-hub-attention path. The mask already encodes
+            # the desired token-routing topology (same-agent OR hub-mediated)
+            # composed with any block-causal logic the caller wanted.
+            assert kv_cache is None, (
+                "attn_mask path does not support KV-cached streaming yet"
+            )
+            assert action_register_length is None, (
+                "attn_mask path does not yet plumb action/state registers"
+            )
+            roped_query = rope_action_apply(
+                x=q,
+                freqs=freqs,
+                freqs_action=freqs_action,
+                freqs_state=freqs_state,
+                action_register_length=None,
+            ).type_as(v)
+            roped_key = rope_action_apply(
+                x=k,
+                freqs=freqs,
+                freqs_action=freqs_action,
+                freqs_state=freqs_state,
+                action_register_length=None,
+            ).type_as(v)
+            x = self.attn(roped_query, roped_key, v, attn_mask=attn_mask)
+            x = x.flatten(2)
+            x = self.o(x)
+            return x, None
 
         if kv_cache is None:
             if is_tf:
@@ -1161,12 +1196,17 @@ class CausalWanAttentionBlock(nn.Module):
         crossattn_cache: torch.Tensor | None = None,
         current_start_frame: int = 0,
         is_tf: bool = True,
+        attn_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         r"""
         Args:
             x(Tensor): Shape [B, L, C]
             e(Tensor): Shape [B, F, 6, C]
             freqs(Tensor): Rope freqs, shape [1024, C / num_heads / 2]
+            attn_mask: Optional self-attention mask threaded through to
+                :class:`CausalWanSelfAttention`. Used by the multi-agent
+                sparse-hub-attention path; defaults to ``None`` so that
+                single-agent behaviour is unchanged.
         """
         e = (self.modulation.unsqueeze(1) + e).chunk(6, dim=2)
 
@@ -1194,6 +1234,7 @@ class CausalWanAttentionBlock(nn.Module):
             kv_cache=kv_cache,
             is_tf=is_tf,
             current_start_frame=current_start_frame,
+            attn_mask=attn_mask,
         )
         x = x + (y * e[2].squeeze(2))
 
@@ -1294,7 +1335,9 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                  num_agents=1,
                  simplex_pool_size=4,
                  agent_dim=16,
-                 simplex_alpha=1.0):
+                 simplex_alpha=1.0,
+                 num_hub_tokens=8,
+                 use_sparse_hub_attention=True):
         r"""
         Initialize the diffusion model backbone.
 
@@ -1369,6 +1412,8 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         self.simplex_pool_size = simplex_pool_size
         self.agent_dim = agent_dim
         self.simplex_alpha = simplex_alpha
+        self.num_hub_tokens = num_hub_tokens
+        self.use_sparse_hub_attention = use_sparse_hub_attention
 
         max_num_embodiments = 1
 
@@ -1446,8 +1491,18 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                 # default; no-polar when ENABLE_TENSORRT is set.
                 polar_output=not ENABLE_TENSORRT,
             )
+            # Learnable hub tokens shared across all batches and broadcast
+            # over latent frames. K=num_hub_tokens per frame, following
+            # Gamma-World §3.3 / Appendix D (default K=8).
+            if use_sparse_hub_attention and num_hub_tokens > 0:
+                self.hub_tokens = nn.Parameter(
+                    torch.randn(num_hub_tokens, dim) * 0.02
+                )
+            else:
+                self.hub_tokens = None
         else:
             self.simplex_rope = None
+            self.hub_tokens = None
 
         # initialize weights
         self.init_weights()
@@ -2199,16 +2254,29 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         agent_perm=None,
         **_unused,
     ):
-        r"""Multi-agent training forward (PR 3a: video-only, dense attention).
+        r"""Multi-agent training forward with optional Sparse Hub Attention.
 
         Threads an explicit agent axis ``P`` through patchify, builds
         simplex 4D RoPE freqs over the ``(P, F, H, W)`` token grid, and
         runs the existing transformer blocks over the sequence-concatenated
-        tokens ``[agent_0, agent_1, ..., agent_{P-1}]``.
+        tokens ``[agent_0, agent_1, ..., agent_{P-1}, hub_tokens]``.
 
-        This branch is intentionally minimal:
+        When ``use_sparse_hub_attention`` is on (default) and
+        ``num_hub_tokens > 0``, an extra block of ``F_g * K_hub`` learnable
+        hub tokens is appended to the sequence and a hub-mediated attention
+        mask is built so that:
+
+          * agent tokens attend only to their own stream and to hub tokens;
+          * hub tokens attend to all agents and to other hub tokens.
+
+        Direct attention between distinct agent streams is masked out,
+        matching Gamma-World §3.3.
+
+        Limitations of this branch:
           * Action / state conditioning is not supported yet (PR 5).
-          * Cross-agent attention is dense; sparse hub routing is PR 4.
+          * The block-causal mask is NOT composed in this branch yet (the
+            attention is dense within the hub topology); composing the two
+            is straightforward and will land alongside the action plumbing.
           * The inference / serving path (:meth:`_forward_inference`) is
             unaffected.
 
@@ -2217,7 +2285,8 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             timestep: ``[B, F]`` -- per-frame diffusion timestep, shared
                 across agents.
             context: ``[B, text_len, text_dim]`` -- shared language tokens.
-            seq_len: ``P * F_grid * H_grid * W_grid``.
+            seq_len: ``P * F_grid * H_grid * W_grid`` -- token count *before*
+                hub tokens are added.
             agent_perm: Optional ``LongTensor[P]`` assigning runtime agents
                 to simplex vertices. Defaults to identity.
 
@@ -2250,29 +2319,92 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             f"seq_len mismatch: expected P*F*H*W={P * L_per_agent}, got seq_len={seq_len}"
         )
 
-        # Simplex 4D RoPE freqs over the (P, F, H, W) grid.
-        freqs = self.simplex_rope(
+        # Decide whether the Sparse-Hub branch is active. Hub tokens are
+        # only appended when the model was built with them.
+        use_hub = self.hub_tokens is not None
+        K_hub = self.num_hub_tokens if use_hub else 0
+        hub_token_count = F_g * K_hub
+
+        # Simplex 4D RoPE freqs over the (P, F, H, W) grid, optionally
+        # followed by hub-token freqs (per-frame temporal phase, identity
+        # elsewhere) appended along the sequence axis.
+        agent_freqs = self.simplex_rope(
             f=F_g, p=P, h=H_g, w=W_g, agent_perm=agent_perm,
         )
+        if use_hub:
+            hub_freqs = self.simplex_rope.hub_freqs(f=F_g, k_hub=K_hub)
+            # ``rope_apply_polar_op`` consumes a complex tensor; the
+            # ``rope_apply_no_polar_op`` path uses real stacked cos/sin in
+            # two contiguous halves. Concatenate appropriately.
+            if self.simplex_rope.polar_output:
+                freqs = torch.cat([agent_freqs, hub_freqs], dim=0)
+            else:
+                # Real form: split each tensor into its cos/sin halves and
+                # stitch cos blocks together first, then sin blocks.
+                Na = (P * F_g * H_g * W_g)
+                Nh = hub_token_count
+                agent_cos, agent_sin = agent_freqs[:Na], agent_freqs[Na:]
+                hub_cos, hub_sin = hub_freqs[:Nh], hub_freqs[Nh:]
+                freqs = torch.cat([agent_cos, hub_cos, agent_sin, hub_sin], dim=0)
+        else:
+            freqs = agent_freqs
 
         # Time embeddings (shared across agents). Each frame's timestep is
         # broadcast over all spatial tokens AND over all P agents.
         timestep = timestep.unsqueeze(-1).expand(B, F_lat, L_per_agent // F_lat)
         # ``timestep`` now has F_lat * (H_g*W_g) entries per sample; we need
-        # ``seq_len`` entries total (one per token in the sequence). Repeat
-        # the per-frame timeline P times so each agent inherits the same
-        # shared schedule.
-        timestep = timestep.reshape(B, L_per_agent).repeat(1, P)
+        # one entry per token in the sequence. Repeat the per-frame timeline
+        # P times for agents, then add per-frame entries for hub tokens.
+        agent_time = timestep.reshape(B, L_per_agent).repeat(1, P)
+        if use_hub:
+            # Hub tokens inherit their frame's timestep, repeated K times.
+            base_t = timestep.reshape(B, L_per_agent)[:, : H_g * W_g]  # placeholder
+            # Construct per-frame timestep then expand to (F_g, K_hub):
+            ts_per_frame = (
+                timestep.reshape(B, F_lat, H_g * W_g)[:, :, 0]
+            )  # [B, F_lat]
+            hub_time = ts_per_frame.unsqueeze(-1).expand(B, F_lat, K_hub).reshape(
+                B, hub_token_count
+            )
+            full_time = torch.cat([agent_time, hub_time], dim=1)
+        else:
+            full_time = agent_time
         e = self.time_embedding(
-            sinusoidal_embedding_1d(self.freq_dim, timestep.flatten()).type_as(x)
+            sinusoidal_embedding_1d(self.freq_dim, full_time.flatten()).type_as(x)
         )
         e = e.unflatten(dim=0, sizes=(B, -1))
         e0 = self.time_projection(e)
         e0 = e0.unflatten(dim=2, sizes=(6, self.dim))
 
+        # Append hub tokens to the sequence in agent-major layout:
+        # ``[agent_0, agent_1, ..., hub_tokens]``.
+        if use_hub:
+            hub = self.hub_tokens.to(dtype=x.dtype, device=x.device)
+            hub = hub.unsqueeze(0).unsqueeze(0)  # [1, 1, K, dim]
+            hub = hub.expand(B, F_g, K_hub, dim).reshape(B, hub_token_count, dim)
+            x = torch.cat([x, hub], dim=1)
+
         # Text context (shared).
         assert context.shape[1] == self.text_len
         context = self.text_embedding(context)
+
+        # Hub-mediated attention mask. ``agent_id`` indexes each token; hub
+        # tokens get a sentinel value distinct from every agent. The mask
+        # is True (= attend) iff the two tokens are in the same agent stream
+        # or at least one of them is a hub token.
+        if use_hub:
+            agent_ids = torch.arange(P, device=x.device).repeat_interleave(L_per_agent)
+            hub_ids = torch.full(
+                (hub_token_count,), fill_value=P, device=x.device, dtype=torch.long,
+            )
+            token_agent = torch.cat([agent_ids, hub_ids], dim=0)
+            is_hub = token_agent == P
+            same_agent = token_agent.unsqueeze(1) == token_agent.unsqueeze(0)
+            mask_2d = same_agent | is_hub.unsqueeze(1) | is_hub.unsqueeze(0)
+            # Broadcast to [B, 1, Lq, Lk] for sdpa.
+            attn_mask = mask_2d.unsqueeze(0).unsqueeze(0)
+        else:
+            attn_mask = None
 
         kwargs = dict(
             e=e0,
@@ -2282,6 +2414,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             action_register_length=None,
             context=context,
             is_tf=False,
+            attn_mask=attn_mask,
         )
 
         for block in self.blocks:
@@ -2296,6 +2429,11 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             else:
                 x, updated_kv_cache = block(x, **kwargs)
                 assert updated_kv_cache is None
+
+        # Strip hub tokens; they are internal communication state only.
+        if use_hub:
+            x = x[:, : P * L_per_agent]
+            e = e[:, : P * L_per_agent]
 
         # Split tokens back into per-agent blocks: [B, P*L, dim] -> [B, P, L, dim]
         x = x.reshape(B, P, L_per_agent, dim)

@@ -299,6 +299,73 @@ class SimplexRotaryPositionEmbedding4D(nn.Module):
             return torch.complex(freqs_cos, freqs_sin)
         return torch.cat([freqs_cos, freqs_sin], dim=0)
 
+    def hub_freqs(self, f: int, k_hub: int) -> torch.Tensor:
+        """Build RoPE freqs for ``f * k_hub`` hub tokens (Gamma-World §3.3).
+
+        Hub tokens share the temporal phase of their associated frame and
+        use identity rotation on the agent, height and width bands -- this
+        keeps them temporally aligned while remaining neutral to agent
+        identity and spatial position. The output layout is C-order
+        ``(F, K)``: per frame, ``K`` hub tokens.
+
+        Args:
+            f: Number of latent frames.
+            k_hub: Number of hub tokens per frame.
+
+        Returns:
+            Same layout as :meth:`forward` (real-stacked or complex,
+            depending on ``polar_output``), with sequence length ``f*k_hub``.
+        """
+        d_t_full_half = self.d_t_full // 2
+        agent_half = self.agent_dim // 2
+        d_h_half = self.d_h // 2
+        d_w_half = self.d_w // 2
+
+        # Temporal slots: same as the agent path's high-frequency block,
+        # then the agent-band slots are pinned to identity (cos=1, sin=0).
+        t_cos = self.t_cos[:f]  # [F, d_t_full/2]
+        t_sin = self.t_sin[:f]
+        device = t_cos.device
+        ident_cos = torch.ones(f, agent_half, device=device, dtype=t_cos.dtype)
+        ident_sin = torch.zeros(f, agent_half, device=device, dtype=t_sin.dtype)
+
+        # Splice: keep the upper d_t_active/2 temporal slots, replace the
+        # lower agent_dim/2 slots with identity rotation.
+        upper_cos = t_cos[:, : self.d_t_active // 2]
+        upper_sin = t_sin[:, : self.d_t_active // 2]
+        tp_cos = torch.cat([upper_cos, ident_cos], dim=-1)  # [F, d_t_full/2]
+        tp_sin = torch.cat([upper_sin, ident_sin], dim=-1)
+
+        # Spatial bands: identity rotation everywhere (hub tokens have no
+        # spatial position).
+        h_cos = torch.ones(d_h_half, device=device, dtype=t_cos.dtype)
+        h_sin = torch.zeros(d_h_half, device=device, dtype=t_sin.dtype)
+        w_cos = torch.ones(d_w_half, device=device, dtype=t_cos.dtype)
+        w_sin = torch.zeros(d_w_half, device=device, dtype=t_sin.dtype)
+
+        # Per-frame row: [t_band (d_t_full/2) | h_id (d_h/2) | w_id (d_w/2)].
+        # Broadcast over k_hub copies per frame and over the head_dim/2 cat.
+        per_frame_cos = torch.cat(
+            [tp_cos, h_cos.expand(f, d_h_half), w_cos.expand(f, d_w_half)], dim=-1
+        )  # [F, head_dim/2]
+        per_frame_sin = torch.cat(
+            [tp_sin, h_sin.expand(f, d_h_half), w_sin.expand(f, d_w_half)], dim=-1
+        )
+
+        freqs_cos = (
+            per_frame_cos.unsqueeze(1).expand(f, k_hub, -1).reshape(f * k_hub, 1, -1)
+        )
+        freqs_sin = (
+            per_frame_sin.unsqueeze(1).expand(f, k_hub, -1).reshape(f * k_hub, 1, -1)
+        )
+
+        if self.polar_output:
+            if freqs_cos.dtype == torch.bfloat16:
+                freqs_cos = freqs_cos.float()
+                freqs_sin = freqs_sin.float()
+            return torch.complex(freqs_cos, freqs_sin)
+        return torch.cat([freqs_cos, freqs_sin], dim=0)
+
     def post_initialize(self):
         """Move precomputed buffers to CUDA, matching the existing RoPE API."""
         device = torch.device("cuda")
