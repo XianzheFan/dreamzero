@@ -159,15 +159,16 @@ def test_inference_writes_kv_cache(cuda_available):
         )
 
 
-def test_inference_rejects_populated_cache(cuda_available):
-    """PR 6b doesn't yet support reading a populated cache (PR 6c).
-    Passing one in should raise NotImplementedError."""
+def test_inference_rejects_action_during_streaming(cuda_available):
+    """PR 6c streams video-only; action register tokens in a populated
+    cache are PR 6d. Passing both should raise NotImplementedError."""
     torch.manual_seed(0)
     model = _make_model(num_agents=2)
     inputs = _make_inputs()
     num_layers = len(model.blocks)
 
-    # First call to populate the cache.
+    # First call to populate the cache (action is fine on the first
+    # call -- the rejection only kicks in when the cache is reused).
     with torch.no_grad():
         _, _, populated_cache = model(
             **inputs,
@@ -176,7 +177,7 @@ def test_inference_rejects_populated_cache(cuda_available):
             current_start_frame=0,
         )
 
-    # Second call with the populated cache should refuse.
+    # Second call with the populated cache *and* action should refuse.
     import pytest
     with pytest.raises(NotImplementedError, match="streaming"):
         with torch.no_grad():
@@ -184,8 +185,85 @@ def test_inference_rejects_populated_cache(cuda_available):
                 **inputs,
                 kv_cache=populated_cache,
                 crossattn_cache=[None] * num_layers,
-                current_start_frame=0,
+                current_start_frame=inputs["x"].shape[3],
             )
+
+
+def _make_inputs_no_action(
+    B=1, P=2, F_lat=2, H=4, W=4, device="cuda",
+):
+    seq_len = P * F_lat * (H // 2) * (W // 2)
+    return dict(
+        x=torch.randn(B, P, 8, F_lat, H, W, device=device, dtype=torch.bfloat16),
+        timestep=torch.randint(0, 1000, (B, F_lat), device=device).float(),
+        context=torch.randn(B, 8, 32, device=device, dtype=torch.bfloat16),
+        seq_len=seq_len,
+    )
+
+
+def test_streaming_two_call_grows_cache(cuda_available):
+    """PR 6c cross-chunk streaming: warm-up call + streaming call.
+
+    Verifies:
+      * second call accepts the populated cache and runs;
+      * each layer's cache grows by exactly the per-call token count;
+      * the session-tracked cached_token_agent_id grows symmetrically;
+      * a third call with current_start_frame=0 resets the session
+        state.
+    """
+    torch.manual_seed(0)
+    model = _make_model(num_agents=2)
+    inputs_warm = _make_inputs_no_action()
+    num_layers = len(model.blocks)
+
+    F_warm = inputs_warm["x"].shape[3]
+    B, P, _, _, H, W = inputs_warm["x"].shape
+    F_g, H_g, W_g = F_warm, H // 2, W // 2
+    K_hub = model.num_hub_tokens
+    expected_call_len = P * F_g * H_g * W_g + F_g * K_hub  # no register
+
+    with torch.no_grad():
+        # Warm-up call. action=None means no register tokens.
+        _, _, cache_after_warm = model(
+            **inputs_warm,
+            kv_cache=[None] * num_layers,
+            crossattn_cache=[None] * num_layers,
+            current_start_frame=0,
+        )
+    assert cache_after_warm[0].shape[2] == expected_call_len
+    assert model._cached_token_agent_id is not None
+    assert model._cached_token_agent_id.shape == (expected_call_len,)
+
+    # Streaming call. New chunk's frames sit after the warm-up frames.
+    inputs_stream = _make_inputs_no_action()
+    with torch.no_grad():
+        video, action_pred, cache_after_stream = model(
+            **inputs_stream,
+            kv_cache=cache_after_warm,
+            crossattn_cache=[None] * num_layers,
+            current_start_frame=F_warm,
+        )
+
+    assert video.shape == inputs_stream["x"].shape[:2] + (8,) + inputs_stream["x"].shape[3:]
+    assert action_pred is None  # no action in streaming yet (PR 6d)
+    # Cache should now hold warm + stream tokens.
+    expected_total_len = 2 * expected_call_len
+    assert cache_after_stream[0].shape[2] == expected_total_len, (
+        f"layer 0 cache len {cache_after_stream[0].shape[2]} != "
+        f"expected {expected_total_len}"
+    )
+    assert model._cached_token_agent_id.shape == (expected_total_len,)
+
+    # Reset on current_start_frame == 0.
+    inputs_reset = _make_inputs_no_action()
+    with torch.no_grad():
+        _, _, _ = model(
+            **inputs_reset,
+            kv_cache=[None] * num_layers,
+            crossattn_cache=[None] * num_layers,
+            current_start_frame=0,
+        )
+    assert model._cached_token_agent_id.shape == (expected_call_len,)
 
 
 def test_inference_matches_training_when_stateless(cuda_available):

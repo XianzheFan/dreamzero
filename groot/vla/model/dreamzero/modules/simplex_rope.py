@@ -181,6 +181,7 @@ class SimplexRotaryPositionEmbedding4D(nn.Module):
         h: int,
         w: int,
         agent_perm: torch.Tensor | None = None,
+        start_frame: int = 0,
     ) -> torch.Tensor:
         """Build the freqs tensor for a ``(P, F, H, W)`` token grid.
 
@@ -198,6 +199,9 @@ class SimplexRotaryPositionEmbedding4D(nn.Module):
             agent_perm: Optional ``LongTensor[p]`` mapping each runtime agent
                 slot to a simplex vertex index (``0 <= v < simplex_pool_size``).
                 Defaults to the identity permutation ``[0, 1, ..., p-1]``.
+            start_frame: Temporal index of the first frame in this call.
+                Used for multi-call streaming inference so the new chunk's
+                temporal RoPE positions continue the cached sequence.
 
         Returns:
             If ``polar_output`` is ``False`` (default): a
@@ -234,9 +238,10 @@ class SimplexRotaryPositionEmbedding4D(nn.Module):
         d_t_full_half = self.d_t_full // 2
         d_t_active_half = self.d_t_active // 2
 
-        # Temporal slots: shape [F, d_t_full/2]
-        t_cos = self.t_cos[:f]
-        t_sin = self.t_sin[:f]
+        # Temporal slots: shape [F, d_t_full/2], offset by ``start_frame``
+        # so streaming inference can continue a cached sequence.
+        t_cos = self.t_cos[start_frame : start_frame + f]
+        t_sin = self.t_sin[start_frame : start_frame + f]
         # Simplex slots for the active agents: shape [P, agent_dim/2]
         p_cos = self.simplex_cos[agent_perm]
         p_sin = self.simplex_sin[agent_perm]
@@ -299,7 +304,7 @@ class SimplexRotaryPositionEmbedding4D(nn.Module):
             return torch.complex(freqs_cos, freqs_sin)
         return torch.cat([freqs_cos, freqs_sin], dim=0)
 
-    def hub_freqs(self, f: int, k_hub: int) -> torch.Tensor:
+    def hub_freqs(self, f: int, k_hub: int, start_frame: int = 0) -> torch.Tensor:
         """Build RoPE freqs for ``f * k_hub`` hub tokens (Gamma-World §3.3).
 
         Hub tokens share the temporal phase of their associated frame and
@@ -311,6 +316,8 @@ class SimplexRotaryPositionEmbedding4D(nn.Module):
         Args:
             f: Number of latent frames.
             k_hub: Number of hub tokens per frame.
+            start_frame: Temporal index of the first frame in this call
+                (matches :meth:`forward`).
 
         Returns:
             Same layout as :meth:`forward` (real-stacked or complex,
@@ -323,8 +330,8 @@ class SimplexRotaryPositionEmbedding4D(nn.Module):
 
         # Temporal slots: same as the agent path's high-frequency block,
         # then the agent-band slots are pinned to identity (cos=1, sin=0).
-        t_cos = self.t_cos[:f]  # [F, d_t_full/2]
-        t_sin = self.t_sin[:f]
+        t_cos = self.t_cos[start_frame : start_frame + f]  # [F, d_t_full/2]
+        t_sin = self.t_sin[start_frame : start_frame + f]
         device = t_cos.device
         ident_cos = torch.ones(f, agent_half, device=device, dtype=t_cos.dtype)
         ident_sin = torch.zeros(f, agent_half, device=device, dtype=t_sin.dtype)

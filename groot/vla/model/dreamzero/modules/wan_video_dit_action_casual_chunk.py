@@ -841,21 +841,19 @@ class CausalWanSelfAttention(nn.Module):
                 action_register_length=None,
             ).type_as(v)
             if kv_cache is not None:
-                # PR 6b: single-call cache *write*. The cache is populated
-                # with this call's rotated K and raw V so a future call
-                # (PR 6c) can concat them with new tokens. Reading the
-                # cached K/V for cross-chunk streaming (Lq=L_new,
-                # Lk=L_cached+L_new) lands in PR 6c, which also handles
-                # the attn_mask reshape and the temporal-freq offset.
-                if kv_cache.numel() != 0:
-                    raise NotImplementedError(
-                        "Multi-call streaming (kv_cache already populated) "
-                        "is not supported in PR 6b. Pass an empty cache "
-                        "(torch.empty(2, B, 0, n, d)) for the first call; "
-                        "PR 6c will add cross-chunk reads."
-                    )
-                updated_kv_cache = torch.stack([roped_key, v], dim=0)
-            x = self.attn(roped_query, roped_key, v, attn_mask=attn_mask)
+                # PR 6b empty cache -> just write; PR 6c populated cache
+                # -> concat cached K/V with new and attend over the full
+                # range. ``attn_mask`` is shaped [Lq_new, Lk_cached+Lk_new]
+                # by the caller in the streaming case.
+                cached_k = kv_cache[0]
+                cached_v = kv_cache[1]
+                full_k = torch.cat([cached_k, roped_key], dim=1)
+                full_v = torch.cat([cached_v, v], dim=1)
+                updated_kv_cache = torch.stack([full_k, full_v], dim=0)
+            else:
+                full_k = roped_key
+                full_v = v
+            x = self.attn(roped_query, full_k, full_v, attn_mask=attn_mask)
             x = x.flatten(2)
             x = self.o(x)
             return x, updated_kv_cache
@@ -1515,6 +1513,12 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         else:
             self.simplex_rope = None
             self.hub_tokens = None
+
+        # Multi-agent streaming inference session state (PR 6c). Reset on
+        # every call with ``current_start_frame == 0``. Stored as a CPU
+        # LongTensor of token agent_ids matching the cumulative
+        # ``[video, register, hub]`` layout passed through the layers.
+        self._cached_token_agent_id: torch.Tensor | None = None
 
         # initialize weights
         self.init_weights()
@@ -2274,7 +2278,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         :meth:`_forward_multi_agent_body` (which is the real implementation
         and also serves inference). Returns ``(video_pred, action_pred)``.
         """
-        video_pred, action_pred, _ = self._forward_multi_agent_body(
+        video_pred, action_pred, _, _ = self._forward_multi_agent_body(
             x=x,
             timestep=timestep,
             context=context,
@@ -2300,6 +2304,8 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         state=None,
         embodiment_id=None,
         kv_cache=None,
+        start_frame: int = 0,
+        cached_token_agent_id: torch.Tensor | None = None,
     ):
         r"""Multi-agent forward body shared by training and inference.
 
@@ -2506,6 +2512,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         # stacked) path is used only when ENABLE_TENSORRT is set.
         agent_freqs = self.simplex_rope(
             f=F_g, p=P, h=H_g, w=W_g, agent_perm=agent_perm,
+            start_frame=start_frame,
         )
         polar = self.simplex_rope.polar_output
 
@@ -2533,7 +2540,10 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             register_freqs = None
 
         hub_freqs = (
-            self.simplex_rope.hub_freqs(f=F_g, k_hub=K_hub) if use_hub else None
+            self.simplex_rope.hub_freqs(
+                f=F_g, k_hub=K_hub, start_frame=start_frame,
+            )
+            if use_hub else None
         )
 
         if polar:
@@ -2624,24 +2634,40 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         # Hub-mediated attention mask. ``agent_id`` indexes each token;
         # hub tokens get a sentinel value distinct from every agent. The
         # mask is True (= attend) iff the two tokens are in the same
-        # agent stream or at least one of them is a hub token.
-        # Register tokens inherit their agent's id so per-agent register
-        # tokens attend to their own video tokens and through hubs to
-        # other agents.
-        if use_hub or register_token_count > 0:
-            video_ids = torch.arange(P, device=x.device).repeat_interleave(L_per_agent)
-            register_ids = (
-                torch.arange(P, device=x.device).repeat_interleave(R_per_agent)
-                if register_token_count > 0
-                else torch.empty(0, dtype=torch.long, device=x.device)
+        # agent stream or at least one of them is a hub token. Register
+        # tokens inherit their agent's id so per-agent register tokens
+        # attend to their own video tokens and through hubs to other
+        # agents.
+        #
+        # When ``cached_token_agent_id`` is provided (PR 6c streaming),
+        # the mask becomes rectangular: ``[L_new, L_cached + L_new]``.
+        # Queries are the NEW tokens, keys are the cached PAST tokens
+        # concatenated with the new tokens (the per-block self-attention
+        # builds full K/V via ``cat([cached, new], dim=1)``).
+        video_ids = torch.arange(P, device=x.device).repeat_interleave(L_per_agent)
+        register_ids = (
+            torch.arange(P, device=x.device).repeat_interleave(R_per_agent)
+            if register_token_count > 0
+            else torch.empty(0, dtype=torch.long, device=x.device)
+        )
+        hub_ids = torch.full(
+            (hub_token_count,), fill_value=P, device=x.device, dtype=torch.long,
+        )
+        new_token_agent_id = torch.cat([video_ids, register_ids, hub_ids], dim=0)
+
+        if use_hub or register_token_count > 0 or cached_token_agent_id is not None:
+            if cached_token_agent_id is not None:
+                key_agent = torch.cat(
+                    [cached_token_agent_id.to(x.device), new_token_agent_id], dim=0
+                )
+            else:
+                key_agent = new_token_agent_id
+            q_is_hub = (new_token_agent_id == P).unsqueeze(1)
+            k_is_hub = (key_agent == P).unsqueeze(0)
+            same_agent = (
+                new_token_agent_id.unsqueeze(1) == key_agent.unsqueeze(0)
             )
-            hub_ids = torch.full(
-                (hub_token_count,), fill_value=P, device=x.device, dtype=torch.long,
-            )
-            token_agent = torch.cat([video_ids, register_ids, hub_ids], dim=0)
-            is_hub = token_agent == P
-            same_agent = token_agent.unsqueeze(1) == token_agent.unsqueeze(0)
-            mask_2d = same_agent | is_hub.unsqueeze(1) | is_hub.unsqueeze(0)
+            mask_2d = same_agent | q_is_hub | k_is_hub
             attn_mask = mask_2d.unsqueeze(0).unsqueeze(0)
         else:
             attn_mask = None
@@ -2727,7 +2753,14 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             B, P, C_out, video_flat.shape[2], video_flat.shape[3], video_flat.shape[4]
         )
 
-        return video_noise_pred, action_noise_pred, updated_kv_caches
+        # Return the per-token agent_id of the *new* tokens so streaming
+        # callers can extend their cached_token_agent_id across calls.
+        return (
+            video_noise_pred,
+            action_noise_pred,
+            updated_kv_caches,
+            new_token_agent_id,
+        )
 
     def _forward_inference_multi_agent(
         self,
@@ -2755,32 +2788,49 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         sim-eval servers expect. The numerics match
         :meth:`_forward_train_multi_agent` exactly (modulo gradients).
 
-        KV cache behaviour (PR 6b):
+        KV cache behaviour (PR 6a + PR 6b + PR 6c):
 
           * ``kv_cache=None``                  -> stateless inference. No
             cache is populated. Backwards compatible with PR 6a.
-          * ``kv_cache=[None, None, ...]``     -> single-call **cache
-            write**. After the call, each entry holds the layer's
-            rotated K and raw V from this chunk so a future call (PR 6c)
-            can read them. Requires ``current_start_frame == 0``.
-          * Any layer's cache slot already populated -> *cross-chunk
-            streaming*, which is PR 6c. ``CausalWanSelfAttention``
-            currently raises ``NotImplementedError`` for that case.
+          * ``kv_cache=[None, None, ...]``     -> session start.
+            Equivalent to fresh empty caches. ``current_start_frame``
+            must be 0 in this case.
+          * ``kv_cache`` contains populated layer slots -> **cross-chunk
+            streaming** (PR 6c). The new tokens' RoPE positions start at
+            ``current_start_frame``. Cross-call ``cached_token_agent_id``
+            is maintained on the model as session state, and is reset
+            whenever ``current_start_frame == 0``.
+
+        Action register tokens are forbidden in streaming mode for now
+        (PR 6d will add them); passing ``action`` along with a populated
+        cache raises ``NotImplementedError``.
 
         Args, returns: see :meth:`_forward_inference` and
         :meth:`_forward_train_multi_agent`.
         """
         del y, clip_feature, crossattn_cache
 
-        # Empty caches (list of all-None slots) become an empty tensor per
-        # layer so blocks know to *write* without reading any past KV.
-        write_cache = kv_cache is not None and all(
-            slot is None for slot in kv_cache
+        cache_present = kv_cache is not None
+        write_cache = cache_present and all(slot is None for slot in kv_cache)
+        streaming = cache_present and not write_cache and any(
+            slot is not None and slot.numel() != 0 for slot in kv_cache
         )
-        if write_cache:
+
+        if streaming and action is not None:
+            raise NotImplementedError(
+                "Action register tokens in cross-chunk streaming are not "
+                "implemented yet (PR 6d). Pass action=None during streaming "
+                "or use stateless inference."
+            )
+
+        # Reset session state on a new rollout (current_start_frame == 0).
+        if current_start_frame == 0:
+            self._cached_token_agent_id = None
+
+        if cache_present and write_cache:
             assert current_start_frame == 0, (
-                "PR 6b single-call cache write requires current_start_frame=0; "
-                f"got {current_start_frame}. Cross-chunk streaming is PR 6c."
+                "Empty cache (kv_cache=[None]*L) requires current_start_frame=0; "
+                f"got {current_start_frame}."
             )
             B = x.shape[0]
             n = self.num_heads
@@ -2789,28 +2839,39 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                 torch.empty(2, B, 0, n, d, device=x.device, dtype=x.dtype)
                 for _ in range(len(self.blocks))
             ]
-        elif kv_cache is not None and any(
-            slot is not None and slot.numel() != 0 for slot in kv_cache
-        ):
-            raise NotImplementedError(
-                "Cross-chunk multi-agent streaming (PR 6c) is not "
-                "implemented yet. Pass kv_cache=None for stateless "
-                "inference or kv_cache=[None]*num_layers for a single-call "
-                "cache write."
-            )
 
-        video_pred, action_pred, updated_kv = self._forward_multi_agent_body(
-            x=x,
-            timestep=timestep,
-            context=context,
-            seq_len=seq_len,
-            agent_perm=agent_perm,
-            action=action,
-            timestep_action=timestep_action,
-            state=state,
-            embodiment_id=embodiment_id,
-            kv_cache=kv_cache,
+        cached_token_agent_id = (
+            self._cached_token_agent_id if streaming else None
         )
+
+        video_pred, action_pred, updated_kv, new_token_agent_id = (
+            self._forward_multi_agent_body(
+                x=x,
+                timestep=timestep,
+                context=context,
+                seq_len=seq_len,
+                agent_perm=agent_perm,
+                action=action,
+                timestep_action=timestep_action,
+                state=state,
+                embodiment_id=embodiment_id,
+                kv_cache=kv_cache,
+                start_frame=current_start_frame,
+                cached_token_agent_id=cached_token_agent_id,
+            )
+        )
+
+        # Extend the session's agent_id tracker so the next call's mask is
+        # right. We store on CPU to keep this off the GPU memory budget;
+        # it's recopied to ``x.device`` inside the body when needed.
+        if cache_present:
+            if cached_token_agent_id is None:
+                self._cached_token_agent_id = new_token_agent_id.detach().cpu()
+            else:
+                self._cached_token_agent_id = torch.cat(
+                    [cached_token_agent_id.cpu(), new_token_agent_id.detach().cpu()],
+                    dim=0,
+                )
         return video_pred, action_pred, updated_kv
 
     def forward(
