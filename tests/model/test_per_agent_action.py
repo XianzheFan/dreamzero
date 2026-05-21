@@ -91,6 +91,8 @@ def _make_inputs(B=1, P=2, T_a=4, D_a=4, F_lat=2, H=4, W=4, device="cuda"):
 
 
 def test_p2_action_forward_runs(cuda_available):
+    """Forward with action returns both per-agent video and per-agent
+    action_noise_pred (PR 5b)."""
     torch.manual_seed(0)
     model = _make_model(num_agents=2)
     inputs = _make_inputs()
@@ -98,13 +100,17 @@ def test_p2_action_forward_runs(cuda_available):
     with torch.no_grad():
         video, action_pred = model(**inputs)
 
-    # PR 5a is video-only; per-agent action prediction lands in PR 5b.
-    assert action_pred is None
     B, P = inputs["x"].shape[:2]
     F_lat = inputs["x"].shape[3]
     H, W = inputs["x"].shape[4:]
+    T_a, D_a = inputs["action"].shape[2:]
     assert video.shape == (B, P, 8, F_lat, H, W)
     assert torch.isfinite(video).all()
+    # PR 5b: action register tokens + action_decoder produce per-agent
+    # action noise predictions matching the input action shape.
+    assert action_pred is not None
+    assert action_pred.shape == (B, P, T_a, D_a)
+    assert torch.isfinite(action_pred).all()
 
 
 def test_action_changes_video_output(cuda_available):

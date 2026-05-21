@@ -2254,6 +2254,8 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         agent_perm=None,
         action=None,
         timestep_action=None,
+        state=None,
+        embodiment_id=None,
         **_unused,
     ):
         r"""Multi-agent training forward with optional Sparse Hub Attention.
@@ -2263,16 +2265,32 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         runs the existing transformer blocks over the sequence-concatenated
         tokens ``[agent_0, agent_1, ..., agent_{P-1}, hub_tokens]``.
 
-        Per-agent action conditioning (PR 5a)
-          When an ``action`` tensor of shape ``[B, P, T_a, D_a]`` is
-          provided, each agent's action stream is encoded by the *shared*
-          ``self.action_encoder`` and the resulting features are pooled
-          over time into a single per-agent bias of shape ``[B, P, dim]``.
-          That bias is added (broadcast across spatial tokens) to the
-          corresponding agent's video tokens *before* the transformer
-          blocks, so action conditioning enters as a Gamma-World style
-          AdaLN bias rather than via separate register tokens. Action
-          register tokens / per-agent action prediction land in PR 5b.
+        Per-agent action / state conditioning (PR 5a + PR 5b)
+          When ``action: [B, P, T_a, D_a]`` is provided, each agent's
+          action stream is encoded by the *shared* ``self.action_encoder``
+          (PR 5a). The pooled features are added as a per-agent AdaLN bias
+          on video tokens *before* the transformer blocks for fast input
+          conditioning. The un-pooled features are also appended to the
+          sequence as per-agent **action register tokens** (PR 5b) so the
+          transformer can attend to specific action substeps at every
+          layer. When ``state: [B, P, T_s, D_s]`` is provided, an
+          analogous per-agent **state register block** is added through
+          ``self.state_encoder``. After the blocks, each agent's action
+          register tokens are decoded through ``self.action_decoder`` to
+          produce ``action_noise_pred: [B, P, T_a, action_dim]`` -- the
+          joint-denoising output of DreamZero, extended per-agent.
+
+          Sequence layout (agent-major):
+
+          ::
+
+              [agent_0_video, agent_1_video, ..., agent_{P-1}_video,
+               agent_0_register, agent_1_register, ..., agent_{P-1}_register,
+               hub_tokens]
+
+          where each agent's register block is ``[action_features(T_a),
+          state_features(T_s)]`` of length ``R_per_agent``. Hub mask is
+          extended so register tokens inherit their agent's id.
 
         Sparse Hub Attention
           When ``use_sparse_hub_attention`` is on (default) and
@@ -2287,8 +2305,8 @@ class CausalWanModel(ModelMixin, ConfigMixin):
           (Gamma-World §3.3).
 
         Limitations of this branch:
-          * No action / state register tokens, no action prediction output
-            yet (PR 5b).
+          * Polar (default) RoPE only. ENABLE_TENSORRT (no-polar) for
+            multi-agent register tokens is not wired up yet.
           * The block-causal mask is NOT composed with the hub mask in
             this branch yet (the attention is dense within the hub
             topology).
@@ -2300,16 +2318,22 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             timestep: ``[B, F]`` -- per-frame diffusion timestep, shared
                 across agents.
             context: ``[B, text_len, text_dim]`` -- shared language tokens.
-            seq_len: ``P * F_grid * H_grid * W_grid`` -- token count *before*
-                hub tokens are added.
+            seq_len: ``P * F_grid * H_grid * W_grid`` -- video token count
+                only (register and hub tokens are added internally).
             agent_perm: Optional ``LongTensor[P]`` assigning runtime agents
                 to simplex vertices. Defaults to identity.
             action: Optional ``[B, P, T_a, D_a]`` per-agent action stream.
             timestep_action: Optional ``[B, T_a]`` action-timeline timestep
                 shared across agents.
+            state: Optional ``[B, P, T_s, D_s]`` per-agent proprio state.
+            embodiment_id: Optional ``[B]`` long tensor; broadcast to all
+                agents. Defaults to zeros (single embodiment).
 
         Returns:
-            ``[B, P, C_out, F, H, W]`` video noise prediction.
+            ``(video_noise_pred, action_noise_pred)`` where
+            ``video_noise_pred: [B, P, C_out, F, H, W]`` and
+            ``action_noise_pred: [B, P, T_a, action_dim]`` (the latter is
+            ``None`` when ``action`` is not provided).
         """
         assert x.ndim == 6, (
             f"multi-agent forward expects x of shape [B, P, C, F, H, W]; "
@@ -2337,12 +2361,28 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             f"seq_len mismatch: expected P*F*H*W={P * L_per_agent}, got seq_len={seq_len}"
         )
 
-        # Per-agent action conditioning (PR 5a). We feed each agent's
-        # action stream through the shared action encoder by collapsing the
-        # agent axis into the batch dim, encode, pool over T_a into a
-        # single bias of shape [B, P, dim], and broadcast-add it to that
-        # agent's video tokens. action_register tokens / per-agent action
-        # prediction land in PR 5b.
+        # Per-agent action / state conditioning (PR 5a bias + PR 5b
+        # register tokens). The action encoder is run once and its output
+        # is consumed two ways:
+        #   - mean-pool over T_a -> per-agent AdaLN bias on video tokens
+        #     (PR 5a, fast input conditioning);
+        #   - keep the un-pooled features as register tokens appended to
+        #     the sequence (PR 5b, per-layer attention conditioning,
+        #     decoded back into action_noise_pred at the end).
+        action_features = None  # [B, P, T_a, dim] when action is provided
+        state_features = None   # [B, P, T_s, dim] when state is provided
+        T_a = 0
+        T_s = 0
+        if embodiment_id is None:
+            eid_per_agent = torch.zeros(B * P, dtype=torch.long, device=x.device)
+        else:
+            assert embodiment_id.dim() == 1 and embodiment_id.shape[0] == B, (
+                f"embodiment_id must be [B]; got {tuple(embodiment_id.shape)}"
+            )
+            eid_per_agent = (
+                embodiment_id.unsqueeze(1).expand(B, P).reshape(B * P).to(torch.long)
+            )
+
         if action is not None:
             assert action.dim() == 4 and action.shape[1] == P, (
                 f"multi-agent action must be [B, P, T_a, D_a]; got {tuple(action.shape)}"
@@ -2363,16 +2403,48 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                 .reshape(B * P, T_a)
                 .to(dtype=torch.float32)
             )
-            eid_flat = torch.zeros(B * P, dtype=torch.long, device=x.device)
-            action_features = self.action_encoder(
-                action_flat, ts_flat, eid_flat
+            af_flat = self.action_encoder(
+                action_flat, ts_flat, eid_per_agent
             )  # [B*P, T_a, dim]
-            action_bias = action_features.mean(dim=1).to(dtype=x.dtype)  # [B*P, dim]
+            action_features = af_flat.reshape(B, P, T_a, dim)
+            # PR 5a AdaLN bias on video tokens.
+            action_bias = af_flat.mean(dim=1).to(dtype=x.dtype)  # [B*P, dim]
             action_bias = action_bias.reshape(B, P, dim)
-            # Broadcast over L_per_agent and add to each agent's slice.
             x = x.reshape(B, P, L_per_agent, dim)
             x = x + action_bias.unsqueeze(2)
             x = x.reshape(B, P * L_per_agent, dim)
+
+        if state is not None:
+            assert state.dim() == 4 and state.shape[1] == P, (
+                f"multi-agent state must be [B, P, T_s, D_s]; got {tuple(state.shape)}"
+            )
+            B_s, _, T_s, D_s = state.shape
+            assert B_s == B
+            state_flat = state.reshape(B * P, T_s, D_s).to(dtype=x.dtype)
+            sf_flat = self.state_encoder(
+                state_flat, eid_per_agent
+            )  # [B*P, T_s, dim]
+            state_features = sf_flat.reshape(B, P, T_s, dim)
+
+        # Per-agent register block: action features first, then state
+        # features, packed contiguously per agent in agent-major order.
+        register_features_per_agent = []
+        if action_features is not None:
+            register_features_per_agent.append(action_features)
+        if state_features is not None:
+            register_features_per_agent.append(state_features)
+
+        if register_features_per_agent:
+            # [B, P, R_per_agent, dim]
+            register = torch.cat(register_features_per_agent, dim=2)
+            R_per_agent = register.shape[2]
+            register_token_count = P * R_per_agent
+            # Reshape to agent-major: [B, P*R_per_agent, dim].
+            register_seq = register.reshape(B, register_token_count, dim)
+        else:
+            R_per_agent = 0
+            register_token_count = 0
+            register_seq = None
 
         # Decide whether the Sparse-Hub branch is active. Hub tokens are
         # only appended when the model was built with them.
@@ -2380,50 +2452,110 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         K_hub = self.num_hub_tokens if use_hub else 0
         hub_token_count = F_g * K_hub
 
-        # Simplex 4D RoPE freqs over the (P, F, H, W) grid, optionally
-        # followed by hub-token freqs (per-frame temporal phase, identity
-        # elsewhere) appended along the sequence axis.
+        # Build RoPE freqs in three sections:
+        #   1. Video (simplex 4D over (P, F, H, W));
+        #   2. Per-agent register block (freqs_action then freqs_state,
+        #      repeated P times so each agent's register block sees the
+        #      same temporal schedule);
+        #   3. Hub (per-frame temporal phase, identity on agent + spatial).
+        # The polar (complex) layout matches rope_apply_polar_op and is
+        # the default for non-TRT inference; the no-polar (real cos/sin
+        # stacked) path is used only when ENABLE_TENSORRT is set.
         agent_freqs = self.simplex_rope(
             f=F_g, p=P, h=H_g, w=W_g, agent_perm=agent_perm,
         )
-        if use_hub:
-            hub_freqs = self.simplex_rope.hub_freqs(f=F_g, k_hub=K_hub)
-            # ``rope_apply_polar_op`` consumes a complex tensor; the
-            # ``rope_apply_no_polar_op`` path uses real stacked cos/sin in
-            # two contiguous halves. Concatenate appropriately.
-            if self.simplex_rope.polar_output:
-                freqs = torch.cat([agent_freqs, hub_freqs], dim=0)
-            else:
-                # Real form: split each tensor into its cos/sin halves and
-                # stitch cos blocks together first, then sin blocks.
-                Na = (P * F_g * H_g * W_g)
-                Nh = hub_token_count
-                agent_cos, agent_sin = agent_freqs[:Na], agent_freqs[Na:]
+        polar = self.simplex_rope.polar_output
+
+        if register_token_count > 0:
+            # ``self.freqs_action`` and ``self.freqs_state`` are stored as
+            # complex tensors from ``rope_params``. They are lazy buffers
+            # (not nn.Parameters) so we move them onto x's device on
+            # demand, matching the convention in ``_create_freqs``.
+            assert polar, (
+                "Multi-agent register tokens currently only support polar "
+                "(complex) RoPE; ENABLE_TENSORRT path is future work."
+            )
+            device = x.device
+            if self.freqs_action.device != device:
+                self.freqs_action = self.freqs_action.to(device)
+            if self.freqs_state.device != device:
+                self.freqs_state = self.freqs_state.to(device)
+            af_freqs = self.freqs_action[:T_a] if T_a else None    # [T_a, hd/2]
+            sf_freqs = self.freqs_state[:T_s] if T_s else None     # [T_s, hd/2]
+            per_agent_chunks = [c for c in (af_freqs, sf_freqs) if c is not None]
+            per_agent_freqs = torch.cat(per_agent_chunks, dim=0)   # [R_per_agent, hd/2]
+            per_agent_freqs = per_agent_freqs.unsqueeze(1)          # [R, 1, hd/2]
+            register_freqs = per_agent_freqs.repeat(P, 1, 1)        # [P*R, 1, hd/2]
+        else:
+            register_freqs = None
+
+        hub_freqs = (
+            self.simplex_rope.hub_freqs(f=F_g, k_hub=K_hub) if use_hub else None
+        )
+
+        if polar:
+            parts = [agent_freqs]
+            if register_freqs is not None:
+                parts.append(register_freqs)
+            if hub_freqs is not None:
+                parts.append(hub_freqs)
+            freqs = torch.cat(parts, dim=0)
+        else:
+            # Real form: each block's freqs are stored as cos|sin halves
+            # in dim 0. Stitch all cos halves first, then all sin halves.
+            assert register_token_count == 0, (
+                "no-polar + register tokens not yet supported"
+            )
+            Na = (P * F_g * H_g * W_g)
+            Nh = hub_token_count
+            agent_cos, agent_sin = agent_freqs[:Na], agent_freqs[Na:]
+            if hub_freqs is not None:
                 hub_cos, hub_sin = hub_freqs[:Nh], hub_freqs[Nh:]
                 freqs = torch.cat([agent_cos, hub_cos, agent_sin, hub_sin], dim=0)
-        else:
-            freqs = agent_freqs
+            else:
+                freqs = agent_freqs
 
         # Time embeddings (shared across agents). Each frame's timestep is
         # broadcast over all spatial tokens AND over all P agents.
         timestep = timestep.unsqueeze(-1).expand(B, F_lat, L_per_agent // F_lat)
-        # ``timestep`` now has F_lat * (H_g*W_g) entries per sample; we need
-        # one entry per token in the sequence. Repeat the per-frame timeline
-        # P times for agents, then add per-frame entries for hub tokens.
         agent_time = timestep.reshape(B, L_per_agent).repeat(1, P)
+
+        # Register token timesteps follow the existing single-agent
+        # convention: action register tokens use ``timestep_action``,
+        # state register tokens use a strided slice ``timestep_action[::stride]``.
+        if register_token_count > 0:
+            assert timestep_action is not None
+            chunks = []
+            if T_a > 0:
+                chunks.append(timestep_action)  # [B, T_a]
+            if T_s > 0:
+                stride = max(T_a // T_s, 1) if T_a > 0 else 1
+                state_ts = timestep_action[:, ::stride][:, :T_s] if T_a > 0 else (
+                    timestep_action[:, :T_s]
+                )
+                chunks.append(state_ts)
+            per_agent_time = torch.cat(chunks, dim=1)  # [B, R_per_agent]
+            register_time = per_agent_time.repeat(1, P)  # [B, P*R_per_agent]
+        else:
+            register_time = None
+
         if use_hub:
-            # Hub tokens inherit their frame's timestep, repeated K times.
-            base_t = timestep.reshape(B, L_per_agent)[:, : H_g * W_g]  # placeholder
-            # Construct per-frame timestep then expand to (F_g, K_hub):
             ts_per_frame = (
                 timestep.reshape(B, F_lat, H_g * W_g)[:, :, 0]
             )  # [B, F_lat]
             hub_time = ts_per_frame.unsqueeze(-1).expand(B, F_lat, K_hub).reshape(
                 B, hub_token_count
             )
-            full_time = torch.cat([agent_time, hub_time], dim=1)
         else:
-            full_time = agent_time
+            hub_time = None
+
+        time_chunks = [agent_time]
+        if register_time is not None:
+            time_chunks.append(register_time)
+        if hub_time is not None:
+            time_chunks.append(hub_time)
+        full_time = torch.cat(time_chunks, dim=1)
+
         e = self.time_embedding(
             sinusoidal_embedding_1d(self.freq_dim, full_time.flatten()).type_as(x)
         )
@@ -2431,8 +2563,11 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         e0 = self.time_projection(e)
         e0 = e0.unflatten(dim=2, sizes=(6, self.dim))
 
-        # Append hub tokens to the sequence in agent-major layout:
-        # ``[agent_0, agent_1, ..., hub_tokens]``.
+        # Append register block and hub tokens to the sequence in
+        # agent-major layout:
+        #   [agent_0..agent_{P-1}_video, agent_0..agent_{P-1}_register, hub]
+        if register_seq is not None:
+            x = torch.cat([x, register_seq], dim=1)
         if use_hub:
             hub = self.hub_tokens.to(dtype=x.dtype, device=x.device)
             hub = hub.unsqueeze(0).unsqueeze(0)  # [1, 1, K, dim]
@@ -2443,20 +2578,27 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         assert context.shape[1] == self.text_len
         context = self.text_embedding(context)
 
-        # Hub-mediated attention mask. ``agent_id`` indexes each token; hub
-        # tokens get a sentinel value distinct from every agent. The mask
-        # is True (= attend) iff the two tokens are in the same agent stream
-        # or at least one of them is a hub token.
-        if use_hub:
-            agent_ids = torch.arange(P, device=x.device).repeat_interleave(L_per_agent)
+        # Hub-mediated attention mask. ``agent_id`` indexes each token;
+        # hub tokens get a sentinel value distinct from every agent. The
+        # mask is True (= attend) iff the two tokens are in the same
+        # agent stream or at least one of them is a hub token.
+        # Register tokens inherit their agent's id so per-agent register
+        # tokens attend to their own video tokens and through hubs to
+        # other agents.
+        if use_hub or register_token_count > 0:
+            video_ids = torch.arange(P, device=x.device).repeat_interleave(L_per_agent)
+            register_ids = (
+                torch.arange(P, device=x.device).repeat_interleave(R_per_agent)
+                if register_token_count > 0
+                else torch.empty(0, dtype=torch.long, device=x.device)
+            )
             hub_ids = torch.full(
                 (hub_token_count,), fill_value=P, device=x.device, dtype=torch.long,
             )
-            token_agent = torch.cat([agent_ids, hub_ids], dim=0)
+            token_agent = torch.cat([video_ids, register_ids, hub_ids], dim=0)
             is_hub = token_agent == P
             same_agent = token_agent.unsqueeze(1) == token_agent.unsqueeze(0)
             mask_2d = same_agent | is_hub.unsqueeze(1) | is_hub.unsqueeze(0)
-            # Broadcast to [B, 1, Lq, Lk] for sdpa.
             attn_mask = mask_2d.unsqueeze(0).unsqueeze(0)
         else:
             attn_mask = None
@@ -2485,16 +2627,39 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                 x, updated_kv_cache = block(x, **kwargs)
                 assert updated_kv_cache is None
 
-        # Strip hub tokens; they are internal communication state only.
+        # Strip hub tokens (internal communication state only) and split
+        # into video block + register block.
         if use_hub:
+            x = x[:, : -hub_token_count]
+            e = e[:, : -hub_token_count]
+
+        if register_token_count > 0:
+            x_register = x[:, P * L_per_agent : P * L_per_agent + register_token_count]
             x = x[:, : P * L_per_agent]
-            e = e[:, : P * L_per_agent]
+            e_video = e[:, : P * L_per_agent]
+        else:
+            x_register = None
+            e_video = e
 
-        # Split tokens back into per-agent blocks: [B, P*L, dim] -> [B, P, L, dim]
+        # Decode per-agent action register tokens back into action noise
+        # predictions via the shared action_decoder.
+        action_noise_pred = None
+        if x_register is not None and T_a > 0:
+            x_register = x_register.reshape(B, P, R_per_agent, dim)
+            # The action portion is the first T_a tokens of each agent's
+            # register block (matching the assembly order above).
+            x_action_register = x_register[:, :, :T_a]  # [B, P, T_a, dim]
+            x_action_flat = x_action_register.reshape(B * P, T_a, dim)
+            action_pred_flat = self.action_decoder(
+                x_action_flat, eid_per_agent
+            )  # [B*P, T_a, action_dim_out]
+            action_noise_pred = action_pred_flat.reshape(
+                B, P, T_a, action_pred_flat.shape[-1]
+            )
+
+        # Split video tokens back into per-agent blocks and unpatchify.
         x = x.reshape(B, P, L_per_agent, dim)
-        e_video = e.reshape(B, P, L_per_agent, e.shape[-1])
-
-        # Head + unpatchify per agent. Collapse the agent axis into batch.
+        e_video = e_video.reshape(B, P, L_per_agent, e_video.shape[-1])
         x_flat = x.reshape(B * P, L_per_agent, dim)
         e_flat = e_video.reshape(B * P, L_per_agent, e_video.shape[-1])
         x_flat = self.head(x_flat, e_flat.unsqueeze(2))
@@ -2506,8 +2671,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             B, P, C_out, video_flat.shape[2], video_flat.shape[3], video_flat.shape[4]
         )
 
-        # action_noise_pred not produced in this branch yet (PR 5).
-        return video_noise_pred, None
+        return video_noise_pred, action_noise_pred
 
     def forward(
         self,
