@@ -2703,19 +2703,60 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         )
         new_token_agent_id = torch.cat([video_ids, register_ids, hub_ids], dim=0)
 
+        # PR 8: per-token block_id for the block-causal composition.
+        # Video tokens for agent p at frame f live in block ``f // n``;
+        # register tokens encode the current chunk's noisy action so they
+        # sit in the LAST block of this chunk; hub tokens at frame f live
+        # in the same block as their frame. For streaming, the new
+        # chunk's block ids are offset by ``start_frame // n``.
+        n_per_block = max(self.num_frame_per_block, 1)
+        last_new_block = (start_frame + F_g - 1) // n_per_block
+        per_frame_block = (
+            (torch.arange(F_g, device=x.device) + start_frame) // n_per_block
+        )  # [F_g]
+        video_block_ids = (
+            per_frame_block.repeat_interleave(H_g * W_g).repeat(P)
+        )  # [P*F*H*W]
+        register_block_ids = torch.full(
+            (register_token_count,),
+            fill_value=last_new_block,
+            device=x.device,
+            dtype=torch.long,
+        )
+        hub_block_ids = per_frame_block.repeat_interleave(K_hub)  # [F*K]
+        new_token_block_id = torch.cat(
+            [video_block_ids, register_block_ids, hub_block_ids], dim=0
+        )
+
         if use_hub or register_token_count > 0 or cached_token_agent_id is not None:
             if cached_token_agent_id is not None:
                 key_agent = torch.cat(
                     [cached_token_agent_id.to(x.device), new_token_agent_id], dim=0
                 )
+                # Cached tokens are from past chunks -- assign a sentinel
+                # block id smaller than every new block so block_causal
+                # is automatically satisfied for them.
+                cached_block_ids = torch.full(
+                    (cached_token_agent_id.shape[0],),
+                    fill_value=-1,
+                    device=x.device,
+                    dtype=torch.long,
+                )
+                key_block_id = torch.cat(
+                    [cached_block_ids, new_token_block_id], dim=0
+                )
             else:
                 key_agent = new_token_agent_id
+                key_block_id = new_token_block_id
             q_is_hub = (new_token_agent_id == P).unsqueeze(1)
             k_is_hub = (key_agent == P).unsqueeze(0)
             same_agent = (
                 new_token_agent_id.unsqueeze(1) == key_agent.unsqueeze(0)
             )
-            mask_2d = same_agent | q_is_hub | k_is_hub
+            block_causal = (
+                new_token_block_id.unsqueeze(1) >= key_block_id.unsqueeze(0)
+            )
+            mask_2d = (same_agent | q_is_hub | k_is_hub) & block_causal
             attn_mask = mask_2d.unsqueeze(0).unsqueeze(0)
         else:
             attn_mask = None
