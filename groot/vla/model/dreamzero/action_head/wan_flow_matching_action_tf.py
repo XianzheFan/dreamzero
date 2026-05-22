@@ -622,31 +622,309 @@ class WANPolicyHead(ActionHead):
     def _forward_multi_agent(
         self, backbone_output: BatchFeature, action_input: BatchFeature, num_agents: int,
     ) -> BatchFeature:
-        """Multi-agent training forward (PR 9c stub).
+        """Multi-agent training forward (PR 9d).
 
-        The single-agent ``forward`` is ~150 lines of VAE encode, image
-        encode, prompt encode, diffusion training loss, etc. The
-        multi-agent version needs to:
+        Mirrors the single-agent ``forward`` but threads an explicit
+        agent axis ``P`` through VAE encode, noise sampling, the model
+        call, and the dynamics + action loss reduction. The VAE / image
+        / text encoders themselves are shared (single set of weights);
+        the per-agent split is done by collapsing ``B*P`` into the VAE
+        batch dim, then restoring the ``P`` axis before the diffusion
+        forward.
 
-          * VAE-encode per agent (collapse ``B*P`` into the VAE batch dim);
-          * route ``state[B, P, T_s, D]`` / ``action[B, P, T_a, D]`` to
-            :meth:`CausalWanModel._forward_train_multi_agent` (the PR-8
-            multi-agent forward that already accepts these shapes);
-          * compute per-agent dynamics + action losses and reduce.
+        Expected ``action_input`` (per :class:`BimanualDreamTransform` +
+        trainer collation):
 
-        That's a follow-up PR. For now we surface a clear error so the
-        rest of the multi-agent data + model wiring (BimanualDreamTransform,
-        yam_bimanual_relative.yaml, CausalWanModel.num_agents>1) can be
-        committed and tested incrementally.
+          * ``state``:        ``[B, P, T_s, D_s]``
+          * ``action``:       ``[B, P, T_a, D_a]``
+          * ``action_mask``:  ``[B, P, T_a, D_a]``
+          * ``images``:       ``[B, P, T, H, W, C]`` (C-last, per-agent
+            already V-tiled by the data transform) -- matches the
+            single-agent ``[B, T, H, W, C]`` convention with a leading P.
+          * ``embodiment_id``, ``has_real_action``: ``[B]`` (shared)
+          * ``text``, ``text_attention_mask``:     shared across agents
+
+        First-frame conditioning (``clip_feature``, ``y``) and
+        ``clean_x`` are NOT passed through to the model: the multi-agent
+        body in :meth:`CausalWanModel._forward_train_multi_agent`
+        ignores them (they live in ``**_unused``) and the multi-agent
+        forward does not currently support image-to-video conditioning.
         """
-        raise NotImplementedError(
-            f"Multi-agent training forward is not implemented yet "
-            f"(detected P={num_agents}). The PR-8 multi-agent path is "
-            f"available via ``CausalWanModel._forward_train_multi_agent`` "
-            f"for direct calls, but the WANPolicyHead-level integration "
-            f"(per-agent VAE encode + per-agent loss) lands in a follow-up "
-            f"PR. Set ``num_agents=1`` or use the standalone smoke for now."
+        self.set_frozen_modules_to_eval_mode()
+
+        data = action_input
+        embodiment_id = action_input.embodiment_id
+        has_real_action = action_input.has_real_action
+        action_mask = action_input.action_mask
+
+        state_features = action_input.state  # [B, P, T_s, D_s]
+        actions = action_input.action        # [B, P, T_a, D_a]
+        assert actions.dim() == 4 and actions.shape[1] == num_agents, (
+            f"multi-agent action must be [B, P, T_a, D_a]; got {tuple(actions.shape)}"
         )
+        assert state_features.dim() == 4 and state_features.shape[1] == num_agents, (
+            f"multi-agent state must be [B, P, T_s, D_s]; "
+            f"got {tuple(state_features.shape)}"
+        )
+        B, P = actions.shape[0], actions.shape[1]
+
+        if actions.numel() > 0:
+            assert actions.min() >= -1.0 and actions.max() <= 1.0, (
+                "actions must be in [-1,1] range"
+            )
+
+        videos = data["images"]
+        # Expected shape: [B, P, T, H, W, C]. The single-agent path uses
+        # [B, T, H, W, C]; we extend with a leading P. Per-agent view
+        # tiling (mapping V_per_agent->1) is the data transform's job.
+        assert videos.dim() == 6, (
+            f"multi-agent images must be [B, P, T, H, W, C]; "
+            f"got {tuple(videos.shape)}. Per-agent view tiling must be "
+            f"done in the data transform."
+        )
+        assert videos.shape[1] == P
+        videos = rearrange(videos, "b p t h w c -> b p c t h w")
+
+        if videos.dtype == torch.uint8:
+            videos = videos.float() / 255.0
+            b, p, c, t, h, w = videos.shape
+            videos = videos.permute(0, 1, 3, 2, 4, 5)  # [B, P, T, C, H, W]
+            videos = videos.reshape(b * p * t, c, h, w)
+            videos = self.normalize_video(videos)
+            videos = videos.reshape(b, p, t, c, h, w).permute(0, 1, 3, 2, 4, 5)
+            assert videos.min() >= -1.0 and videos.max() <= 1.0, (
+                "videos must be in [-1,1] range"
+            )
+            videos = videos.to(dtype=self.dtype)
+
+        prompt_embs = self.encode_prompt(data["text"], data["text_attention_mask"])
+
+        # Wan 5B-style resize (same policy as single-agent).
+        target_h = getattr(self.config, "target_video_height", None)
+        target_w = getattr(self.config, "target_video_width", None)
+        if target_h is None or target_w is None:
+            if getattr(self.model, "frame_seqlen", None) in (50, 55):
+                target_h, target_w = 176, 320
+            else:
+                target_h, target_w = None, None
+        if target_h is not None and target_w is not None:
+            _, _, _, _, h, w = videos.shape
+            if (h, w) != (target_h, target_w):
+                b, p, c, t, _, _ = videos.shape
+                videos = torch.nn.functional.interpolate(
+                    videos.reshape(b * p * t, c, h, w),
+                    size=(target_h, target_w),
+                    mode="bilinear",
+                    align_corners=False,
+                ).reshape(b, p, c, t, target_h, target_w)
+
+        # VAE encode per agent: collapse B*P into the VAE batch dim.
+        b, p, c, t, h, w = videos.shape
+        videos_bp = videos.reshape(b * p, c, t, h, w)
+        latents_bp = self.encode_video(
+            videos_bp,
+            self.tiled,
+            (self.tile_size_height, self.tile_size_width),
+            (self.tile_stride_height, self.tile_stride_width),
+        )
+        _, c_lat, F_lat, h_lat, w_lat = latents_bp.shape
+        # [B, P, C_lat, F_lat, H_lat, W_lat]
+        latents = latents_bp.reshape(b, p, c_lat, F_lat, h_lat, w_lat)
+        latents = latents.to(self._device)
+        prompt_embs = prompt_embs.to(self._device)
+
+        # Noise + transpose to put frame axis second (matches the
+        # single-agent layout, just with an extra leading P).
+        # latents / noise after transpose: [B, P, F, C_lat, H_lat, W_lat].
+        noise = torch.randn_like(latents).transpose(2, 3)
+        latents = latents.transpose(2, 3)
+
+        # ============ VIDEO TIMESTEP SAMPLING (shared across agents) ============
+        if self.config.decouple_video_action_noise:
+            video_noise_ratio = self.video_beta_dist.sample([B, F_lat])
+            timestep_id = (
+                (1.0 - video_noise_ratio) * self.scheduler.num_train_timesteps
+            ).long()
+            timestep_id = torch.clamp(timestep_id, 0, self.scheduler.num_train_timesteps - 1)
+            noise_mode = "DECOUPLED"
+        elif self.config.use_high_noise_emphasis:
+            noise_ratio = self.high_noise_beta_dist.sample([B, F_lat])
+            timestep_id = (
+                (1.0 - noise_ratio) * self.scheduler.num_train_timesteps
+            ).long()
+            timestep_id = torch.clamp(timestep_id, 0, self.scheduler.num_train_timesteps - 1)
+            noise_mode = "HIGH_NOISE_EMPHASIS"
+        else:
+            timestep_id = torch.randint(
+                0, self.scheduler.num_train_timesteps, (B, F_lat)
+            )
+            noise_mode = "STANDARD"
+
+        timestep_id_block = timestep_id[:, 1:].reshape(
+            B, -1, self.num_frame_per_block
+        )
+        timestep_id_block[:, :, 1:] = timestep_id_block[:, :, 0:1]
+
+        if actions.numel() > 0:
+            noise_action = torch.randn_like(actions)  # [B, P, T_a, D_a]
+            T_a = actions.shape[2]
+            assert T_a / (F_lat - 1) == (
+                self.model.num_action_per_block // self.num_frame_per_block
+            ), (
+                f"actions.shape={tuple(actions.shape)}, "
+                f"noise.shape={tuple(noise.shape)}, video.shape={tuple(videos.shape)}, "
+                f"latents.shape={tuple(latents.shape)}"
+            )
+            assert (F_lat - 1) / state_features.shape[2] == (
+                self.num_frame_per_block // self.model.num_state_per_block
+            ), (
+                f"state_features.shape={tuple(state_features.shape)}, "
+                f"noise.shape={tuple(noise.shape)}, video.shape={tuple(videos.shape)}, "
+                f"latents.shape={tuple(latents.shape)}"
+            )
+
+            # ============ ACTION TIMESTEP SAMPLING (shared across agents) ============
+            if self.config.decouple_video_action_noise:
+                timestep_action_id = torch.randint(
+                    0, self.scheduler.num_train_timesteps, (B, T_a)
+                )
+                action_mode = "INDEPENDENT"
+            else:
+                timestep_action_id = timestep_id_block.repeat(
+                    1, 1, T_a // (F_lat - 1)
+                )
+                timestep_action_id = timestep_action_id.reshape(B, -1)
+                action_mode = "COUPLED"
+
+            if not self._noise_logged:
+                video_mean = timestep_id.float().mean().item()
+                action_mean = timestep_action_id.float().mean().item()
+                print(
+                    f"[NOISE][multi-agent P={P}] Mode={noise_mode} | "
+                    f"Video mean_t={video_mean:.0f} | "
+                    f"Action mean_t={action_mean:.0f} ({action_mode})"
+                )
+                self._noise_logged = True
+        else:
+            noise_action = None
+            timestep_action_id = None
+            T_a = 0
+
+        timestep_id_block = timestep_id_block.reshape(B, -1)
+        timestep_id = torch.concat([timestep_id[:, :1], timestep_id_block], dim=1)
+        timestep = self.scheduler.timesteps[timestep_id].to(self._device)  # [B, F]
+
+        # Expand timestep along P so add_noise sees a flat [B*P*F] tensor
+        # whose sigma broadcasts back to [B, P, F, C, H, W].
+        timestep_BPF = timestep.unsqueeze(1).expand(B, P, F_lat).contiguous()
+        noisy_latents = self.scheduler.add_noise(
+            latents.flatten(0, 2),
+            noise.flatten(0, 2),
+            timestep_BPF.flatten(0, 2),
+        ).unflatten(0, (B, P, F_lat))
+        # training_target = noise - sample (shape-agnostic).
+        # Transpose to put channel axis where the model emits it.
+        training_target = self.scheduler.training_target(
+            latents, noise, timestep_BPF
+        ).transpose(2, 3)  # [B, P, C, F, H, W]
+
+        if actions.numel() > 0:
+            timestep_action = self.scheduler.timesteps[timestep_action_id].to(self._device)  # [B, T_a]
+            timestep_action_BPT = (
+                timestep_action.unsqueeze(1).expand(B, P, T_a).contiguous()
+            )
+            noisy_actions = self.scheduler.add_noise(
+                actions.flatten(0, 2),
+                noise_action.flatten(0, 2),
+                timestep_action_BPT.flatten(0, 2),
+            ).unflatten(0, (B, P, T_a))
+            training_target_action = self.scheduler.training_target(
+                actions, noise_action, timestep_action_BPT
+            )
+        else:
+            timestep_action = None
+            noisy_actions = None
+            training_target_action = None
+
+        # Sequence length: P * F * H_grid * W_grid where the grid is the
+        # post-patch_embedding shape (stride (1,2,2) -> H_lat//2, W_lat//2).
+        H_g = h_lat // 2
+        W_g = w_lat // 2
+        seq_len = P * F_lat * H_g * W_g
+
+        with torch.amp.autocast(
+            dtype=torch.bfloat16, device_type=torch.device(self._device).type
+        ):
+            if actions.numel() > 0:
+                video_noise_pred, action_noise_pred = self.model(
+                    noisy_latents.transpose(2, 3),  # [B, P, C, F, H, W]
+                    timestep=timestep,
+                    context=prompt_embs,
+                    seq_len=seq_len,
+                    state=state_features,
+                    embodiment_id=embodiment_id,
+                    action=noisy_actions,
+                    timestep_action=timestep_action,
+                )
+            else:
+                video_noise_pred, action_noise_pred = self.model(
+                    noisy_latents.transpose(2, 3),
+                    timestep=timestep,
+                    timestep_action=timestep_action,
+                    context=prompt_embs,
+                    seq_len=seq_len,
+                    state=state_features,
+                    embodiment_id=embodiment_id,
+                )
+
+            # Per-sample dynamics loss. Crop target to model output spatial
+            # size if patch_embedding stride 2 truncates an odd dim.
+            if training_target.shape != video_noise_pred.shape:
+                training_target = training_target[
+                    ..., : video_noise_pred.shape[4], : video_noise_pred.shape[5]
+                ]
+            # Mean over (C, H, W) -> [B, P, F]
+            dynamics_loss_per_sample = torch.nn.functional.mse_loss(
+                video_noise_pred.float(), training_target.float(), reduction="none"
+            ).mean(dim=(2, 4, 5))
+            train_w = (
+                self.scheduler.training_weight(timestep.flatten(0, 1))
+                .unflatten(0, (B, F_lat))
+                .to(self._device)
+            )  # [B, F]
+            weight_dynamics = dynamics_loss_per_sample * train_w.unsqueeze(1)
+            weighted_dynamics_loss = weight_dynamics.mean()
+
+            if actions.numel() > 0:
+                # action_noise_pred / target: [B, P, T_a, D_a]; mask same shape.
+                action_loss_per_sample = torch.nn.functional.mse_loss(
+                    action_noise_pred.float(),
+                    training_target_action.float(),
+                    reduction="none",
+                ) * action_mask
+                # has_real_action [B] -> [B, 1, 1, 1] for broadcast.
+                action_loss_per_sample = (
+                    has_real_action[:, None, None, None].float()
+                    * action_loss_per_sample
+                )
+                train_w_action = (
+                    self.scheduler.training_weight(timestep_action.flatten(0, 1))
+                    .unflatten(0, (B, T_a))
+                    .to(self._device)
+                )  # [B, T_a]
+                weight_action = action_loss_per_sample.mean(dim=3) * train_w_action.unsqueeze(1)
+                weighted_action_loss = weight_action.mean()
+                loss = weighted_dynamics_loss + weighted_action_loss
+            else:
+                weighted_action_loss = torch.tensor(0.0, device=self._device)
+                loss = weighted_dynamics_loss
+
+        output_dict = {
+            "loss": loss,
+            "dynamics_loss": weighted_dynamics_loss,
+            "action_loss": weighted_action_loss,
+        }
+        return BatchFeature(data=output_dict)
 
     def forward(self, backbone_output: BatchFeature, action_input: BatchFeature) -> BatchFeature:
         # Multi-agent dispatch: if BimanualDreamTransform stacked a P axis

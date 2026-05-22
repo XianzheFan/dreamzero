@@ -3,10 +3,12 @@
 Validates:
   * ``_detect_multi_agent`` recognises the leading P axis on
     ``state`` / ``action``;
-  * ``forward`` routes ``[B, P, ...]`` inputs to ``_forward_multi_agent``
-    and raises a clear NotImplementedError (the full multi-agent
-    training forward lands in a follow-up PR);
+  * ``forward`` routes ``[B, P, ...]`` inputs to ``_forward_multi_agent``;
   * ``forward`` keeps the single-agent path for ``[B, T, D]`` inputs.
+
+The multi-agent body itself is exercised end-to-end (with a real
+diffusion model + scheduler + VAE-shaped inputs) in
+``test_wan_action_head_multi_agent.py``.
 """
 
 import importlib.util
@@ -54,15 +56,36 @@ def test_detect_single_agent_returns_none():
     assert inst._detect_multi_agent(af) is None
 
 
-def test_forward_multi_agent_raises_clear_error():
+def test_forward_routes_to_multi_agent():
+    """``forward`` must call ``_forward_multi_agent`` when a P axis is
+    present on ``state`` / ``action``. We monkey-patch the heavy
+    multi-agent body to a sentinel so we can assert dispatch without
+    instantiating the full WANPolicyHead.
+    """
     Cls = _maybe_load_head()
     inst = Cls.__new__(Cls)
     af = BatchFeature(data={
         "state":  torch.zeros(1, 2, 1, 7),
         "action": torch.zeros(1, 2, 24, 7),
     })
-    with pytest.raises(NotImplementedError, match=r"P=2"):
-        inst.forward(BatchFeature(data={}), af)
+
+    sentinel = BatchFeature(data={"loss": torch.tensor(1.234)})
+    called = {}
+
+    def _stub(self, backbone_output, action_input, num_agents):
+        called["P"] = num_agents
+        called["backbone_output"] = backbone_output
+        called["action_input"] = action_input
+        return sentinel
+
+    # Bind the stub as an instance attribute. forward() calls
+    # ``self._forward_multi_agent(...)`` so an attribute lookup hits the
+    # stub before the class-level method.
+    inst._forward_multi_agent = _stub.__get__(inst, Cls)
+    out = inst.forward(BatchFeature(data={}), af)
+    assert out is sentinel
+    assert called["P"] == 2
+    assert called["action_input"] is af
 
 
 def test_detect_three_agents():
