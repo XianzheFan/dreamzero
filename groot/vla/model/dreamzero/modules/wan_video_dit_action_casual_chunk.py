@@ -2470,15 +2470,20 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         state_features = None   # [B, P, T_s, dim] when state is provided
         T_a = 0
         T_s = 0
-        if embodiment_id is None:
-            eid_per_agent = torch.zeros(B * P, dtype=torch.long, device=x.device)
-        else:
+        # Match the single-agent forward (lines 1870 / 2173): the model
+        # hardcodes ``max_num_embodiments = 1`` in ``__init__`` so the
+        # state / action encoder / decoder weights only have category 0.
+        # The data layer ships a real embodiment tag (e.g. YAM=32) which
+        # would index out-of-bounds and surface as a CUBLAS internal
+        # error on CUDA. Force category 0 here, just like single-agent.
+        # ``embodiment_id`` (when passed) is still validated for shape so
+        # the caller's contract is checked, but the actual category index
+        # used is always 0.
+        if embodiment_id is not None:
             assert embodiment_id.dim() == 1 and embodiment_id.shape[0] == B, (
                 f"embodiment_id must be [B]; got {tuple(embodiment_id.shape)}"
             )
-            eid_per_agent = (
-                embodiment_id.unsqueeze(1).expand(B, P).reshape(B * P).to(torch.long)
-            )
+        eid_per_agent = torch.zeros(B * P, dtype=torch.long, device=x.device)
 
         if action is not None:
             assert action.dim() == 4 and action.shape[1] == P, (

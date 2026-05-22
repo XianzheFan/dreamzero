@@ -72,11 +72,21 @@ class VLA(PreTrainedModel):
         if "action" in inputs:
             action = inputs["action"]
             type_ok = isinstance(action, torch.Tensor)
-            shape_ok = (
-                len(action.shape) == 3
+            # Single-agent: [B, T_a, D]. Multi-agent (BimanualDreamTransform):
+            # [B, P, T_a, D_per_agent], where action_dim here is the *per-agent*
+            # dim and D_per_agent must match it. The per-block T_a contract
+            # (action.shape[-2] % action_horizon == 0) is preserved on both.
+            single_agent_ok = (
+                action.ndim == 3
                 and action.shape[1] % self.action_horizon == 0
                 and action.shape[2] == self.action_dim
             )
+            multi_agent_ok = (
+                action.ndim == 4
+                and action.shape[2] % self.action_horizon == 0
+                and action.shape[3] == self.action_dim
+            )
+            shape_ok = single_agent_ok or multi_agent_ok
             if not type_ok:
                 error_msg += f"\n{action.dtype=}"
                 detected_error = True
