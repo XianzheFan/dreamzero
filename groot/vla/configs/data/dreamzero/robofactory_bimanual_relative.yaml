@@ -1,0 +1,69 @@
+# @package _global_
+
+# RoboFactory bimanual training config (mirror of yam_bimanual_relative.yaml).
+# Uses the new ``robofactory`` embodiment tag (8-dim action per Panda arm:
+# 7 joint deltas + 1 gripper), plugs in ``BimanualDreamTransform`` so
+# state / action / images carry a leading P axis.
+#
+# Required CLI overrides:
+#   data=dreamzero/robofactory_bimanual_relative
+#   model/dreamzero/transform=bimanual_cotrain
+#   robofactory_data_root=/path/to/converted/lerobot_v2
+
+defaults:
+  - dreamzero/base_48_wan_fine_aug_relative
+  - _self_
+
+max_state_dim: 64
+use_global_metadata: false
+# RoboFactory ManiSkill controller is delta_joint_pos style (actions are
+# already small deltas), so we don't need the additional relative-action
+# transform layer.
+relative_action: false
+relative_action_per_horizon: false
+relative_action_keys: []
+max_chunk_size: 5
+dataset_shard_sampling_rate: 0.1
+mixture_dataset_cls: groot.vla.data.dataset.lerobot_sharded.ShardedLeRobotMixtureDataset.from_mixture_spec
+single_dataset_cls: groot.vla.data.dataset.lerobot_sharded.ShardedLeRobotSubLangSingleActionChunkDatasetDROID
+
+robofactory_data_root: ???
+
+train_dataset:
+  _target_: ${mixture_dataset_cls}
+  _convert_: object
+  mixture_spec:
+    - dataset_path:
+        robofactory:
+          - ${robofactory_data_root}
+      dataset_weight: 1.0
+      distribute_weights: true
+
+  dataset_class: ${single_dataset_cls}
+  all_modality_configs: ${modality_configs}
+  all_transforms: ${transforms}
+  metadata_versions: ${metadata_versions}
+  fps: ${fps}
+  dataset_kwargs:
+    video_backend: decord
+    use_global_metadata: ${use_global_metadata}
+    max_chunk_size: ${max_chunk_size}
+    relative_action: ${relative_action}
+    relative_action_keys: ${relative_action_keys}
+    relative_action_per_horizon: ${relative_action_per_horizon}
+  mixture_kwargs:
+    training: true
+    balance_dataset_weights: false
+    seed: 42
+    shard_sampling_rate: ${dataset_shard_sampling_rate}
+
+# Bimanual-specific top-level vars consumed by ``BimanualDreamTransform``
+# via ``configs/model/dreamzero/transform/bimanual_cotrain.yaml``.
+# Video key order in modality_config_robofactory.video.modality_keys:
+#   0 = global_camera, 1 = agent0_camera, 2 = agent1_camera.
+# Each agent: shared global view + its own head camera.
+agent_video_views: [[0, 1], [0, 2]]
+# Per-arm state width = 8 (7 panda joints + 1 gripper finger).
+agent_state_dims: [[0, 8], [8, 16]]
+# Per-arm action width = 8 (7 joint deltas + 1 gripper command).
+agent_action_dims: [[0, 8], [8, 16]]

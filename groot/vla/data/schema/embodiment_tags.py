@@ -155,6 +155,12 @@ class EmbodimentTag(Enum):
 
     YAM = "yam"
 
+    ROBOFACTORY = "robofactory"
+    """
+    RoboFactory bimanual ManiSkill tasks (two Franka Panda arms, 8-dim
+    action per arm: 7 joint deltas + 1 gripper).
+    """
+
     DREAM = "dream"
     """
     The datasets with DREAM actions.
