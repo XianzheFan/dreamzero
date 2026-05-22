@@ -1,0 +1,23 @@
+# @package _global_
+
+# YAM bimanual training config: same dataset + per-key transforms as
+# yam_relative, but plugs in BimanualDreamTransform (instead of the
+# default DreamTransform) so the model sees an explicit P axis on
+# state / action / images. Use with PR 1-8's multi-agent forward
+# (num_agents=2) on the model side.
+#
+# Required CLI overrides:
+#   model/dreamzero/transform=bimanual_cotrain    # use BimanualDreamTransform
+#   data=dreamzero/yam_bimanual_relative          # this file
+#   yam_data_root=/path/to/yam_v2                 # bimanual LeRobot v2 dataset
+
+defaults:
+  - yam_relative
+  - _self_  # this file overrides yam_relative
+
+# These get consumed by ``BimanualDreamTransform`` via the
+# ``model_specific_transform`` config (see
+# configs/model/dreamzero/transform/bimanual_cotrain.yaml).
+agent_video_views: [[0, 1], [0, 2]]   # agent 0: [top, left_wrist]; agent 1: [top, right_wrist]
+agent_state_dims: [[0, 7], [7, 14]]    # left arm joints+gripper vs right arm
+agent_action_dims: [[0, 7], [7, 14]]
