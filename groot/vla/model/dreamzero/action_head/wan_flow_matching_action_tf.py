@@ -600,11 +600,65 @@ class WANPolicyHead(ActionHead):
             param.data = param.to(torch.float32)
         return model
 
+    def _detect_multi_agent(self, action_input: BatchFeature) -> int | None:
+        """Return ``P`` if ``action_input`` carries an explicit agent axis,
+        else ``None``.
+
+        BimanualDreamTransform stacks state / action / images with a
+        leading ``P`` axis. After the trainer's per-sample collate the
+        shapes become ``[B, P, ...]``; we sniff that here by looking at
+        ``state`` and ``action`` ndim. Falls back to the single-agent
+        path when no P axis is present.
+        """
+        state = getattr(action_input, "state", None)
+        actions = getattr(action_input, "action", None)
+        # Single-agent state shape: [B, T_s, D]. Multi-agent: [B, P, T_s, D].
+        if state is not None and state.ndim == 4:
+            return int(state.shape[1])
+        if actions is not None and actions.ndim == 4:
+            return int(actions.shape[1])
+        return None
+
+    def _forward_multi_agent(
+        self, backbone_output: BatchFeature, action_input: BatchFeature, num_agents: int,
+    ) -> BatchFeature:
+        """Multi-agent training forward (PR 9c stub).
+
+        The single-agent ``forward`` is ~150 lines of VAE encode, image
+        encode, prompt encode, diffusion training loss, etc. The
+        multi-agent version needs to:
+
+          * VAE-encode per agent (collapse ``B*P`` into the VAE batch dim);
+          * route ``state[B, P, T_s, D]`` / ``action[B, P, T_a, D]`` to
+            :meth:`CausalWanModel._forward_train_multi_agent` (the PR-8
+            multi-agent forward that already accepts these shapes);
+          * compute per-agent dynamics + action losses and reduce.
+
+        That's a follow-up PR. For now we surface a clear error so the
+        rest of the multi-agent data + model wiring (BimanualDreamTransform,
+        yam_bimanual_relative.yaml, CausalWanModel.num_agents>1) can be
+        committed and tested incrementally.
+        """
+        raise NotImplementedError(
+            f"Multi-agent training forward is not implemented yet "
+            f"(detected P={num_agents}). The PR-8 multi-agent path is "
+            f"available via ``CausalWanModel._forward_train_multi_agent`` "
+            f"for direct calls, but the WANPolicyHead-level integration "
+            f"(per-agent VAE encode + per-agent loss) lands in a follow-up "
+            f"PR. Set ``num_agents=1`` or use the standalone smoke for now."
+        )
+
     def forward(self, backbone_output: BatchFeature, action_input: BatchFeature) -> BatchFeature:
+        # Multi-agent dispatch: if BimanualDreamTransform stacked a P axis
+        # onto state / action / images, route to the multi-agent branch.
+        num_agents = self._detect_multi_agent(action_input)
+        if num_agents is not None and num_agents > 1:
+            return self._forward_multi_agent(backbone_output, action_input, num_agents)
+
         # Set frozen modules to eval
         self.set_frozen_modules_to_eval_mode()
 
-        data = action_input 
+        data = action_input
         # Get embodiment ID.
         embodiment_id = action_input.embodiment_id
         # print("embodiment_id", embodiment_id)
