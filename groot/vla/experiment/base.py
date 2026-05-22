@@ -709,6 +709,28 @@ class BaseExperiment(ABC):
             safetensors_index_path = os.path.join(ckpt_dir, "model.safetensors.index.json")
             safetensors_path = os.path.join(ckpt_dir, "model.safetensors")
 
+            # When partially loading across architecture variants (e.g.
+            # single-agent -> multi-agent), some tensors have a different
+            # shape even though their key matches. ``load_state_dict`` does
+            # NOT accept shape mismatches even with ``strict=False`` -- it
+            # only ignores missing / unexpected keys. Filter the ckpt
+            # state dict against the model's current parameter shapes so a
+            # smoke run is possible across these variants. Keys that match
+            # in name but not in shape are dropped (re-init from
+            # ``init_weights``) and logged.
+            model_state = model.state_dict()
+            dropped_mismatched: dict[str, tuple] = {}
+
+            def _filter_shape_mismatches(sd: dict) -> dict:
+                kept = {}
+                for k, v in sd.items():
+                    ref = model_state.get(k)
+                    if ref is not None and tuple(ref.shape) != tuple(v.shape):
+                        dropped_mismatched[k] = (tuple(v.shape), tuple(ref.shape))
+                        continue
+                    kept[k] = v
+                return kept
+
             if os.path.exists(safetensors_index_path):
                 with open(safetensors_index_path, 'r') as f:
                     index = json.load(f)
@@ -716,17 +738,29 @@ class BaseExperiment(ABC):
                     shard_path = os.path.join(ckpt_dir, shard_file)
                     mprint(f"Loading shard: {shard_path}")
                     shard_state_dict = load_file(shard_path)
+                    shard_state_dict = _filter_shape_mismatches(shard_state_dict)
                     model.load_state_dict(shard_state_dict, strict=False)
                     del shard_state_dict
                     gc.collect()
             elif os.path.exists(safetensors_path):
                 state_dict = load_file(safetensors_path)
+                state_dict = _filter_shape_mismatches(state_dict)
                 model.load_state_dict(state_dict, strict=False)
             else:
                 raise FileNotFoundError(
                     f"No weights found at '{ckpt_dir}'. "
                     "Expected 'model.safetensors' or 'model.safetensors.index.json'."
                 )
+
+            if dropped_mismatched:
+                mprint(
+                    f"[partial-load] Dropped {len(dropped_mismatched)} shape-mismatched "
+                    f"tensor(s); kept the rest. The dropped ones re-init from scratch."
+                )
+                for k, (ckpt_shape, model_shape) in list(dropped_mismatched.items())[:10]:
+                    mprint(f"  - {k}: ckpt={ckpt_shape} -> model={model_shape}")
+                if len(dropped_mismatched) > 10:
+                    mprint(f"  ... and {len(dropped_mismatched) - 10} more")
 
             if (hasattr(model, 'action_head')
                     and hasattr(model.action_head, 'inject_lora_after_loading')

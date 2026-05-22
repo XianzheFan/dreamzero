@@ -1,23 +1,72 @@
 # @package _global_
 
-# YAM bimanual training config: same dataset + per-key transforms as
-# yam_relative, but plugs in BimanualDreamTransform (instead of the
-# default DreamTransform) so the model sees an explicit P axis on
-# state / action / images. Use with PR 1-8's multi-agent forward
-# (num_agents=2) on the model side.
+# YAM bimanual training config. Mirrors ``yam_relative.yaml`` but plugs
+# in ``BimanualDreamTransform`` (via the bimanual_cotrain transform
+# yaml) so state / action / images carry a leading P axis. The yaml
+# does NOT extend yam_relative via the defaults list because Hydra's
+# relative-path resolution for nested defaults breaks when this file
+# itself lives in ``data/dreamzero/`` (yam_relative's
+# ``- dreamzero/base_48_...`` reference would double-prefix into
+# ``data/dreamzero/dreamzero/...``). Inlining the data-side wiring
+# here keeps the config robust.
 #
 # Required CLI overrides:
-#   model/dreamzero/transform=bimanual_cotrain    # use BimanualDreamTransform
-#   data=dreamzero/yam_bimanual_relative          # this file
-#   yam_data_root=/path/to/yam_v2                 # bimanual LeRobot v2 dataset
+#   data=dreamzero/yam_bimanual_relative
+#   model/dreamzero/transform=bimanual_cotrain
+#   yam_data_root=/path/to/yam_v2
 
 defaults:
-  - yam_relative
-  - _self_  # this file overrides yam_relative
+  - dreamzero/base_48_wan_fine_aug_relative
+  - _self_
 
-# These get consumed by ``BimanualDreamTransform`` via the
-# ``model_specific_transform`` config (see
-# configs/model/dreamzero/transform/bimanual_cotrain.yaml).
+max_state_dim: 64
+use_global_metadata: false
+relative_action: true
+relative_action_per_horizon: false
+relative_action_keys:
+  - left_joint_pos
+  - left_gripper_pos
+  - right_joint_pos
+  - right_gripper_pos
+max_chunk_size: 5
+dataset_shard_sampling_rate: 0.1
+mixture_dataset_cls: groot.vla.data.dataset.lerobot_sharded.ShardedLeRobotMixtureDataset.from_mixture_spec
+single_dataset_cls: groot.vla.data.dataset.lerobot_sharded.ShardedLeRobotSubLangSingleActionChunkDatasetDROID
+
+# Set your YAM dataset path here or override via CLI:
+#   yam_data_root=/path/to/your/yam_dataset
+yam_data_root: ???
+
+train_dataset:
+  _target_: ${mixture_dataset_cls}
+  _convert_: object
+  mixture_spec:
+    - dataset_path:
+        yam:
+          - ${yam_data_root}
+      dataset_weight: 1.0
+      distribute_weights: true
+
+  dataset_class: ${single_dataset_cls}
+  all_modality_configs: ${modality_configs}
+  all_transforms: ${transforms}
+  metadata_versions: ${metadata_versions}
+  fps: ${fps}
+  dataset_kwargs:
+    video_backend: decord
+    use_global_metadata: ${use_global_metadata}
+    max_chunk_size: ${max_chunk_size}
+    relative_action: ${relative_action}
+    relative_action_keys: ${relative_action_keys}
+    relative_action_per_horizon: ${relative_action_per_horizon}
+  mixture_kwargs:
+    training: true
+    balance_dataset_weights: false
+    seed: 42
+    shard_sampling_rate: ${dataset_shard_sampling_rate}
+
+# Bimanual-specific top-level vars consumed by ``BimanualDreamTransform``
+# via ``configs/model/dreamzero/transform/bimanual_cotrain.yaml``.
 agent_video_views: [[0, 1], [0, 2]]   # agent 0: [top, left_wrist]; agent 1: [top, right_wrist]
 agent_state_dims: [[0, 7], [7, 14]]    # left arm joints+gripper vs right arm
 agent_action_dims: [[0, 7], [7, 14]]
