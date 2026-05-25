@@ -1,43 +1,39 @@
 #!/bin/bash
-# DreamZero YAM **bimanual** smoke training (PR 9e+9f).
+# DreamZero RoboTwin (franka-panda) bimanual smoke training.
 #
-# Wires:
-#   - data=dreamzero/yam_bimanual_relative  (P=2 axis on state/action)
-#   - model/dreamzero/transform=bimanual_cotrain  (per-agent V-tiling)
-#   - num_agents=2 on CausalWanModel, per-agent state/action dims 7/7
-#   - partial load from DreamZero-AgiBot single-agent ckpt (shape-mismatch
-#     filter in base.py drops the per-agent state_encoder /
-#     action_encoder / action_decoder / patch_embedding tensors -- the
-#     DiT body still loads from pretrained).
-#
-# Smoke defaults: 3 steps, single GPU, batch size 1. Bump
-# MAX_STEPS / NUM_GPUS / per-device batch for real runs.
+# Mirrors robofactory_bimanual_training.sh exactly except for the data
+# root and run name, because RoboTwin franka-panda exposes the same
+# 7+1 dim per-arm layout that the ``robofactory`` embodiment tag
+# already encodes. The RoboTwin data is produced by
+# ``scripts/data/robotwin_to_lerobot_v2.py`` (which writes the
+# embodiment_tag as ``robofactory`` so it slots in to the same configs).
 #
 # Usage:
-#   YAM_DATA_ROOT=/lustre/.../yam_v2 \
-#   OUTPUT_DIR=$HOME/checkpoints/yam_bimanual_smoke \
-#   bash scripts/train/yam_bimanual_training.sh
+#   ROBOTWIN_DATA_ROOT=/path/to/lerobot_v2/beat_block_hammer-rt \
+#   OUTPUT_DIR=$HOME/checkpoints/robotwin_bimanual_smoke \
+#   PRETRAINED_DIR=/path/to/DreamZero-DROID \
+#   bash scripts/train/robotwin_bimanual_training.sh
 
 export HYDRA_FULL_ERROR=1
+# Multi-agent sparse hub attention applies an explicit attn_mask that
+# FlashAttention 2 doesn't support; force the torch (eager) backend.
+export ATTENTION_BACKEND=${ATTENTION_BACKEND:-torch}
 
-YAM_DATA_ROOT=${YAM_DATA_ROOT:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/data/yam_v2"}
-OUTPUT_DIR=${OUTPUT_DIR:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/yam_bimanual_smoke"}
+ROBOTWIN_DATA_ROOT=${ROBOTWIN_DATA_ROOT:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/data/robotwin_lerobot_v2/beat_block_hammer-rt"}
+OUTPUT_DIR=${OUTPUT_DIR:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/robotwin_bimanual_smoke"}
 NUM_GPUS=${NUM_GPUS:-1}
-MAX_STEPS=${MAX_STEPS:-3}
+MAX_STEPS=${MAX_STEPS:-10}
 BATCH_SIZE=${BATCH_SIZE:-1}
-# For real runs, save more often than once at the end. Defaults to
-# MAX_STEPS so the smoke still writes a single end-of-run ckpt.
 SAVE_STEPS=${SAVE_STEPS:-$MAX_STEPS}
 LEARNING_RATE=${LEARNING_RATE:-1e-5}
 REPORT_TO=${REPORT_TO:-none}
-WANDB_PROJECT=${WANDB_PROJECT:-dreamzero_bimanual_smoke}
-WANDB_RUN_NAME=${WANDB_RUN_NAME:-yam_bimanual_smoke}
+WANDB_PROJECT=${WANDB_PROJECT:-dreamzero_robotwin_smoke}
+WANDB_RUN_NAME=${WANDB_RUN_NAME:-robotwin_bimanual_smoke}
 
 WAN_CKPT_DIR=${WAN_CKPT_DIR:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/Wan2.1-I2V-14B-480P"}
 TOKENIZER_DIR=${TOKENIZER_DIR:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/umt5-xxl"}
-PRETRAINED_DIR=${PRETRAINED_DIR:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/DreamZero-AgiBot"}
+PRETRAINED_DIR=${PRETRAINED_DIR:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/DreamZero-DROID"}
 
-# Auto-download Wan2.1 base weights if missing (same as single-agent script).
 if [ ! -d "$WAN_CKPT_DIR" ] || [ -z "$(ls -A "$WAN_CKPT_DIR" 2>/dev/null)" ]; then
     echo "Wan2.1-I2V-14B-480P not found at $WAN_CKPT_DIR. Downloading from HuggingFace..."
     huggingface-cli download Wan-AI/Wan2.1-I2V-14B-480P --local-dir "$WAN_CKPT_DIR"
@@ -46,8 +42,9 @@ if [ ! -d "$TOKENIZER_DIR" ] || [ -z "$(ls -A "$TOKENIZER_DIR" 2>/dev/null)" ]; 
     echo "umt5-xxl tokenizer not found at $TOKENIZER_DIR. Downloading from HuggingFace..."
     huggingface-cli download google/umt5-xxl --local-dir "$TOKENIZER_DIR"
 fi
-if [ ! -d "$YAM_DATA_ROOT" ]; then
-    echo "ERROR: YAM bimanual dataset not found at $YAM_DATA_ROOT"
+if [ ! -d "$ROBOTWIN_DATA_ROOT" ]; then
+    echo "ERROR: RoboTwin LeRobot v2 dataset not found at $ROBOTWIN_DATA_ROOT"
+    echo "Run scripts/data/robotwin_to_lerobot_v2.py first."
     exit 1
 fi
 
@@ -55,7 +52,7 @@ torchrun --nproc_per_node $NUM_GPUS --standalone groot/vla/experiment/experiment
     report_to=$REPORT_TO \
     wandb_project=$WANDB_PROJECT \
     +training_args.run_name=$WANDB_RUN_NAME \
-    data=dreamzero/yam_bimanual_relative \
+    data=dreamzero/robofactory_bimanual_relative \
     train_architecture=lora \
     num_frames=33 \
     action_horizon=24 \
@@ -88,7 +85,7 @@ torchrun --nproc_per_node $NUM_GPUS --standalone groot/vla/experiment/experiment
     max_chunk_size=4 \
     frame_seqlen=880 \
     save_strategy=steps \
-    yam_data_root=$YAM_DATA_ROOT \
+    robofactory_data_root=$ROBOTWIN_DATA_ROOT \
     dit_version=$WAN_CKPT_DIR \
     text_encoder_pretrained_path=$WAN_CKPT_DIR/models_t5_umt5-xxl-enc-bf16.pth \
     image_encoder_pretrained_path=$WAN_CKPT_DIR/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth \
@@ -97,10 +94,10 @@ torchrun --nproc_per_node $NUM_GPUS --standalone groot/vla/experiment/experiment
     pretrained_model_path=$PRETRAINED_DIR \
     ++action_head_cfg.config.skip_component_loading=true \
     ++action_head_cfg.config.defer_lora_injection=true \
-    ++action_head_cfg.config.max_state_dim=7 \
-    ++action_head_cfg.config.action_dim=7 \
+    ++action_head_cfg.config.max_state_dim=8 \
+    ++action_head_cfg.config.action_dim=8 \
     ++action_head_cfg.config.diffusion_model_cfg.num_agents=2 \
-    ++action_head_cfg.config.diffusion_model_cfg.max_state_dim=7 \
-    ++action_head_cfg.config.diffusion_model_cfg.action_dim=7 \
+    ++action_head_cfg.config.diffusion_model_cfg.max_state_dim=8 \
+    ++action_head_cfg.config.diffusion_model_cfg.action_dim=8 \
     ++action_head_cfg.config.diffusion_model_cfg.concat_first_frame_latent=false \
     ++action_head_cfg.config.diffusion_model_cfg.in_dim=16
