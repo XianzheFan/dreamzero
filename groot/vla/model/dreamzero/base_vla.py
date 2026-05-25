@@ -126,22 +126,44 @@ class VLA(PreTrainedModel):
             error_msg += f"\n{backbone_outputs[BACKBONE_FEATURE_KEY].shape=}"
             raise ValueError(error_msg)
 
+        # Single-agent action_pred is [B, T_a=action_horizon, D=action_dim].
+        # Multi-agent (PR 6 inference) is [B, P, T_a, D_per_arm] where the
+        # action timeline ``T_a`` is the full bimanual chunk grid (e.g.
+        # ``num_action_per_block * (F_lat - 1)``), a multiple of
+        # action_horizon rather than equal to it. Accept any pred whose
+        # final two dims are positive; the offline eval does its own
+        # shape comparison against the batch's GT action tensor.
+        action_pred_shape_ok = False
+        if (
+            isinstance(action_head_outputs, BatchFeature)
+            and ACTION_KEY in action_head_outputs
+        ):
+            pred_shape = action_head_outputs[ACTION_KEY].shape
+            if len(pred_shape) == 3:
+                # single-agent: must match config exactly.
+                action_pred_shape_ok = (
+                    pred_shape[1] == self.action_horizon
+                    and pred_shape[2] == self.action_dim
+                )
+            elif len(pred_shape) == 4:
+                # multi-agent: [B, P, T_a, D_per_arm].
+                action_pred_shape_ok = (
+                    pred_shape[1] > 0 and pred_shape[2] > 0 and pred_shape[3] > 0
+                )
+
         fail_action_head = (not isinstance(action_head_outputs, BatchFeature)) or not (
             (
                 LOSS_KEY in action_head_outputs and is_training
             )  # there might not be an action prediction during training
-            or (
-                ACTION_KEY in action_head_outputs
-                and action_head_outputs[ACTION_KEY].shape[1] == self.action_horizon
-                and action_head_outputs[ACTION_KEY].shape[2] == self.action_dim
-            )
+            or action_pred_shape_ok
         )
 
         if fail_action_head:
             error_msg = ERROR_MSG
             error_msg += f"\n{isinstance(action_head_outputs, BatchFeature)=}"
             error_msg += f"\n{LOSS_KEY in action_head_outputs=}"
-            error_msg += f"\n{action_head_outputs[ACTION_KEY].shape=}"
+            if ACTION_KEY in action_head_outputs:
+                error_msg += f"\n{action_head_outputs[ACTION_KEY].shape=}"
             error_msg += f"\n{self.action_horizon=}"
             error_msg += f"\n{self.action_dim=}"
             raise ValueError(error_msg)

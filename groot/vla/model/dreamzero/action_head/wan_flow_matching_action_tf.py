@@ -926,6 +926,185 @@ class WANPolicyHead(ActionHead):
         }
         return BatchFeature(data=output_dict)
 
+    def _get_action_multi_agent(
+        self,
+        backbone_output: BatchFeature,
+        action_input: BatchFeature,
+        num_agents: int,
+    ) -> BatchFeature:
+        """Multi-agent inference (PR 6, minimal): joint flow-matching
+        denoising rollout that produces ``action_pred[B, P, T_a, D_a]``.
+
+        Mirrors the input prep of :meth:`_forward_multi_agent` (text +
+        VAE encode + reshape) and then loops the
+        :class:`FlowUniPCMultistepScheduler` over
+        ``self.num_inference_steps`` to fully denoise both video and
+        action streams jointly. CFG / KV cache / decoupled inference
+        are intentionally omitted to keep this path correct first;
+        speed optimisations land later.
+        """
+        self.set_frozen_modules_to_eval_mode()
+        data = action_input
+
+        embodiment_id = action_input.embodiment_id
+        state_features = action_input.state             # [B, P, T_s, D_s]
+        actions = action_input.action                   # [B, P, T_a, D_a]
+        assert actions.dim() == 4 and actions.shape[1] == num_agents
+        B, P = actions.shape[0], actions.shape[1]
+        T_a, D_a = actions.shape[2], actions.shape[3]
+
+        videos = data["images"]                         # [B, P, T, H, W, C]
+        assert videos.dim() == 6 and videos.shape[1] == P
+        videos = rearrange(videos, "b p t h w c -> b p c t h w")
+        if videos.dtype == torch.uint8:
+            videos = videos.float() / 255.0
+            b, p, c, t, h, w = videos.shape
+            videos = videos.permute(0, 1, 3, 2, 4, 5)
+            videos = videos.reshape(b * p * t, c, h, w)
+            videos = self.normalize_video(videos)
+            videos = videos.reshape(b, p, t, c, h, w).permute(0, 1, 3, 2, 4, 5)
+            assert videos.min() >= -1.0 and videos.max() <= 1.0
+            videos = videos.to(dtype=self.dtype)
+
+        prompt_embs = self.encode_prompt(data["text"], data["text_attention_mask"])
+
+        target_h = getattr(self.config, "target_video_height", None)
+        target_w = getattr(self.config, "target_video_width", None)
+        if target_h is None or target_w is None:
+            if getattr(self.model, "frame_seqlen", None) in (50, 55):
+                target_h, target_w = 176, 320
+            else:
+                target_h, target_w = None, None
+        if target_h is not None and target_w is not None:
+            _, _, _, _, h, w = videos.shape
+            if (h, w) != (target_h, target_w):
+                b, p, c, t, _, _ = videos.shape
+                videos = torch.nn.functional.interpolate(
+                    videos.reshape(b * p * t, c, h, w),
+                    size=(target_h, target_w),
+                    mode="bilinear",
+                    align_corners=False,
+                ).reshape(b, p, c, t, target_h, target_w)
+
+        # VAE encode per agent.
+        b, p, c, t, h, w = videos.shape
+        videos_bp = videos.reshape(b * p, c, t, h, w)
+        latents_bp = self.encode_video(
+            videos_bp,
+            self.tiled,
+            (self.tile_size_height, self.tile_size_width),
+            (self.tile_stride_height, self.tile_stride_width),
+        )
+        _, c_lat, F_lat, h_lat, w_lat = latents_bp.shape
+        # [B, P, C_lat, F_lat, H_lat, W_lat] -- model orientation matches
+        # the training call to ``self.model`` after the ``.transpose(2, 3)``
+        # there, so we just stay in this layout throughout the rollout.
+        latents = latents_bp.reshape(b, p, c_lat, F_lat, h_lat, w_lat).to(self._device)
+        prompt_embs = prompt_embs.to(self._device)
+
+        H_g = h_lat // 2
+        W_g = w_lat // 2
+        seq_len = P * F_lat * H_g * W_g
+
+        # Use the *training* scheduler's Euler-style step instead of the
+        # UniPC multistep solver: UniPC's torch.compile cache + per-step
+        # model_outputs history was misbehaving across the dual (video
+        # 5D / action 3D) streams; a plain flow-matching Euler update
+        # `sample += pred * (sigma_next - sigma_curr)` matches the
+        # training scheduler's convention exactly and has no internal
+        # state to corrupt.
+        sample_scheduler = FlowMatchScheduler(
+            num_train_timesteps=self.scheduler.num_train_timesteps,
+            shift=self.sigma_shift,
+            sigma_min=0.0,
+            extra_one_step=True,
+        )
+        sample_scheduler_action = FlowMatchScheduler(
+            num_train_timesteps=self.scheduler.num_train_timesteps,
+            shift=self.sigma_shift,
+            sigma_min=0.0,
+            extra_one_step=True,
+        )
+        # Use a denser schedule than the streaming 16-step default: the
+        # multi-agent inference here is single-shot (no KV-cache streaming
+        # amortisation), so we can afford more steps in exchange for a
+        # closer match to the training noise distribution.
+        num_inference_steps = max(self.num_inference_steps, 50)
+        sample_scheduler.set_timesteps(num_inference_steps, training=False)
+        sample_scheduler_action.set_timesteps(num_inference_steps, training=False)
+        self._mai_num_inference_steps = num_inference_steps
+
+        noisy_video = torch.randn_like(latents)
+        noisy_action = torch.randn(
+            B, P, T_a, D_a, device=self._device, dtype=latents.dtype
+        )
+
+        with torch.amp.autocast(
+            dtype=torch.bfloat16, device_type=torch.device(self._device).type
+        ):
+            for index, _ in enumerate(sample_scheduler.timesteps):
+                video_timestep = sample_scheduler.timesteps[index]
+                action_timestep = sample_scheduler_action.timesteps[index]
+
+                timestep = torch.ones(
+                    [B, F_lat], device=self._device, dtype=torch.int64
+                ) * video_timestep
+                timestep_action = torch.ones(
+                    [B, T_a], device=self._device, dtype=torch.int64
+                ) * action_timestep
+
+                video_noise_pred, action_noise_pred = self.model(
+                    noisy_video,
+                    timestep=timestep,
+                    context=prompt_embs,
+                    seq_len=seq_len,
+                    state=state_features,
+                    embodiment_id=embodiment_id,
+                    action=noisy_action,
+                    timestep_action=timestep_action,
+                )
+
+                # Euler step for video. Spatial truncation in training
+                # (line 882) can also bite at inference if patch_embedding
+                # drops an odd pixel — match shapes by cropping the sample.
+                if video_noise_pred.shape != noisy_video.shape:
+                    noisy_video = noisy_video[
+                        ..., : video_noise_pred.shape[-2], : video_noise_pred.shape[-1]
+                    ]
+                noisy_video = sample_scheduler.step(
+                    model_output=video_noise_pred,
+                    timestep=video_timestep,
+                    sample=noisy_video,
+                    to_final=(index == self._mai_num_inference_steps - 1),
+                )
+
+                # Euler step for action.
+                noisy_action = sample_scheduler_action.step(
+                    model_output=action_noise_pred,
+                    timestep=action_timestep,
+                    sample=noisy_action,
+                    to_final=(index == self._mai_num_inference_steps - 1),
+                )
+
+        return BatchFeature(data={"action_pred": noisy_action})
+
+    def get_action(
+        self,
+        backbone_output: BatchFeature,
+        action_input: BatchFeature,
+        num_action_samples: int = 1,
+        inference_batch_size: int = 32,
+    ) -> BatchFeature:
+        # PR 6 (multi-agent inference): route bimanual batches through the
+        # joint denoising rollout that returns ``action_pred[B, P, T_a, D_a]``.
+        # Single-agent batches keep the base behaviour (delegate to forward).
+        num_agents = self._detect_multi_agent(action_input)
+        if num_agents is not None and num_agents > 1:
+            return self._get_action_multi_agent(
+                backbone_output, action_input, num_agents
+            )
+        return self.forward(backbone_output, action_input)
+
     def forward(self, backbone_output: BatchFeature, action_input: BatchFeature) -> BatchFeature:
         # Multi-agent dispatch: if BimanualDreamTransform stacked a P axis
         # onto state / action / images, route to the multi-agent branch.
