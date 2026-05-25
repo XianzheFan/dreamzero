@@ -616,7 +616,11 @@ def main():
     parser.add_argument("--ckpt-setting", default="checkpoint-10")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=5001)
-    parser.add_argument("--image-h", type=int, default=176)
+    # Match the LeRobot v2 raw mp4 dimensions (see
+    # scripts/data/robofactory_to_lerobot_v2.py); the transform chain
+    # checks input resolution exactly and the in-chain Resize downsizes
+    # to the model target afterwards.
+    parser.add_argument("--image-h", type=int, default=240)
     parser.add_argument("--image-w", type=int, default=320)
     parser.add_argument("--num-frames", type=int, default=33)
     parser.add_argument("--action-horizon", type=int, default=24)

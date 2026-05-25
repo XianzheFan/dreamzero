@@ -29,7 +29,14 @@ case "$NUM_ARMS" in
     4) DATA_CFG="dreamzero/robofactory_4arm_relative" ;;
     *) echo "Unsupported NUM_ARMS=$NUM_ARMS (expected 2, 3, or 4)" >&2; exit 1 ;;
 esac
-echo "NUM_ARMS=$NUM_ARMS -> data=$DATA_CFG"
+# P=3/4 activations don't fit in 80 GB even with zero2 sharding (each
+# extra agent adds ~15 GB of activation memory): enable gradient
+# checkpointing to recompute activations during backward at the cost of
+# ~30% step time. P=2 fits without it, but enabling it everywhere keeps
+# the command line uniform.
+GRAD_CKPT=${GRAD_CKPT:-true}
+if [ "$NUM_ARMS" -ge 3 ]; then GRAD_CKPT=true; fi
+echo "NUM_ARMS=$NUM_ARMS -> data=$DATA_CFG  gradient_checkpointing=$GRAD_CKPT"
 
 ROBOFACTORY_DATA_ROOT=${ROBOFACTORY_DATA_ROOT:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/data/robofactory_lerobot_v2/LiftBarrier-rf"}
 OUTPUT_DIR=${OUTPUT_DIR:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/robofactory_bimanual_smoke"}
@@ -78,6 +85,7 @@ torchrun --nproc_per_node $NUM_GPUS --standalone groot/vla/experiment/experiment
     seed=42 \
     training_args.learning_rate=$LEARNING_RATE \
     training_args.deepspeed="groot/vla/configs/deepspeed/zero2.json" \
+    ++training_args.gradient_checkpointing=$GRAD_CKPT \
     save_steps=$SAVE_STEPS \
     training_args.warmup_ratio=0.0 \
     output_dir=$OUTPUT_DIR \

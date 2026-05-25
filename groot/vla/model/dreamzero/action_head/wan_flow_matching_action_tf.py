@@ -1025,11 +1025,16 @@ class WANPolicyHead(ActionHead):
             sigma_min=0.0,
             extra_one_step=True,
         )
-        # Use a denser schedule than the streaming 16-step default: the
-        # multi-agent inference here is single-shot (no KV-cache streaming
-        # amortisation), so we can afford more steps in exchange for a
-        # closer match to the training noise distribution.
-        num_inference_steps = max(self.num_inference_steps, 50)
+        # Match the single-agent default (16 steps). The earlier 50-step
+        # override gave fractionally better offline action MAE but tripled
+        # wall-time per ``get_action`` call (~50s vs ~16s on H100), which
+        # makes closed-loop rollout (~37 infers / episode at replan=8 /
+        # max_steps=300) too slow to fit a 2h server slot. Override via
+        # ``MAI_NUM_INFERENCE_STEPS`` env var when accuracy > speed.
+        import os as _os
+        num_inference_steps = int(
+            _os.environ.get("MAI_NUM_INFERENCE_STEPS", self.num_inference_steps)
+        )
         sample_scheduler.set_timesteps(num_inference_steps, training=False)
         sample_scheduler_action.set_timesteps(num_inference_steps, training=False)
         self._mai_num_inference_steps = num_inference_steps
