@@ -1,0 +1,644 @@
+"""WebSocket inference server for the multi-agent (bimanual) DreamZero VLA.
+
+Splits the eval architecture in two so the **policy** and the
+**simulator** can live in different Python / glibc environments:
+
+* This server: runs in the dreamzero conda env (Python 3.11, glibc
+  2.28+), holds the LoRA-fine-tuned VLA + its transforms in process,
+  serves action chunks over a WebSocket.
+* RoboTwin eval client (``policy/DreamZero/deploy_policy.py``): runs in
+  the egl container (Ubuntu 18.04, glibc 2.27, Python 3.9), so the
+  only heavy deps it needs are ``websockets``, ``msgpack``, ``numpy``.
+
+Wire protocol (msgpack-numpy on each direction):
+
+  Server -> client on connect (one frame)::
+      {
+        "num_agents": 2,
+        "image_resolution": [H, W],
+        "num_frames": 33,
+        "action_horizon": 24,
+        "action_dim": 16,
+        "fps": 20,
+      }
+
+  Client -> server (``endpoint="reset"``)::
+      {"endpoint": "reset", "session_id": str, "prompt": str}
+      -> returns "reset successful"
+
+  Client -> server (``endpoint="infer"``)::
+      {
+        "endpoint": "infer",
+        "session_id": str,
+        "qpos": np.ndarray [16] float32,
+        "head_rgb": np.ndarray [H, W, 3] uint8,
+        "left_rgb": np.ndarray [H, W, 3] uint8,
+        "right_rgb": np.ndarray [H, W, 3] uint8,
+        "prompt": str,  # optional override; reset's value used if absent
+      }
+      -> returns
+      {
+        "action_chunk": np.ndarray [T_a=24, 16] float32,
+        # delta-joint for slots [0:7] and [8:15]; absolute gripper for
+        # slots [7] and [15]. The client adds qpos[:7] and qpos[8:15]
+        # to the corresponding slices to convert to RoboTwin's
+        # action_type='qpos' (absolute joint target).
+      }
+
+Per-session video history is held server-side as a deque of
+``num_frames`` length so the client only has to send a single new RGB
+triple per inference call.
+
+Usage::
+
+    python -m eval_utils.bimanual_policy_server \\
+        --ckpt-dir /lustre/.../checkpoints/robotwin_bimanual_smoke \\
+        --ckpt-setting checkpoint-10 \\
+        --port 5001
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import dataclasses
+import gc
+import json
+import logging
+import sys
+import traceback
+from collections import deque
+from pathlib import Path
+from typing import Any, Dict
+
+import numpy as np
+import websockets.asyncio.server
+import websockets.frames
+
+
+@dataclasses.dataclass
+class BimanualServerConfig:
+    num_agents: int = 2
+    # Raw per-camera resolution the dataset / transform chain expects --
+    # matches the LeRobot v2 mp4 dimensions written by
+    # ``scripts/data/robofactory_to_lerobot_v2.py``. The chain handles its
+    # own downstream Resize to the model's target.
+    image_resolution: tuple[int, int] = (240, 320)   # (H, W)
+    num_frames: int = 33
+    action_horizon: int = 24
+    action_dim: int = 16
+    fps: int = 20
+
+
+def _make_packer():
+    """Return (pack, unpack) callables backed by msgpack-numpy."""
+    try:
+        from openpi_client import msgpack_numpy as _mn  # type: ignore
+        packer = _mn.Packer()
+        return packer.pack, _mn.unpackb
+    except Exception:
+        import msgpack
+        import msgpack_numpy
+        msgpack_numpy.patch()
+        return (
+            lambda obj: msgpack.packb(obj, use_bin_type=True),
+            lambda buf: msgpack.unpackb(buf, raw=False),
+        )
+
+
+class BimanualPolicy:
+    """Loads the LoRA-fine-tuned VLA + the bimanual_cotrain transform,
+    exposes ``infer(obs)`` and ``reset(info)``.
+
+    Mirrors ``policy/DreamZero/deploy_policy.py::DreamZeroBimanualPolicy``
+    on the server side: encodes the obs into the P-axis tensors the model
+    was trained on, then inverse-normalizes the predicted deltas back to
+    physical units. Per-session rolling video window lives here so the
+    client stays lightweight.
+    """
+
+    def __init__(
+        self,
+        ckpt_dir: Path,
+        ckpt_setting: str,
+        # Raw per-camera resolution the transform chain expects -- matches
+        # the LeRobot v2 mp4 dimensions for RoboFactory bimanual. The
+        # in-chain Resize handles downsampling to the model's target.
+        image_h: int = 240,
+        image_w: int = 320,
+        num_frames: int = 33,
+        action_horizon: int = 24,
+        action_dim: int = 16,
+    ):
+        self.ckpt_dir = Path(ckpt_dir)
+        self.ckpt_setting = ckpt_setting
+        self.image_h = image_h
+        self.image_w = image_w
+        self.num_frames = num_frames
+        self.action_horizon = action_horizon
+        self.action_dim = action_dim
+
+        self._sessions: dict[str, dict] = {}
+        self._load()
+
+    def _load(self) -> None:
+        import torch
+        from omegaconf import OmegaConf
+        from hydra.utils import instantiate
+        from safetensors.torch import load_file
+
+        exp_cfg_dir = self.ckpt_dir / self.ckpt_setting / "experiment_cfg"
+        if not (exp_cfg_dir / "conf.yaml").is_file():
+            exp_cfg_dir = self.ckpt_dir / "experiment_cfg"
+        cfg_path = exp_cfg_dir / "conf.yaml"
+        if not cfg_path.is_file():
+            raise FileNotFoundError(
+                f"No resolved Hydra config under {self.ckpt_dir}; expected "
+                f"{cfg_path} or {self.ckpt_dir / 'experiment_cfg' / 'conf.yaml'}"
+            )
+        self._cfg = OmegaConf.load(str(cfg_path))
+
+        meta_path = exp_cfg_dir / "metadata.json"
+        if meta_path.is_file():
+            with open(meta_path) as f:
+                self._metadata = json.load(f)
+        else:
+            self._metadata = {}
+            logging.warning("metadata.json missing; outputs will not be denormalized")
+
+        # PR 11 load sequence (mirrors groot/vla/experiment/base.py::create_model
+        # and eval_utils/offline_eval_bimanual.py::load_model). Skipping any
+        # of the four steps below leaves the text encoder / VAE / base WAN
+        # body at random init or drops the LoRA-wrapped fine-tune weights
+        # silently -- both produce a server that loads "successfully" with
+        # zero unexpected keys (strict=False) but predicts garbage actions.
+        logging.info("Step 1/4: instantiate(cfg.model)")
+        model = instantiate(self._cfg.model)
+
+        pretrained_path = self._cfg.get("pretrained_model_path", None)
+        if pretrained_path is None:
+            raise ValueError(
+                "cfg.pretrained_model_path is required (base WAN body + text "
+                "encoder live there); the fine-tune ckpt only holds LoRA "
+                "deltas. Offline inference cannot proceed without it."
+            )
+        pretrained_dir = Path(pretrained_path)
+        logging.info(
+            "Step 2/4: load pretrained base shards from %s", pretrained_dir
+        )
+        model_state = model.state_dict()
+        dropped_mismatched: dict[str, tuple] = {}
+
+        def _filter_shape_mismatches(sd: dict) -> dict:
+            kept = {}
+            for k, v in sd.items():
+                ref = model_state.get(k)
+                if ref is not None and tuple(ref.shape) != tuple(v.shape):
+                    dropped_mismatched[k] = (tuple(v.shape), tuple(ref.shape))
+                    continue
+                kept[k] = v
+            return kept
+
+        pretrained_index = pretrained_dir / "model.safetensors.index.json"
+        if pretrained_index.is_file():
+            with open(pretrained_index) as f:
+                p_index = json.load(f)
+            for shard_file in sorted(set(p_index["weight_map"].values())):
+                shard_sd = load_file(str(pretrained_dir / shard_file))
+                shard_sd = _filter_shape_mismatches(shard_sd)
+                model.load_state_dict(shard_sd, strict=False)
+                del shard_sd
+                gc.collect()
+        else:
+            pretrained_safe = pretrained_dir / "model.safetensors"
+            if not pretrained_safe.is_file():
+                raise FileNotFoundError(
+                    f"No model.safetensors[.index.json] under {pretrained_dir}"
+                )
+            sd = _filter_shape_mismatches(load_file(str(pretrained_safe)))
+            model.load_state_dict(sd, strict=False)
+        if dropped_mismatched:
+            logging.info(
+                "Step 2/4: dropped %d shape-mismatched tensor(s) "
+                "(expected for multi-agent deltas vs DROID).",
+                len(dropped_mismatched),
+            )
+
+        if (
+            hasattr(model, "action_head")
+            and hasattr(model.action_head, "inject_lora_after_loading")
+            and getattr(model.action_head.config, "defer_lora_injection", False)
+        ):
+            logging.info("Step 3/4: inject_lora_after_loading()")
+            model.action_head.inject_lora_after_loading()
+
+        logging.info(
+            "Step 4/4: load fine-tune LoRA ckpt from %s/%s",
+            self.ckpt_dir, self.ckpt_setting,
+        )
+        weight_path = self.ckpt_dir / self.ckpt_setting / "model.safetensors"
+        index_path = (
+            self.ckpt_dir / self.ckpt_setting / "model.safetensors.index.json"
+        )
+        if index_path.is_file():
+            with open(index_path) as f:
+                index = json.load(f)
+            for shard_file in sorted(set(index["weight_map"].values())):
+                shard_state_dict = load_file(
+                    str(self.ckpt_dir / self.ckpt_setting / shard_file)
+                )
+                shard_state_dict = _filter_shape_mismatches(shard_state_dict)
+                model.load_state_dict(shard_state_dict, strict=False)
+                del shard_state_dict
+                gc.collect()
+        elif weight_path.is_file():
+            state_dict = load_file(str(weight_path))
+            state_dict = _filter_shape_mismatches(state_dict)
+            model.load_state_dict(state_dict, strict=False)
+        else:
+            raise FileNotFoundError(
+                f"No model.safetensors[.index.json] under "
+                f"{self.ckpt_dir / self.ckpt_setting}"
+            )
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        self._device = device
+        self._dtype = torch.bfloat16 if device == "cuda" else torch.float32
+        model = model.to(device=device, dtype=self._dtype)
+        model.eval()
+        self._model = model
+        logging.info("VLA loaded onto %s in %s", device, self._dtype)
+
+        try:
+            transforms = instantiate(self._cfg.transforms)
+            self._transform = transforms["robofactory"]
+            # The transform pipeline needs normalization stats + modality
+            # metadata before it can be applied. Mirrors sim_policy.py:365.
+            from groot.vla.data.schema.lerobot import DatasetMetadata
+
+            if "robofactory" in self._metadata:
+                metadata = DatasetMetadata.model_validate(self._metadata["robofactory"])
+                # If the action head specifies a target video resolution, propagate it.
+                ah_cfg = getattr(getattr(self._model, "action_head", None), "config", None)
+                if ah_cfg is not None:
+                    target_h = getattr(ah_cfg, "target_video_height", None)
+                    target_w = getattr(ah_cfg, "target_video_width", None)
+                    if target_h is not None and target_w is not None and metadata.modalities.video:
+                        for key in metadata.modalities.video.keys():
+                            metadata.modalities.video[key].resolution = (int(target_w), int(target_h))
+                self._transform.set_metadata(metadata)
+                logging.info("Bimanual transform ready (metadata bound)")
+            else:
+                logging.warning(
+                    "metadata.json lacks 'robofactory' key — transform will fail "
+                    "on first infer(). Found keys: %s",
+                    list(self._metadata.keys()),
+                )
+        except Exception:
+            self._transform = None
+            logging.exception(
+                "transforms.robofactory failed to instantiate — server will "
+                "still start, but infer() will raise."
+            )
+
+    # ----- session bookkeeping ------------------------------------------
+    def _session(self, session_id: str) -> dict:
+        if session_id not in self._sessions:
+            self._sessions[session_id] = {
+                "history": deque(maxlen=self.num_frames),
+                "prompt": "",
+            }
+        return self._sessions[session_id]
+
+    def reset(self, info: dict) -> str:
+        sid = info.get("session_id", "")
+        prompt = info.get("prompt", "")
+        sess = self._session(sid)
+        sess["history"].clear()
+        sess["prompt"] = prompt
+        return "reset successful"
+
+    # ----- inference ----------------------------------------------------
+    def infer(self, obs: dict) -> dict:
+        """Pre-Concat dotted-key batch construction (PR 11+).
+
+        Builds the schema the dataset loader emits at training time
+        (one key per camera, per per-arm state segment, plus
+        placeholder per-arm action segments) so the full
+        ``ComposedModalityTransform`` chain (q99 normalize + Concat
+        + BimanualDreamTransform) runs end-to-end. The model's
+        ``get_action`` returns ``action_pred[B, P, T_a, D_per_arm]``
+        which we then unpack per-arm and denormalize.
+        """
+        import cv2
+        import torch
+
+        if self._transform is None:
+            raise RuntimeError(
+                "Bimanual transform did not instantiate at load time. Check "
+                "the saved experiment_cfg/conf.yaml against this dreamzero "
+                "branch."
+            )
+
+        sid = obs.get("session_id", "")
+        sess = self._session(sid)
+        if obs.get("prompt"):
+            sess["prompt"] = obs["prompt"]
+
+        qpos = np.asarray(obs["qpos"], dtype=np.float32).reshape(-1)
+        assert qpos.shape == (16,), f"need 16-dim qpos, got {qpos.shape}"
+
+        head = np.asarray(obs["head_rgb"], dtype=np.uint8)
+        lft = np.asarray(obs["left_rgb"], dtype=np.uint8)
+        rgt = np.asarray(obs["right_rgb"], dtype=np.uint8)
+        H, W = self.image_h, self.image_w
+        head = cv2.resize(head, (W, H))
+        lft = cv2.resize(lft, (W, H))
+        rgt = cv2.resize(rgt, (W, H))
+
+        # Rolling history of RAW (no V-tile) per-camera frames;
+        # left-pad with the first observation so we always have
+        # ``num_frames`` of context.
+        sess["history"].append((head, lft, rgt))
+        history = list(sess["history"])
+        while len(history) < self.num_frames:
+            history.insert(0, history[0])
+        history = history[-self.num_frames:]
+        # [T, H, W, 3] uint8 per camera. head=global, lft=agent0, rgt=agent1
+        # (matches the LeRobot v2 camera naming written by
+        # ``scripts/data/robofactory_to_lerobot_v2.py``).
+        global_video = np.stack([h for (h, _, _) in history], axis=0)
+        agent0_video = np.stack([l for (_, l, _) in history], axis=0)
+        agent1_video = np.stack([r for (_, _, r) in history], axis=0)
+
+        # Per-arm state slices (T_s=1, current step only).
+        T_s = 1
+        T_a = self.action_horizon
+        prompt = sess.get("prompt", "") or ""
+
+        # ``action.*`` keys are required by ``StateActionTransform`` /
+        # ``ConcatTransform`` even at inference time -- the model
+        # ignores their values and starts denoising from random noise
+        # (see ``WANPolicyHead._get_action_multi_agent``). Zeros are
+        # safe placeholders here; they only have to satisfy the
+        # downstream shape contract.
+        batch = {
+            "video.global_camera-images-rgb": global_video,
+            "video.agent0_camera-images-rgb": agent0_video,
+            "video.agent1_camera-images-rgb": agent1_video,
+            "state.panda0_joint_pos":    qpos[0:7].reshape(T_s, 7).copy(),
+            "state.panda0_gripper_pos":  qpos[7:8].reshape(T_s, 1).copy(),
+            "state.panda1_joint_pos":    qpos[8:15].reshape(T_s, 7).copy(),
+            "state.panda1_gripper_pos":  qpos[15:16].reshape(T_s, 1).copy(),
+            "action.panda0_joint_pos":   np.zeros((T_a, 7), dtype=np.float32),
+            "action.panda0_gripper_pos": np.zeros((T_a, 1), dtype=np.float32),
+            "action.panda1_joint_pos":   np.zeros((T_a, 7), dtype=np.float32),
+            "action.panda1_gripper_pos": np.zeros((T_a, 1), dtype=np.float32),
+            "annotation.task": prompt,
+        }
+
+        with torch.inference_mode():
+            # DreamTransform.apply_single has a ``if self.training:`` gate
+            # that drops ``action`` / ``action_mask`` / ``has_real_action``
+            # in eval mode -- but the multi-agent inference path needs
+            # them (at least for shape). Flip every sub-transform's
+            # ``training`` flag (the ComposedModalityTransform attribute
+            # alone does NOT propagate to children) for this call: our
+            # placeholder action zeros flow through harmlessly because
+            # the model ignores their values and starts denoising from
+            # noise. Restore after.
+            prev_training = getattr(self._transform, "training", False)
+            self._transform.train()
+            try:
+                normalized_inputs = self._transform.apply(batch)
+            finally:
+                if prev_training:
+                    self._transform.train()
+                else:
+                    self._transform.eval()
+
+            # ``text`` and ``text_negative`` come out as raw Python strings
+            # (the collator usually tokenizes; we don't use a collator).
+            # Tokenize manually with the BimanualDreamTransform's tokenizer
+            # (the outer ComposedModalityTransform doesn't expose it; we
+            # find it on the inner model_specific_transform).
+            tok = None
+            for t in getattr(self._transform, "transforms", []):
+                if hasattr(t, "tokenizer"):
+                    tok = t.tokenizer
+                    break
+            if tok is None:
+                raise RuntimeError(
+                    "No tokenizer found on any sub-transform; cannot "
+                    "tokenize text for inference."
+                )
+            for str_key, ids_key, mask_key in [
+                ("text", "text", "text_attention_mask"),
+                ("text_negative", "text_negative", "text_attention_mask_negative"),
+            ]:
+                if str_key in normalized_inputs and isinstance(
+                    normalized_inputs[str_key], str
+                ):
+                    text_val = normalized_inputs[str_key]
+                    ids, mask = tok(
+                        text_val, return_mask=True, add_special_tokens=True
+                    )
+                    # HuggingfaceTokenizer wraps the single string into a
+                    # 1-element list, so ids/mask come out as (1, seq_len)
+                    # with a leading batch dim. Drop it so the generic
+                    # ``.unsqueeze(0)`` below adds it back uniformly.
+                    if ids.dim() == 2 and ids.shape[0] == 1:
+                        ids = ids.squeeze(0)
+                        mask = mask.squeeze(0)
+                    normalized_inputs[ids_key] = ids
+                    normalized_inputs[mask_key] = mask
+            # ``transform.apply`` runs unbatched (single-sample mode).
+            # Add a leading B=1 dim and move tensors to device. The dict
+            # also contains scalar/numpy ints (e.g. ``num_agents`` set by
+            # BimanualDreamTransform as np.int64) -- wrap those as 1-D
+            # tensors so ``prepare_input``'s tree.map_structure can
+            # ``torch.is_floating_point`` them without crashing.
+            inputs_gpu = {}
+            for k, v in normalized_inputs.items():
+                if isinstance(v, torch.Tensor):
+                    t = v
+                elif isinstance(v, np.ndarray):
+                    t = torch.from_numpy(v)
+                elif isinstance(
+                    v, (int, float, bool, np.integer, np.floating, np.bool_)
+                ):
+                    t = torch.as_tensor(v)
+                else:
+                    # Drop strings / unknown types: ``annotation.task`` is
+                    # left in the post-transform dict as a raw str, but
+                    # the model's ``prepare_input`` does
+                    # ``tree.map_structure(torch.is_floating_point, ...)``
+                    # which only accepts Tensors. Tokenized output already
+                    # lives under ``text`` / ``text_attention_mask``.
+                    continue
+                if t.is_floating_point():
+                    t = t.to(self._device, dtype=self._dtype)
+                else:
+                    t = t.to(self._device)
+                inputs_gpu[k] = t.unsqueeze(0)
+
+            outputs = self._model.get_action(inputs_gpu)
+
+        flat_action = self._denorm_action(outputs)
+        return {"action_chunk": flat_action.astype(np.float32)}
+
+    def _denorm_action(self, outputs) -> np.ndarray:
+        """Take model output ``action_pred [B=1, P=2, T_a, D_per_arm=8]``
+        (normalized to [-1, 1] via q99) and denormalize back to
+        physical units. Concatenates the two arms into the 16-dim
+        flat layout the client expects:
+        ``[panda0_joint(0:7), panda0_gripper(7:8), panda1_joint(8:15),
+        panda1_gripper(15:16)]``.
+        """
+        import torch
+
+        data = outputs.data if hasattr(outputs, "data") else outputs
+        if "action_pred" not in data:
+            raise KeyError(
+                f"Expected action_pred in model output, got {list(data.keys())}"
+            )
+        pred = data["action_pred"]
+        if isinstance(pred, torch.Tensor):
+            pred = pred.detach().float().cpu().numpy()
+        pred = np.asarray(pred)                               # [B, P, T_a, D]
+        if pred.ndim != 4:
+            raise ValueError(
+                f"action_pred must be 4-D [B, P, T_a, D]; got {pred.shape}"
+            )
+        B, P, T_a, D_per_arm = pred.shape
+        if P != 2 or D_per_arm != 8:
+            raise ValueError(
+                f"Expected P=2 arms with D=8 per arm; got P={P} D={D_per_arm}"
+            )
+
+        out = np.zeros((self.action_horizon, self.action_dim), dtype=np.float32)
+        emb_meta = (
+            self._metadata.get("robofactory", {})
+            .get("statistics", {})
+            .get("action", {})
+        )
+
+        def _denorm(slice_pred: np.ndarray, key: str, lo: int, hi: int) -> None:
+            stats = emb_meta.get(key.replace("action.", ""), {})
+            q01 = np.asarray(stats.get("q01", np.zeros(hi - lo)), dtype=np.float32)
+            q99 = np.asarray(stats.get("q99", np.ones(hi - lo)), dtype=np.float32)
+            span = q99 - q01
+            span[span == 0] = 1.0
+            T = min(slice_pred.shape[0], self.action_horizon)
+            out[:T, lo:hi] = (slice_pred[:T] + 1.0) / 2.0 * span + q01
+
+        p0 = pred[0, 0]                                       # [T_a, 8]
+        p1 = pred[0, 1]                                       # [T_a, 8]
+        _denorm(p0[:, :7],  "action.panda0_joint_pos",    0, 7)
+        _denorm(p0[:, 7:8], "action.panda0_gripper_pos",  7, 8)
+        _denorm(p1[:, :7],  "action.panda1_joint_pos",    8, 15)
+        _denorm(p1[:, 7:8], "action.panda1_gripper_pos", 15, 16)
+        return out
+
+
+class BimanualWebsocketServer:
+    def __init__(
+        self,
+        policy: BimanualPolicy,
+        host: str = "0.0.0.0",
+        port: int = 5001,
+    ):
+        self._policy = policy
+        self._host = host
+        self._port = port
+        self._cfg = BimanualServerConfig(
+            num_frames=policy.num_frames,
+            action_horizon=policy.action_horizon,
+            image_resolution=(policy.image_h, policy.image_w),
+            action_dim=policy.action_dim,
+        )
+        logging.getLogger("websockets.server").setLevel(logging.INFO)
+
+    def serve_forever(self) -> None:
+        asyncio.run(self.run())
+
+    async def run(self) -> None:
+        async with websockets.asyncio.server.serve(
+            self._handler,
+            self._host,
+            self._port,
+            compression=None,
+            max_size=None,
+        ) as server:
+            logging.info(
+                "Bimanual policy server listening on ws://%s:%d",
+                self._host, self._port,
+            )
+            await server.serve_forever()
+
+    async def _handler(self, websocket):
+        logging.info("Connection from %s opened", websocket.remote_address)
+        pack, unpack = _make_packer()
+        await websocket.send(pack(dataclasses.asdict(self._cfg)))
+
+        while True:
+            try:
+                obs = unpack(await websocket.recv())
+                endpoint = obs.pop("endpoint", "infer")
+                if endpoint == "reset":
+                    reply: Any = self._policy.reset(obs)
+                else:
+                    reply = self._policy.infer(obs)
+                await websocket.send(pack(reply))
+            except websockets.ConnectionClosed:
+                logging.info("Connection from %s closed", websocket.remote_address)
+                break
+            except Exception:
+                tb = traceback.format_exc()
+                logging.error("Inference error:\n%s", tb)
+                await websocket.send(tb)
+                await websocket.close(
+                    code=websockets.frames.CloseCode.INTERNAL_ERROR,
+                    reason="Internal server error.",
+                )
+                raise
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--ckpt-dir",
+        type=Path,
+        required=True,
+        help="LoRA training output dir (contains checkpoint-<step>/ and "
+             "experiment_cfg/)",
+    )
+    parser.add_argument("--ckpt-setting", default="checkpoint-10")
+    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--port", type=int, default=5001)
+    parser.add_argument("--image-h", type=int, default=176)
+    parser.add_argument("--image-w", type=int, default=320)
+    parser.add_argument("--num-frames", type=int, default=33)
+    parser.add_argument("--action-horizon", type=int, default=24)
+    args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        stream=sys.stdout,
+    )
+
+    policy = BimanualPolicy(
+        ckpt_dir=args.ckpt_dir,
+        ckpt_setting=args.ckpt_setting,
+        image_h=args.image_h,
+        image_w=args.image_w,
+        num_frames=args.num_frames,
+        action_horizon=args.action_horizon,
+    )
+    server = BimanualWebsocketServer(policy, host=args.host, port=args.port)
+    server.serve_forever()
+
+
+if __name__ == "__main__":
+    main()
