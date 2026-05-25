@@ -1,20 +1,35 @@
 #!/bin/bash
-# DreamZero RoboFactory bimanual smoke training.
+# DreamZero RoboFactory multi-arm training (2 / 3 / 4 arms).
 #
-# Mirrors yam_bimanual_training.sh but plugs in the ``robofactory``
-# embodiment tag and the 8/8 (per-arm) state/action dim. Expects
-# a LeRobot v2 dataset produced by
-# ``scripts/data/robofactory_to_lerobot_v2.py``.
+# Set ``NUM_ARMS=3`` or ``NUM_ARMS=4`` to switch to the 3-arm
+# (CameraAlignment-rf, ThreeRobotsStackCube-rf) or 4-arm (TakePhoto-rf)
+# variants -- the script picks the matching data config and propagates
+# ``num_agents`` into ``diffusion_model_cfg``. Default is 2 (bimanual).
 #
 # Usage:
 #   ROBOFACTORY_DATA_ROOT=/path/to/lerobot_v2/LiftBarrier-rf \
 #   OUTPUT_DIR=$HOME/checkpoints/robofactory_bimanual_smoke \
+#   bash scripts/train/robofactory_bimanual_training.sh
+#
+#   # 3-arm:
+#   NUM_ARMS=3 \
+#   ROBOFACTORY_DATA_ROOT=/path/to/lerobot_v2/CameraAlignment-rf \
+#   OUTPUT_DIR=$HOME/checkpoints/robofactory_3arm_smoke \
 #   bash scripts/train/robofactory_bimanual_training.sh
 
 export HYDRA_FULL_ERROR=1
 # Multi-agent sparse hub attention applies an explicit attn_mask that
 # FlashAttention 2 doesn't support; force the torch (eager) backend.
 export ATTENTION_BACKEND=${ATTENTION_BACKEND:-torch}
+
+NUM_ARMS=${NUM_ARMS:-2}
+case "$NUM_ARMS" in
+    2) DATA_CFG="dreamzero/robofactory_bimanual_relative" ;;
+    3) DATA_CFG="dreamzero/robofactory_3arm_relative" ;;
+    4) DATA_CFG="dreamzero/robofactory_4arm_relative" ;;
+    *) echo "Unsupported NUM_ARMS=$NUM_ARMS (expected 2, 3, or 4)" >&2; exit 1 ;;
+esac
+echo "NUM_ARMS=$NUM_ARMS -> data=$DATA_CFG"
 
 ROBOFACTORY_DATA_ROOT=${ROBOFACTORY_DATA_ROOT:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/data/robofactory_lerobot_v2/LiftBarrier-rf"}
 OUTPUT_DIR=${OUTPUT_DIR:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/robofactory_bimanual_smoke"}
@@ -49,7 +64,7 @@ torchrun --nproc_per_node $NUM_GPUS --standalone groot/vla/experiment/experiment
     report_to=$REPORT_TO \
     wandb_project=$WANDB_PROJECT \
     +training_args.run_name=$WANDB_RUN_NAME \
-    data=dreamzero/robofactory_bimanual_relative \
+    data=$DATA_CFG \
     train_architecture=lora \
     num_frames=33 \
     action_horizon=24 \
@@ -93,7 +108,7 @@ torchrun --nproc_per_node $NUM_GPUS --standalone groot/vla/experiment/experiment
     ++action_head_cfg.config.defer_lora_injection=true \
     ++action_head_cfg.config.max_state_dim=8 \
     ++action_head_cfg.config.action_dim=8 \
-    ++action_head_cfg.config.diffusion_model_cfg.num_agents=2 \
+    ++action_head_cfg.config.diffusion_model_cfg.num_agents=$NUM_ARMS \
     ++action_head_cfg.config.diffusion_model_cfg.max_state_dim=8 \
     ++action_head_cfg.config.diffusion_model_cfg.action_dim=8 \
     ++action_head_cfg.config.diffusion_model_cfg.concat_first_frame_latent=false \

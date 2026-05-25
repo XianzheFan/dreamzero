@@ -1,0 +1,70 @@
+# @package _global_
+
+# RoboFactory 4-arm training config (TakePhoto-rf). Reuses
+# ``modality_config_robofactory_4arm`` and ``transform_robofactory_4arm``
+# from ``base_48_wan_fine_aug_relative.yaml`` and re-routes
+# ``modality_configs.robofactory`` / ``transforms.robofactory`` at the
+# embodiment-tag level so the data loader picks them up.
+#
+# Required CLI overrides:
+#   data=dreamzero/robofactory_4arm_relative
+#   model/dreamzero/transform=bimanual_cotrain
+#   robofactory_data_root=/path/to/converted/lerobot_v2/<task>-rf
+#   ++action_head_cfg.config.diffusion_model_cfg.num_agents=4
+
+defaults:
+  - dreamzero/base_48_wan_fine_aug_relative
+  - _self_
+
+max_state_dim: 64
+use_global_metadata: false
+relative_action: false
+relative_action_per_horizon: false
+relative_action_keys: []
+max_chunk_size: 5
+dataset_shard_sampling_rate: 0.1
+mixture_dataset_cls: groot.vla.data.dataset.lerobot_sharded.ShardedLeRobotMixtureDataset.from_mixture_spec
+single_dataset_cls: groot.vla.data.dataset.lerobot_sharded.ShardedLeRobotSubLangSingleActionChunkDatasetDROID
+
+robofactory_data_root: ???
+
+train_dataset:
+  _target_: ${mixture_dataset_cls}
+  _convert_: object
+  mixture_spec:
+    - dataset_path:
+        robofactory:
+          - ${robofactory_data_root}
+      dataset_weight: 1.0
+      distribute_weights: true
+
+  dataset_class: ${single_dataset_cls}
+  all_modality_configs: ${modality_configs}
+  all_transforms: ${transforms}
+  metadata_versions: ${metadata_versions}
+  fps: ${fps}
+  dataset_kwargs:
+    video_backend: decord
+    use_global_metadata: ${use_global_metadata}
+    max_chunk_size: ${max_chunk_size}
+    relative_action: ${relative_action}
+    relative_action_keys: ${relative_action_keys}
+    relative_action_per_horizon: ${relative_action_per_horizon}
+  mixture_kwargs:
+    training: true
+    balance_dataset_weights: false
+    seed: 42
+    shard_sampling_rate: ${dataset_shard_sampling_rate}
+
+# P=4 per-agent splits consumed by BimanualDreamTransform (P-agnostic).
+agent_video_views: [[0, 1], [0, 2], [0, 3], [0, 4]]
+agent_state_dims: [[0, 8], [8, 16], [16, 24], [24, 32]]
+agent_action_dims: [[0, 8], [8, 16], [16, 24], [24, 32]]
+
+# Re-route the per-embodiment modality / transform from the 2-arm default
+# to the 4-arm variant defined in base_48_wan_fine_aug_relative.yaml.
+modality_configs:
+  robofactory: ${modality_config_robofactory_4arm}
+
+transforms:
+  robofactory: ${transform_robofactory_4arm}

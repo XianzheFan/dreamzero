@@ -2,21 +2,18 @@
 LeRobot v2 layout that the DreamZero ``multi-agent`` branch can consume
 via the ``robofactory`` embodiment tag.
 
+The script auto-detects the agent count from the .h5 (counts
+``obs/agent/panda-N`` subgroups), so the same code path handles 2-arm,
+3-arm and 4-arm RoboFactory tasks.
+
 Source layout (one task per .h5, as produced by RoboFactory's
-``script/generate_data.py``)::
+``script/generate_data.py``). Each trajectory has, for ``N``
+agents 0..N-1::
 
-    data/h5_data/{task}.h5
-    data/h5_data/{task}.json
-
-Each trajectory in the .h5 has::
-
-    obs/agent/panda-0/qpos             [T,   9]    (7 arm + 2 finger)
-    obs/agent/panda-1/qpos             [T,   9]
-    obs/sensor_data/head_camera_agent0/rgb  [T, H, W, 3]  uint8
-    obs/sensor_data/head_camera_agent1/rgb  [T, H, W, 3]
-    obs/sensor_data/head_camera_global/rgb  [T, H, W, 3]
-    actions/panda-0                    [T-1, 8]    (7 joint deltas + 1 gripper)
-    actions/panda-1                    [T-1, 8]
+    obs/agent/panda-i/qpos                       [T,   9]    (7 arm + 2 finger)
+    obs/sensor_data/head_camera_global/rgb       [T, H, W, 3]  uint8
+    obs/sensor_data/head_camera_agent{i}/rgb     [T, H, W, 3]
+    actions/panda-i                              [T-1, 8]    (7 joint deltas + 1 gripper)
 
 Output (the LeRobot v2 schema expected by
 ``ShardedLeRobotSubLangSingleActionChunkDatasetDROID``)::
@@ -24,20 +21,21 @@ Output (the LeRobot v2 schema expected by
     {out_dir}/
         data/chunk-000/episode_000000.parquet ...
         videos/chunk-000/observation.images.global/episode_000000.mp4
-        videos/chunk-000/observation.images.agent0/episode_000000.mp4
-        videos/chunk-000/observation.images.agent1/episode_000000.mp4
+        videos/chunk-000/observation.images.agent{i}/episode_000000.mp4
         meta/{info,modality,episodes,tasks,stats,embodiment}.{json,jsonl}
 
-State / action concat layout (per row, 16 dims total)::
+State / action concat layout (per row, ``num_arms * 8`` dims total)::
 
-    [panda0_joint(0:7), panda0_gripper(7:8), panda1_joint(8:15), panda1_gripper(15:16)]
+    [panda0_joint(0:7), panda0_gripper(7:8),
+     panda1_joint(8:15), panda1_gripper(15:16),
+     ... up to N ...]
 
 Usage::
 
     python scripts/data/robofactory_to_lerobot_v2.py \\
-        --h5 /path/to/RoboFactory/robofactory/data/h5_data/LiftBarrier-rf.h5 \\
-        --out /path/to/lerobot_v2/LiftBarrier-rf \\
-        --task "the two robot arms lift the barrier together" \\
+        --h5 /path/to/RoboFactory/robofactory/data/h5_data/TakePhoto-rf.h5 \\
+        --out /path/to/lerobot_v2/TakePhoto-rf \\
+        --task "the four robot arms cooperate to take a photo" \\
         --num-episodes 150
 """
 
@@ -57,16 +55,24 @@ from tqdm import tqdm
 
 FPS = 20
 CHUNK_SIZE = 1000
-CAMERAS = {
-    "observation.images.global": "head_camera_global",
-    "observation.images.agent0": "head_camera_agent0",
-    "observation.images.agent1": "head_camera_agent1",
-}
 # Per-arm state slice: qpos[:8] = 7 arm joints + 1 finger joint.
 ARM_STATE_DIM = 8
 ARM_ACTION_DIM = 8
-STATE_DIM = 2 * ARM_STATE_DIM  # 16
-ACTION_DIM = 2 * ARM_ACTION_DIM  # 16
+
+
+def detect_num_arms(traj: h5py.Group) -> int:
+    """Count ``obs/agent/panda-N`` groups in a trajectory."""
+    agents = traj["obs/agent"]
+    arms = [k for k in agents.keys() if k.startswith("panda-")]
+    return len(arms)
+
+
+def cameras_for_num_arms(num_arms: int) -> dict[str, str]:
+    """LeRobot key -> h5 sensor key mapping for ``num_arms`` agents."""
+    cams = {"observation.images.global": "head_camera_global"}
+    for n in range(num_arms):
+        cams[f"observation.images.agent{n}"] = f"head_camera_agent{n}"
+    return cams
 
 
 def encode_video(frames: np.ndarray, output_path: Path, fps: int) -> None:
@@ -113,22 +119,21 @@ def convert_episode(
     task_index: int,
     out_root: Path,
     cumulative_index: int,
+    num_arms: int,
 ) -> tuple[int, np.ndarray, np.ndarray]:
     """Write one .parquet + N .mp4 files for one trajectory.
 
     Returns ``(length, action_buffer, state_buffer)`` so callers can
     accumulate global stats and the index counter.
     """
-    panda0_state = _per_arm_state(traj, "panda-0")
-    panda1_state = _per_arm_state(traj, "panda-1")
-    panda0_action = _per_arm_action(traj, "panda-0")
-    panda1_action = _per_arm_action(traj, "panda-1")
+    per_arm_state = [_per_arm_state(traj, f"panda-{n}") for n in range(num_arms)]
+    per_arm_action = [_per_arm_action(traj, f"panda-{n}") for n in range(num_arms)]
 
     # ManiSkill emits one extra obs at the terminal step (no paired
     # action). Trim to min length so each row has a real action.
-    T = min(len(panda0_state), len(panda0_action))
-    state = np.concatenate([panda0_state[:T], panda1_state[:T]], axis=1)  # [T, 16]
-    action = np.concatenate([panda0_action[:T], panda1_action[:T]], axis=1)  # [T, 16]
+    T = min(min(len(s) for s in per_arm_state), min(len(a) for a in per_arm_action))
+    state = np.concatenate([s[:T] for s in per_arm_state], axis=1)
+    action = np.concatenate([a[:T] for a in per_arm_action], axis=1)
 
     chunk_idx = episode_index // CHUNK_SIZE
     chunk_dir = f"chunk-{chunk_idx:03d}"
@@ -149,7 +154,8 @@ def convert_episode(
     pq.write_table(pa.Table.from_pandas(df, preserve_index=False),
                    data_dir / f"episode_{episode_index:06d}.parquet")
 
-    for video_key, h5_cam in CAMERAS.items():
+    cameras = cameras_for_num_arms(num_arms)
+    for video_key, h5_cam in cameras.items():
         rgb = traj[f"obs/sensor_data/{h5_cam}/rgb"][:T]  # [T, H, W, 3] uint8
         video_dir = out_root / "videos" / chunk_dir / video_key
         video_dir.mkdir(parents=True, exist_ok=True)
@@ -167,6 +173,7 @@ def write_meta(
     sample_video_hw: tuple[int, int],
     actions: list[np.ndarray],
     states: list[np.ndarray],
+    num_arms: int,
 ) -> None:
     meta = out_root / "meta"
     meta.mkdir(parents=True, exist_ok=True)
@@ -188,15 +195,29 @@ def write_meta(
         },
     }
 
-    state_names = [
-        *(f"panda0_joint_{i}.pos" for i in range(7)),
-        "panda0_gripper.pos",
-        *(f"panda1_joint_{i}.pos" for i in range(7)),
-        "panda1_gripper.pos",
-    ]
+    state_dim = num_arms * ARM_STATE_DIM
+    action_dim = num_arms * ARM_ACTION_DIM
+    state_names: list[str] = []
+    for n in range(num_arms):
+        state_names.extend(f"panda{n}_joint_{i}.pos" for i in range(7))
+        state_names.append(f"panda{n}_gripper.pos")
+
+    features = {
+        "action": {"dtype": "float32", "names": state_names, "shape": [action_dim]},
+        "observation.state": {"dtype": "float32", "names": state_names, "shape": [state_dim]},
+        "observation.images.global": video_feature_template,
+        "timestamp": {"dtype": "float32", "shape": [1], "names": None},
+        "frame_index": {"dtype": "int64", "shape": [1], "names": None},
+        "episode_index": {"dtype": "int64", "shape": [1], "names": None},
+        "index": {"dtype": "int64", "shape": [1], "names": None},
+        "task_index": {"dtype": "int64", "shape": [1], "names": None},
+    }
+    for n in range(num_arms):
+        features[f"observation.images.agent{n}"] = video_feature_template
+
     info = {
         "codebase_version": "v2.0",
-        "robot_type": "bi_panda_robofactory",
+        "robot_type": f"{num_arms}_panda_robofactory",
         "total_episodes": num_episodes,
         "total_frames": total_frames,
         "total_tasks": 1,
@@ -204,71 +225,50 @@ def write_meta(
         "fps": FPS,
         "data_path": "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet",
         "video_path": "videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4",
-        "features": {
-            "action": {"dtype": "float32", "names": state_names, "shape": [ACTION_DIM]},
-            "observation.state": {"dtype": "float32", "names": state_names, "shape": [STATE_DIM]},
-            "observation.images.global": video_feature_template,
-            "observation.images.agent0": video_feature_template,
-            "observation.images.agent1": video_feature_template,
-            "timestamp": {"dtype": "float32", "shape": [1], "names": None},
-            "frame_index": {"dtype": "int64", "shape": [1], "names": None},
-            "episode_index": {"dtype": "int64", "shape": [1], "names": None},
-            "index": {"dtype": "int64", "shape": [1], "names": None},
-            "task_index": {"dtype": "int64", "shape": [1], "names": None},
-        },
+        "features": features,
     }
     (meta / "info.json").write_text(json.dumps(info, indent=2))
 
+    state_modality: dict[str, dict] = {}
+    action_modality: dict[str, dict] = {}
+    video_modality: dict[str, dict] = {
+        "global_camera-images-rgb": {"original_key": "observation.images.global"},
+    }
+    for n in range(num_arms):
+        s_start = n * ARM_STATE_DIM
+        a_start = n * ARM_ACTION_DIM
+        state_modality[f"panda{n}_joint_pos"] = {
+            "original_key": "observation.state",
+            "start": s_start, "end": s_start + 7,
+            "rotation_type": None, "absolute": True,
+            "dtype": "float32", "range": None,
+        }
+        state_modality[f"panda{n}_gripper_pos"] = {
+            "original_key": "observation.state",
+            "start": s_start + 7, "end": s_start + 8,
+            "rotation_type": None, "absolute": True,
+            "dtype": "float32", "range": None,
+        }
+        action_modality[f"panda{n}_joint_pos"] = {
+            "original_key": "action",
+            "start": a_start, "end": a_start + 7,
+            "rotation_type": None, "absolute": False,
+            "dtype": "float32", "range": None,
+        }
+        action_modality[f"panda{n}_gripper_pos"] = {
+            "original_key": "action",
+            "start": a_start + 7, "end": a_start + 8,
+            "rotation_type": None, "absolute": True,
+            "dtype": "float32", "range": None,
+        }
+        video_modality[f"agent{n}_camera-images-rgb"] = {
+            "original_key": f"observation.images.agent{n}",
+        }
+
     modality = {
-        "state": {
-            "panda0_joint_pos": {
-                "original_key": "observation.state",
-                "start": 0, "end": 7,
-                "rotation_type": None, "absolute": True, "dtype": "float32", "range": None,
-            },
-            "panda0_gripper_pos": {
-                "original_key": "observation.state",
-                "start": 7, "end": 8,
-                "rotation_type": None, "absolute": True, "dtype": "float32", "range": None,
-            },
-            "panda1_joint_pos": {
-                "original_key": "observation.state",
-                "start": 8, "end": 15,
-                "rotation_type": None, "absolute": True, "dtype": "float32", "range": None,
-            },
-            "panda1_gripper_pos": {
-                "original_key": "observation.state",
-                "start": 15, "end": 16,
-                "rotation_type": None, "absolute": True, "dtype": "float32", "range": None,
-            },
-        },
-        "action": {
-            "panda0_joint_pos": {
-                "original_key": "action",
-                "start": 0, "end": 7,
-                "rotation_type": None, "absolute": False, "dtype": "float32", "range": None,
-            },
-            "panda0_gripper_pos": {
-                "original_key": "action",
-                "start": 7, "end": 8,
-                "rotation_type": None, "absolute": True, "dtype": "float32", "range": None,
-            },
-            "panda1_joint_pos": {
-                "original_key": "action",
-                "start": 8, "end": 15,
-                "rotation_type": None, "absolute": False, "dtype": "float32", "range": None,
-            },
-            "panda1_gripper_pos": {
-                "original_key": "action",
-                "start": 15, "end": 16,
-                "rotation_type": None, "absolute": True, "dtype": "float32", "range": None,
-            },
-        },
-        "video": {
-            "global_camera-images-rgb": {"original_key": "observation.images.global"},
-            "agent0_camera-images-rgb": {"original_key": "observation.images.agent0"},
-            "agent1_camera-images-rgb": {"original_key": "observation.images.agent1"},
-        },
+        "state": state_modality,
+        "action": action_modality,
+        "video": video_modality,
         "annotation": {"task": {"original_key": "task_index"}},
     }
     (meta / "modality.json").write_text(json.dumps(modality, indent=2))
@@ -285,7 +285,7 @@ def write_meta(
         f.write(json.dumps({"task_index": 0, "task": task_text}) + "\n")
 
     (meta / "embodiment.json").write_text(json.dumps({
-        "robot_type": "bi_panda_robofactory",
+        "robot_type": f"{num_arms}_panda_robofactory",
         "embodiment_tag": "robofactory",
     }, indent=2))
 
@@ -320,6 +320,8 @@ def main():
                         help="Natural-language task description (used by tasks.jsonl)")
     parser.add_argument("--num-episodes", type=int, default=-1,
                         help="Number of episodes to convert (-1 for all)")
+    parser.add_argument("--num-arms", type=int, default=None,
+                        help="Optional sanity check: assert detected arm count matches.")
     args = parser.parse_args()
 
     args.out.mkdir(parents=True, exist_ok=True)
@@ -328,6 +330,15 @@ def main():
         traj_keys = sorted(f.keys(), key=lambda k: int(k.split("_")[1]))
         if args.num_episodes > 0:
             traj_keys = traj_keys[: args.num_episodes]
+
+        # Detect arm count from the first trajectory. RoboFactory's
+        # generator pins this per-task, so the first traj is authoritative.
+        num_arms = detect_num_arms(f[traj_keys[0]])
+        print(f"Detected num_arms = {num_arms}")
+        if args.num_arms is not None and args.num_arms != num_arms:
+            raise ValueError(
+                f"--num-arms={args.num_arms} disagrees with .h5 ({num_arms})."
+            )
 
         episode_lengths: list[int] = []
         actions_buf: list[np.ndarray] = []
@@ -346,6 +357,7 @@ def main():
                 task_index=0,
                 out_root=args.out,
                 cumulative_index=cumulative,
+                num_arms=num_arms,
             )
             cumulative += length
             episode_lengths.append(length)
@@ -362,6 +374,7 @@ def main():
         sample_video_hw=sample_hw,
         actions=actions_buf,
         states=states_buf,
+        num_arms=num_arms,
     )
     print(f"Done. {len(episode_lengths)} episodes / {cumulative} frames -> {args.out}")
 
