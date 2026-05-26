@@ -36,7 +36,23 @@ esac
 # the command line uniform.
 GRAD_CKPT=${GRAD_CKPT:-true}
 if [ "$NUM_ARMS" -ge 3 ]; then GRAD_CKPT=true; fi
-echo "NUM_ARMS=$NUM_ARMS -> data=$DATA_CFG  gradient_checkpointing=$GRAD_CKPT"
+
+# DeepSpeed stage. ZeRO-2 keeps params replicated (46 GB/rank for the 23B
+# model), which is fine for P=2 but leaves no headroom for the extra
+# ~15 GB/agent activation in P=3/4 — OOM on cross-attn FFN. Switch to
+# ZeRO-3 there so params shard across the 8 ranks (~6 GB/rank), freeing
+# ~40 GB for activations. Trade-off is ~15-25% slower step from the
+# all-gather, but P=3/4 doesn't run at all under ZeRO-2.
+if [ "$NUM_ARMS" -ge 3 ]; then
+    DEEPSPEED_CFG=${DEEPSPEED_CFG:-groot/vla/configs/deepspeed/zero3.json}
+else
+    DEEPSPEED_CFG=${DEEPSPEED_CFG:-groot/vla/configs/deepspeed/zero2.json}
+fi
+
+# Allocator fragmentation hint (PyTorch's own OOM message suggests this).
+export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
+
+echo "NUM_ARMS=$NUM_ARMS -> data=$DATA_CFG  gradient_checkpointing=$GRAD_CKPT  deepspeed=$DEEPSPEED_CFG"
 
 ROBOFACTORY_DATA_ROOT=${ROBOFACTORY_DATA_ROOT:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/data/robofactory_lerobot_v2/LiftBarrier-rf"}
 OUTPUT_DIR=${OUTPUT_DIR:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/robofactory_bimanual_smoke"}
@@ -84,7 +100,7 @@ torchrun --nproc_per_node $NUM_GPUS --standalone groot/vla/experiment/experiment
     num_state_per_block=1 \
     seed=42 \
     training_args.learning_rate=$LEARNING_RATE \
-    training_args.deepspeed="groot/vla/configs/deepspeed/zero2.json" \
+    training_args.deepspeed="$DEEPSPEED_CFG" \
     ++training_args.gradient_checkpointing=$GRAD_CKPT \
     save_steps=$SAVE_STEPS \
     training_args.warmup_ratio=0.0 \

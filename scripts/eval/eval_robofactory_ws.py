@@ -237,6 +237,23 @@ def main():
     assert meta.get("num_agents") == 2, f"server reports num_agents={meta.get('num_agents')}"
 
     results = []
+    def _write_partial() -> None:
+        if not args.log:
+            return
+        ok = sum(1 for r in results if r.get("success"))
+        rate = ok / len(results) if results else 0.0
+        with open(args.log, "w") as f:
+            json.dump(
+                {
+                    "results": results,
+                    "success_rate": rate,
+                    "ckpt": args.host,
+                    "n_completed": len(results),
+                    "n_target": args.num_episodes,
+                },
+                f, indent=2,
+            )
+
     for i in range(args.num_episodes):
         seed = args.seed_start + i
         t0 = time.time()
@@ -245,21 +262,22 @@ def main():
                 env, ws, seed, args.prompt, args.replan_every, args.max_steps
             )
         except Exception as e:
-            print(f"seed={seed} ERROR: {type(e).__name__}: {e}")
+            print(f"seed={seed} ERROR: {type(e).__name__}: {e}", flush=True)
             results.append({"seed": seed, "success": False, "steps": -1, "wall_s": 0.0, "error": str(e)})
+            _write_partial()    # persist partial so a slurm preempt doesn't lose finished seeds
             continue
         dt = time.time() - t0
         results.append({"seed": seed, "success": bool(success), "steps": int(steps), "wall_s": round(dt, 1)})
-        print(f"seed={seed} success={success} steps={steps} wall={dt:.1f}s")
+        print(f"seed={seed} success={success} steps={steps} wall={dt:.1f}s", flush=True)
+        _write_partial()
 
     ok = sum(1 for r in results if r.get("success"))
     rate = ok / len(results) if results else 0.0
-    print(f"\nTotal: {ok}/{len(results)} = {rate * 100:.1f}%")
+    print(f"\nTotal: {ok}/{len(results)} = {rate * 100:.1f}%", flush=True)
 
     if args.log:
-        with open(args.log, "w") as f:
-            json.dump({"results": results, "success_rate": rate, "ckpt": args.host}, f, indent=2)
-        print(f"Wrote {args.log}")
+        _write_partial()
+        print(f"Wrote {args.log}", flush=True)
 
     env.close()
     ws.close()
