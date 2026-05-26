@@ -87,19 +87,24 @@ def extract_obs(obs):
     return head, left, right, qpos
 
 
-def integrate_action(delta16: np.ndarray, qpos16: np.ndarray) -> np.ndarray:
-    """Server output convention (see bimanual_policy_server.py docstring):
-      [0:7]  panda0 joint deltas
-      [7]    panda0 gripper (absolute)
-      [8:15] panda1 joint deltas
-      [15]   panda1 gripper (absolute)
+def integrate_action(action16: np.ndarray, qpos16: np.ndarray) -> np.ndarray:
+    """Policy outputs *absolute* joint targets + absolute gripper, fed
+    directly into ManiSkill's ``pd_joint_pos`` controller.
+
+    The earlier convention assumed delta joints (``nxt = qpos + action``),
+    but the LiftBarrier raw h5 has ``actions/panda-i[0] == qpos[0][:7]``
+    -- i.e. the planner stored absolute target qpos, not deltas. The
+    data config also sets ``relative_action: false`` so the training
+    transform feeds those raw absolute targets through unmodified. The
+    delta-style integration was therefore doubling the joint displacement
+    each step, which is why the closed-loop rollouts had the arms flying
+    *away* from the barrier instead of grasping it.
+
+    Kept as a helper (instead of inlining the passthrough) for symmetry
+    with future task variants that might genuinely use delta control.
     """
-    nxt = qpos16.copy()
-    nxt[0:7] = qpos16[0:7] + delta16[0:7]
-    nxt[7] = delta16[7]
-    nxt[8:15] = qpos16[8:15] + delta16[8:15]
-    nxt[15] = delta16[15]
-    return nxt.astype(np.float32)
+    del qpos16  # unused under absolute-target convention
+    return action16.astype(np.float32, copy=True)
 
 
 def env_action_dict(abs16: np.ndarray) -> dict:
