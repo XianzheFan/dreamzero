@@ -39,12 +39,18 @@ if [ "$NUM_ARMS" -ge 3 ]; then GRAD_CKPT=true; fi
 
 # DeepSpeed stage. ZeRO-2 keeps params replicated (46 GB/rank for the 23B
 # model), which is fine for P=2 but leaves no headroom for the extra
-# ~15 GB/agent activation in P=3/4 — OOM on cross-attn FFN. Switch to
-# ZeRO-3 there so params shard across the 8 ranks (~6 GB/rank), freeing
-# ~40 GB for activations. Trade-off is ~15-25% slower step from the
-# all-gather, but P=3/4 doesn't run at all under ZeRO-2.
+# ~15 GB/agent activation in P=3/4 — OOM on cross-attn FFN.
+#
+# We tried ZeRO-3 first but it breaks Wan VAE's causal feat_cache: the VAE
+# is called under torch.no_grad() with 9 sequential chunk forwards per
+# encode, and ZeRO-3's per-forward param all-gather/release interleaves
+# with the cache state, producing a shape mismatch on torch.cat
+# (cache_x vs x). So we stay on ZeRO-2 but offload optimizer state to
+# CPU: that frees ~34.5 GB/rank (sharded Adam state for 23B params),
+# enough to fit P=3/4 activations without touching the VAE codepath.
+# Cost: optim step is ~1.3-2x slower due to PCIe traffic.
 if [ "$NUM_ARMS" -ge 3 ]; then
-    DEEPSPEED_CFG=${DEEPSPEED_CFG:-groot/vla/configs/deepspeed/zero3.json}
+    DEEPSPEED_CFG=${DEEPSPEED_CFG:-groot/vla/configs/deepspeed/zero2_offload.json}
 else
     DEEPSPEED_CFG=${DEEPSPEED_CFG:-groot/vla/configs/deepspeed/zero2.json}
 fi
