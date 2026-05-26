@@ -184,6 +184,11 @@ def main():
         default="the two robot arms lift the steel barrier together off the table",
     )
     ap.add_argument("--log", default=None)
+    ap.add_argument(
+        "--video-dir",
+        default=None,
+        help="If set, wrap env with RecordEpisode and write one mp4 per seed.",
+    )
     args = ap.parse_args()
 
     # Late imports so a server-side schema mismatch fails before the heavy
@@ -227,6 +232,22 @@ def main():
         human_render_camera_configs=dict(shader_pack="default"),
         viewer_camera_configs=dict(shader_pack="default"),
     )
+    if args.video_dir:
+        from mani_skill.utils.wrappers import RecordEpisode
+
+        os.makedirs(args.video_dir, exist_ok=True)
+        # RecordEpisode wraps reset()/step() and writes a single mp4 per
+        # episode boundary; trajectory_name picks up the seed via the
+        # reset-time options dict (set below in run_episode).
+        env = RecordEpisode(
+            env,
+            output_dir=args.video_dir,
+            save_trajectory=False,
+            save_video=True,
+            info_on_video=True,
+            video_fps=30,
+        )
+        print(f"Video recording -> {args.video_dir}", flush=True)
     print("Env ready.", flush=True)
 
     print("Connecting to policy server (waits up to 600s for warm-up)…", flush=True)
