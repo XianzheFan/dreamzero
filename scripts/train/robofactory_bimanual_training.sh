@@ -38,12 +38,15 @@ case "$NUM_ARMS" in
     4) DATA_CFG="dreamzero/robofactory_4arm_relative" ;;
     *) echo "Unsupported NUM_ARMS=$NUM_ARMS (expected 2, 3, or 4)" >&2; exit 1 ;;
 esac
-# P=3/4 activations don't fit in 80 GB even with zero2 sharding (each
-# extra agent adds ~15 GB of activation memory): enable gradient
-# checkpointing to recompute activations during backward at the cost of
-# ~30% step time. P=2 fits without it, but enabling it everywhere keeps
-# the command line uniform.
-GRAD_CKPT=${GRAD_CKPT:-true}
+# Gradient checkpointing trade-off, post FlexAttention switch (PR 20):
+#  * P=2 under FlexAttention: the sparse-hub attention no longer
+#    materializes the [B,H,N,N] score matrix (~7 GB/layer/forward under
+#    the old math kernel), so the full 32-layer activation footprint
+#    fits comfortably in 80 GB. Default GRAD_CKPT=false to recover the
+#    ~30% backward-time tax of recomputation.
+#  * P=3/4: each extra agent adds ~15 GB of activation memory; even with
+#    flex_attention the working set is tight, so we keep grad ckpt on.
+GRAD_CKPT=${GRAD_CKPT:-false}
 if [ "$NUM_ARMS" -ge 3 ]; then GRAD_CKPT=true; fi
 
 # DeepSpeed stage. ZeRO-2 keeps params replicated (46 GB/rank for the 23B
@@ -129,7 +132,7 @@ torchrun --nproc_per_node $NUM_GPUS --standalone groot/vla/experiment/experiment
     tf32=true \
     eval_bf16=true \
     dataloader_pin_memory=false \
-    dataloader_num_workers=1 \
+    dataloader_num_workers=${DATALOADER_NUM_WORKERS:-4} \
     image_resolution_width=320 \
     image_resolution_height=176 \
     save_lora_only=true \
