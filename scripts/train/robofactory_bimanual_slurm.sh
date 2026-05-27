@@ -125,7 +125,12 @@ if [ "${TRAIN_RC}" -ne 0 ] && [ "${DURATION}" -lt 600 ]; then
 fi
 
 # afterany so a preemption still triggers the next job (it will resume).
+# Inherit the partition the current section ran on so a one-time
+# ``sbatch --partition=backfill`` propagates to every follow-up section
+# without us having to babysit each chain rung.
+CURRENT_PARTITION=${SLURM_JOB_PARTITION:-batch_block1}
 NEXT=$(sbatch --parsable --dependency=afterany:${SLURM_JOB_ID} \
+    --partition="${CURRENT_PARTITION}" \
     --export=ALL,TARGET_STEPS=${TARGET_STEPS},MAX_STEPS=${MAX_STEPS},BATCH_SIZE=${BATCH_SIZE},SAVE_STEPS=${SAVE_STEPS},LEARNING_RATE=${LEARNING_RATE},REPORT_TO=${REPORT_TO},WANDB_PROJECT=${WANDB_PROJECT},WANDB_RUN_NAME=${WANDB_RUN_NAME},OUTPUT_DIR=${OUTPUT_DIR},ROBOFACTORY_DATA_ROOT=${ROBOFACTORY_DATA_ROOT},NUM_ARMS=${NUM_ARMS:-2} \
     "${REPO_DIR}/scripts/train/robofactory_bimanual_slurm.sh")
-echo "[$(date)] Queued follow-up job: ${NEXT}"
+echo "[$(date)] Queued follow-up job: ${NEXT} on partition=${CURRENT_PARTITION}"
