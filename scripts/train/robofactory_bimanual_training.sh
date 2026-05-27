@@ -18,9 +18,18 @@
 #   bash scripts/train/robofactory_bimanual_training.sh
 
 export HYDRA_FULL_ERROR=1
-# Multi-agent sparse hub attention applies an explicit attn_mask that
-# FlashAttention 2 doesn't support; force the torch (eager) backend.
-export ATTENTION_BACKEND=${ATTENTION_BACKEND:-torch}
+# Multi-agent sparse hub attention uses a custom token-routing topology
+# that FlashAttention 2 cannot express via its built-in causal/window
+# flags. Two backends support the masked path:
+#   * ``torch`` -- F.scaled_dot_product_attention(attn_mask=[1,1,N,N])
+#                  falls back to the O(N^2) math kernel; ~40 s/step at
+#                  N ~ 15k tokens (the P=2 sparse-hub case).
+#   * ``flex``  -- builds a ``BlockMask`` from the same sparse-hub rule
+#                  and runs it through a torch.compile'd ``flex_attention``
+#                  Triton kernel that skips empty blocks; ~5-10x faster on
+#                  H100 at the same N.
+# Default to flex; set ATTENTION_BACKEND=torch to pin the legacy path.
+export ATTENTION_BACKEND=${ATTENTION_BACKEND:-flex}
 
 NUM_ARMS=${NUM_ARMS:-2}
 case "$NUM_ARMS" in

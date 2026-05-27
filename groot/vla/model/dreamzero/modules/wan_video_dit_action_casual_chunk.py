@@ -2753,16 +2753,52 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             else:
                 key_agent = new_token_agent_id
                 key_block_id = new_token_block_id
-            q_is_hub = (new_token_agent_id == P).unsqueeze(1)
-            k_is_hub = (key_agent == P).unsqueeze(0)
-            same_agent = (
-                new_token_agent_id.unsqueeze(1) == key_agent.unsqueeze(0)
-            )
-            block_causal = (
-                new_token_block_id.unsqueeze(1) >= key_block_id.unsqueeze(0)
-            )
-            mask_2d = (same_agent | q_is_hub | k_is_hub) & block_causal
-            attn_mask = mask_2d.unsqueeze(0).unsqueeze(0)
+
+            # Build the sparse-hub-attention mask. Default is a BlockMask
+            # consumed by FlexAttention; the dense [1,1,N,N] bool fallback
+            # is kept for the legacy ``ATTENTION_BACKEND=torch`` path that
+            # uses ``F.scaled_dot_product_attention(attn_mask=...)`` and
+            # falls back to the O(N^2) math kernel.
+            attn_backend = os.getenv("ATTENTION_BACKEND", "FA2").lower()
+            if attn_backend == "flex":
+                hub_id = P
+                # Closure tensors -- ``create_block_mask`` calls ``mask_mod``
+                # with index tensors and we gather agent/block ids by indexing.
+                _agent_q = new_token_agent_id
+                _agent_k = key_agent
+                _block_q = new_token_block_id
+                _block_k = key_block_id
+
+                def _mask_mod(b, h, q_idx, kv_idx):
+                    qa = _agent_q[q_idx]
+                    ka = _agent_k[kv_idx]
+                    qb = _block_q[q_idx]
+                    kb = _block_k[kv_idx]
+                    same_or_hub = (qa == ka) | (qa == hub_id) | (ka == hub_id)
+                    block_causal = qb >= kb
+                    return same_or_hub & block_causal
+
+                Lq = int(new_token_agent_id.shape[0])
+                Lk = int(key_agent.shape[0])
+                attn_mask = create_block_mask(
+                    _mask_mod,
+                    B=None, H=None,
+                    Q_LEN=Lq, KV_LEN=Lk,
+                    device=x.device,
+                    BLOCK_SIZE=128,
+                    _compile=False,
+                )
+            else:
+                q_is_hub = (new_token_agent_id == P).unsqueeze(1)
+                k_is_hub = (key_agent == P).unsqueeze(0)
+                same_agent = (
+                    new_token_agent_id.unsqueeze(1) == key_agent.unsqueeze(0)
+                )
+                block_causal = (
+                    new_token_block_id.unsqueeze(1) >= key_block_id.unsqueeze(0)
+                )
+                mask_2d = (same_agent | q_is_hub | k_is_hub) & block_causal
+                attn_mask = mask_2d.unsqueeze(0).unsqueeze(0)
         else:
             attn_mask = None
 

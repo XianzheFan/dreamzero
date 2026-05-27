@@ -32,6 +32,29 @@ try:
 except ModuleNotFoundError:
     TRANSFORMER_ENGINE_AVAILABLE = False
 
+try:
+    from torch.nn.attention.flex_attention import flex_attention as _flex_attention_raw, BlockMask  # noqa: F401
+    FLEX_ATTENTION_AVAILABLE = True
+except ImportError:
+    FLEX_ATTENTION_AVAILABLE = False
+
+# Module-level cache for the compiled flex_attention. Compile once at first
+# use so that subsequent AttentionModule instances reuse the same kernels;
+# recompiling per-instance would cost minutes per process.
+_FLEX_ATTENTION_COMPILED = None
+
+
+def _get_compiled_flex_attention():
+    global _FLEX_ATTENTION_COMPILED
+    if _FLEX_ATTENTION_COMPILED is None:
+        # ``dynamic=False`` is the right choice for fixed-shape training
+        # workloads; we accept the one-time compile cost for kernel speed.
+        _FLEX_ATTENTION_COMPILED = torch.compile(
+            _flex_attention_raw, dynamic=False
+        )
+    return _FLEX_ATTENTION_COMPILED
+
+
 import warnings
 
 
@@ -234,7 +257,11 @@ class AttentionModule(torch.nn.Module):
             print("Warning: Transformer Engine is not available. Falling back to FA2 backend.")
             backend = "FA2"
 
-        assert backend in ["torch", "FA2", "FA3", "TE", "torch_onnx"]
+        if backend == "flex" and not FLEX_ATTENTION_AVAILABLE:
+            print("Warning: flex_attention not importable; falling back to torch.")
+            backend = "torch"
+
+        assert backend in ["torch", "FA2", "FA3", "TE", "torch_onnx", "flex"]
         self.backend = backend
 
         if backend == "torch":
@@ -338,6 +365,57 @@ class AttentionModule(torch.nn.Module):
                 )
             self.attn_func = _flash_attn_impl
 
+        elif backend == "flex":
+            # The sparse-hub multi-agent path materializes a [N,N] bool mask
+            # and feeds it to SDPA, which falls back to the O(N^2) math
+            # kernel because the mask is neither causal nor padding-shaped.
+            # FlexAttention takes a ``BlockMask`` describing the same sparse
+            # topology and compiles it into a Triton kernel that skips empty
+            # blocks entirely -- 5-10x faster on the P=2 mask geometry we
+            # have at N ~ 14.8K.
+            def _flex_impl(
+                q: torch.Tensor,
+                k: torch.Tensor,
+                v: torch.Tensor,
+                attn_mask=None,
+            ) -> torch.Tensor:
+                out_dtype = q.dtype
+                # [B, L, H, D] -> [B, H, L, D].
+                q = q.transpose(1, 2).to(dtype)
+                k = k.transpose(1, 2).to(dtype)
+                v = v.transpose(1, 2).to(dtype)
+
+                if attn_mask is None:
+                    # No mask -> SDPA can pick its fastest fused kernel
+                    # (FA2/3 on Hopper). Avoid the ~minute compile cost of
+                    # flex_attention when we'd just degenerate to identity.
+                    out = torch.nn.functional.scaled_dot_product_attention(
+                        q, k, v,
+                        is_causal=causal,
+                        dropout_p=dropout_p,
+                        scale=softmax_scale,
+                    )
+                elif isinstance(attn_mask, BlockMask):
+                    flex_compiled = _get_compiled_flex_attention()
+                    kw = {}
+                    if softmax_scale is not None:
+                        kw["scale"] = softmax_scale
+                    out = flex_compiled(
+                        q, k, v,
+                        block_mask=attn_mask,
+                        **kw,
+                    )
+                else:
+                    raise TypeError(
+                        f"flex backend expects None or BlockMask attn_mask, "
+                        f"got {type(attn_mask).__name__}; build a BlockMask "
+                        f"via torch.nn.attention.flex_attention.create_block_mask"
+                        f" in the caller."
+                    )
+
+                return out.transpose(1, 2).contiguous().to(out_dtype)
+            self.attn_func = _flex_impl
+
         else:
             raise ValueError(f"Invalid backend: {backend}")
 
@@ -353,18 +431,19 @@ class AttentionModule(torch.nn.Module):
         if (
             self.backend == "torch" or
             self.backend == "torch_onnx" or
+            self.backend == "flex" or
             (self.backend == "TE" and TRANSFORMER_ENGINE_AVAILABLE)
         ):
             if q_lens is not None or k_lens is not None:
                 warnings.warn(
                     'Padding mask is disabled when using scaled_dot_product_attention. It can have a significant impact on performance.'
                 )
-            if attn_mask is not None and self.backend == "torch":
+            if attn_mask is not None and self.backend in ("torch", "flex"):
                 return self.attn_func(q, k, v, attn_mask=attn_mask)  # type: ignore[call-arg]
             if attn_mask is not None:
                 raise NotImplementedError(
-                    f"attn_mask is only supported on the 'torch' backend; "
-                    f"got backend='{self.backend}'."
+                    f"attn_mask is only supported on the 'torch' / 'flex' "
+                    f"backends; got backend='{self.backend}'."
                 )
             return self.attn_func(q, k, v)  # type: ignore[call-arg]
         else:
