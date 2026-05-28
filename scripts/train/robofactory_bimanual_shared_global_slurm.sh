@@ -32,15 +32,25 @@ ROBOFACTORY_DATA_ROOT=${ROBOFACTORY_DATA_ROOT:-/lustre/fs1/portfolios/nvr/projec
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
+# Optional partition override (e.g. PARTITION=interactive for short
+# queues; defaults to the SBATCH directive in robofactory_bimanual_slurm.sh
+# which is batch_block1). The current partition propagates through the
+# chained follow-up jobs via that script's CURRENT_PARTITION logic.
+PARTITION_ARG=""
+if [ -n "${PARTITION:-}" ]; then
+    PARTITION_ARG="--partition=${PARTITION}"
+fi
+
 echo "[$(date)] launching shared-global training:"
 echo "  SHARED_GLOBAL=$SHARED_GLOBAL"
 echo "  OUTPUT_DIR=$OUTPUT_DIR"
 echo "  WANDB_RUN_NAME=$WANDB_RUN_NAME"
 echo "  TARGET_STEPS=$TARGET_STEPS"
+echo "  PARTITION=${PARTITION:-(default batch_block1)}"
 
 mkdir -p "$OUTPUT_DIR"
 
-exec sbatch --export=ALL,\
+exec sbatch ${PARTITION_ARG} --export=ALL,\
 SHARED_GLOBAL=${SHARED_GLOBAL},\
 TARGET_STEPS=${TARGET_STEPS},\
 MAX_STEPS=${MAX_STEPS},\
