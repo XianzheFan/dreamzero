@@ -129,6 +129,8 @@ class BimanualPolicy:
         num_frames: int = 33,
         action_horizon: int = 24,
         action_dim: int = 16,
+        save_video_pred: bool = False,
+        video_pred_dir: str | None = None,
     ):
         self.ckpt_dir = Path(ckpt_dir)
         self.ckpt_setting = ckpt_setting
@@ -137,6 +139,8 @@ class BimanualPolicy:
         self.num_frames = num_frames
         self.action_horizon = action_horizon
         self.action_dim = action_dim
+        self.save_video_pred = save_video_pred
+        self.video_pred_dir = Path(video_pred_dir) if video_pred_dir else None
 
         self._sessions: dict[str, dict] = {}
         self._load()
@@ -307,6 +311,7 @@ class BimanualPolicy:
             self._sessions[session_id] = {
                 "history": deque(maxlen=self.num_frames),
                 "prompt": "",
+                "infer_idx": 0,
             }
         return self._sessions[session_id]
 
@@ -316,6 +321,7 @@ class BimanualPolicy:
         sess = self._session(sid)
         sess["history"].clear()
         sess["prompt"] = prompt
+        sess["infer_idx"] = 0
         return "reset successful"
 
     # ----- inference ----------------------------------------------------
@@ -484,8 +490,73 @@ class BimanualPolicy:
 
             outputs = self._model.get_action(inputs_gpu)
 
+        if self.save_video_pred:
+            try:
+                self._dump_video_pred(sess, sid)
+            except Exception:
+                logging.exception("save_video_pred failed; continuing without")
+        sess["infer_idx"] = sess.get("infer_idx", 0) + 1
+
         flat_action = self._denorm_action(outputs)
         return {"action_chunk": flat_action.astype(np.float32)}
+
+    def _dump_video_pred(self, sess: dict, sid: str) -> None:
+        """VAE-decode the action_head's last denoised video latents and
+        write one mp4 per agent. Called from infer() when save_video_pred
+        is on. Adds ~5-15s per call (heavy VAE decode); diagnostic only.
+        """
+        import torch
+        import av
+
+        action_head = self._model.action_head
+        latents = getattr(action_head, "_last_video_pred", None)
+        if latents is None:
+            logging.warning("action_head._last_video_pred missing; "
+                            "make sure _get_action_multi_agent stashes it")
+            return
+        # latents: [B=1, P, C_lat, F_lat, H_lat, W_lat] in self._dtype
+        B, P, C_lat, F_lat, H_lat, W_lat = latents.shape
+        # VAE.decode expects [B, C, T, H, W]; fold P into batch.
+        lat_bp = latents.reshape(B * P, C_lat, F_lat, H_lat, W_lat)
+        with torch.inference_mode():
+            frames = action_head.vae.decode(
+                lat_bp.to(self._device, dtype=self._dtype),
+                tiled=action_head.tiled,
+                tile_size=(action_head.tile_size_height,
+                           action_head.tile_size_width),
+                tile_stride=(action_head.tile_stride_height,
+                             action_head.tile_stride_width),
+            )                                                # [B*P, C, T, H, W]
+        frames = frames.float()
+        frames = ((frames + 1.0) * 127.5).clamp(0, 255).to(torch.uint8)
+        frames = frames.cpu().numpy()                        # [B*P, C, T, H, W]
+        # -> [P, T, H, W, C]; B is always 1 at inference.
+        frames = frames.transpose(0, 2, 3, 4, 1).reshape(
+            B, P, -1, frames.shape[3], frames.shape[4], 3
+        )[0]
+
+        out_dir = self.video_pred_dir or (self.ckpt_dir / "video_pred")
+        out_dir = Path(out_dir) / f"session_{sid[:12]}"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        step = sess.get("infer_idx", 0)
+        T, H, W = frames.shape[1], frames.shape[2], frames.shape[3]
+        for p in range(P):
+            out_path = out_dir / f"step{step:04d}_agent{p}.mp4"
+            with av.open(str(out_path), mode="w") as container:
+                stream = container.add_stream("h264", rate=20)
+                stream.width = W
+                stream.height = H
+                stream.pix_fmt = "yuv420p"
+                stream.options = {"crf": "23"}
+                for t in range(T):
+                    img = frames[p, t]                       # [H, W, 3] uint8
+                    av_frame = av.VideoFrame.from_ndarray(img, format="rgb24")
+                    for packet in stream.encode(av_frame):
+                        container.mux(packet)
+                for packet in stream.encode():
+                    container.mux(packet)
+        logging.info("wrote predicted video: step=%d session=%s dir=%s",
+                     step, sid[:12], out_dir)
 
     def _denorm_action(self, outputs) -> np.ndarray:
         """Take model output ``action_pred [B=1, P=2, T_a, D_per_arm=8]``
@@ -624,6 +695,19 @@ def main():
     parser.add_argument("--image-w", type=int, default=320)
     parser.add_argument("--num-frames", type=int, default=33)
     parser.add_argument("--action-horizon", type=int, default=24)
+    parser.add_argument(
+        "--save-video-pred",
+        action="store_true",
+        help="VAE-decode the model's predicted video at each infer() call "
+             "and write one mp4 per agent. Adds ~5-15s per inference; use "
+             "only for diagnostics, not when chasing closed-loop speed.",
+    )
+    parser.add_argument(
+        "--video-pred-dir",
+        default=None,
+        help="Output dir for predicted-video mp4s; default "
+             "{ckpt_dir}/video_pred/session_{sid}.",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -639,6 +723,8 @@ def main():
         image_w=args.image_w,
         num_frames=args.num_frames,
         action_horizon=args.action_horizon,
+        save_video_pred=args.save_video_pred,
+        video_pred_dir=args.video_pred_dir,
     )
     server = BimanualWebsocketServer(policy, host=args.host, port=args.port)
     server.serve_forever()

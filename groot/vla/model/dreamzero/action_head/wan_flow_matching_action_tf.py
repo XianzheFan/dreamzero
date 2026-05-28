@@ -1091,6 +1091,10 @@ class WANPolicyHead(ActionHead):
                     to_final=(index == self._mai_num_inference_steps - 1),
                 )
 
+        # Stash final denoised video latents so callers (e.g. the bimanual
+        # policy server's --save-video-pred path) can VAE-decode them
+        # without re-running the rollout. Shape: [B, P, C_lat, F_lat, H_lat, W_lat].
+        self._last_video_pred = noisy_video.detach()
         return BatchFeature(data={"action_pred": noisy_action})
 
     def get_action(
