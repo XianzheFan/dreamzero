@@ -600,6 +600,67 @@ class WANPolicyHead(ActionHead):
             param.data = param.to(torch.float32)
         return model
 
+    def _encode_global_video(self, video_global: "torch.Tensor") -> "torch.Tensor":
+        """VAE-encode a shared scene video stream that has no agent axis.
+
+        Mirrors the per-agent encode block in
+        :meth:`_forward_multi_agent` -- normalize uint8 -> [-1, 1],
+        optionally resize to (``target_video_height``, ``target_video_width``)
+        if the action-head config pins those, then VAE encode with the
+        head's own tile config. Returns a clean latent tensor (no
+        noise added) of shape ``[B, C_lat, F_lat, H_lat, W_lat]``.
+
+        Called from both training (:meth:`_forward_multi_agent`) and
+        inference (:meth:`_get_action_multi_agent`) when the data
+        transform emitted ``video_global`` under the shared-global
+        layout (see :class:`BimanualDreamTransform.global_views`).
+        """
+        # Accept either [B, T, H, W, C] (C-last from the transform) or
+        # [B, C, T, H, W] (already model-orientation).
+        if video_global.dim() == 5 and video_global.shape[-1] in (1, 3):
+            video_global = rearrange(video_global, "b t h w c -> b c t h w")
+        assert video_global.dim() == 5, (
+            f"video_global must be [B, T, H, W, C] or [B, C, T, H, W]; "
+            f"got {tuple(video_global.shape)}"
+        )
+
+        if video_global.dtype == torch.uint8:
+            video_global = video_global.float() / 255.0
+            b, c, t, h, w = video_global.shape
+            video_global = video_global.permute(0, 2, 1, 3, 4)  # [B, T, C, H, W]
+            video_global = video_global.reshape(b * t, c, h, w)
+            video_global = self.normalize_video(video_global)
+            video_global = video_global.reshape(b, t, c, h, w).permute(0, 2, 1, 3, 4)
+            assert video_global.min() >= -1.0 and video_global.max() <= 1.0, (
+                "video_global must normalize into [-1, 1]"
+            )
+            video_global = video_global.to(dtype=self.dtype)
+
+        target_h = getattr(self.config, "target_video_height", None)
+        target_w = getattr(self.config, "target_video_width", None)
+        if target_h is None or target_w is None:
+            if getattr(self.model, "frame_seqlen", None) in (50, 55):
+                target_h, target_w = 176, 320
+            else:
+                target_h, target_w = None, None
+        if target_h is not None and target_w is not None:
+            b, c, t, h, w = video_global.shape
+            if (h, w) != (target_h, target_w):
+                video_global = torch.nn.functional.interpolate(
+                    video_global.reshape(b * t, c, h, w),
+                    size=(target_h, target_w),
+                    mode="bilinear",
+                    align_corners=False,
+                ).reshape(b, c, t, target_h, target_w)
+
+        latents = self.encode_video(
+            video_global,
+            self.tiled,
+            (self.tile_size_height, self.tile_size_width),
+            (self.tile_stride_height, self.tile_stride_width),
+        )                                                    # [B, C_lat, F_lat, H_lat, W_lat]
+        return latents.to(self._device)
+
     def _detect_multi_agent(self, action_input: BatchFeature) -> int | None:
         """Return ``P`` if ``action_input`` carries an explicit agent axis,
         else ``None``.
@@ -846,8 +907,30 @@ class WANPolicyHead(ActionHead):
             noisy_actions = None
             training_target_action = None
 
+        # Shared-global stream (PR 23): when the data transform emitted
+        # ``video_global`` (BimanualDreamTransform.global_views set), VAE-
+        # encode it once -- no agent axis, no noise -- and pass the latent
+        # to the model as clean conditioning. The DiT body splices it into
+        # the token sequence as a P-less block (see
+        # ``_forward_multi_agent_body``'s ``global_video`` kwarg).
+        # Training stays in "predict wrist only" mode: ``noisy_latents`` is
+        # still per-agent wrist, ``training_target`` still per-agent wrist.
+        video_global_raw = data.get("video_global", None) if isinstance(data, dict) else getattr(data, "video_global", None)
+        if video_global_raw is not None:
+            global_latents = self._encode_global_video(video_global_raw)
+            global_latents = global_latents.to(dtype=self.dtype)
+            # The DiT body expects channel-first model orientation matching
+            # what we feed for noisy_latents.transpose(2, 3) below:
+            # [B, C, F, H_lat, W_lat]. encode_video already returns this.
+        else:
+            global_latents = None
+
         # Sequence length: P * F * H_grid * W_grid where the grid is the
         # post-patch_embedding shape (stride (1,2,2) -> H_lat//2, W_lat//2).
+        # When global_latents is present its tokens (F * H_g_global * W_g_global)
+        # extend the sequence; the DiT body handles that internally and the
+        # outer ``seq_len`` argument still refers to the per-agent video
+        # block length (the body adds its own offsets for global/register/hub).
         H_g = h_lat // 2
         W_g = w_lat // 2
         seq_len = P * F_lat * H_g * W_g
@@ -865,6 +948,7 @@ class WANPolicyHead(ActionHead):
                     embodiment_id=embodiment_id,
                     action=noisy_actions,
                     timestep_action=timestep_action,
+                    global_video=global_latents,
                 )
             else:
                 video_noise_pred, action_noise_pred = self.model(
@@ -875,6 +959,7 @@ class WANPolicyHead(ActionHead):
                     seq_len=seq_len,
                     state=state_features,
                     embodiment_id=embodiment_id,
+                    global_video=global_latents,
                 )
 
             # Per-sample dynamics loss. Crop target to model output spatial
@@ -1039,6 +1124,17 @@ class WANPolicyHead(ActionHead):
         sample_scheduler_action.set_timesteps(num_inference_steps, training=False)
         self._mai_num_inference_steps = num_inference_steps
 
+        # Shared-global stream (PR 23, inference): when ``video_global``
+        # is on the input, VAE-encode it once outside the denoising loop
+        # and feed it to every denoising step as clean conditioning. The
+        # latents are reused across all 16 steps so the per-step cost is
+        # unchanged. The denoising loop still only updates wrist + action.
+        video_global_raw = data.get("video_global", None) if isinstance(data, dict) else getattr(data, "video_global", None)
+        if video_global_raw is not None:
+            global_latents = self._encode_global_video(video_global_raw).to(dtype=latents.dtype)
+        else:
+            global_latents = None
+
         noisy_video = torch.randn_like(latents)
         noisy_action = torch.randn(
             B, P, T_a, D_a, device=self._device, dtype=latents.dtype
@@ -1067,6 +1163,7 @@ class WANPolicyHead(ActionHead):
                     embodiment_id=embodiment_id,
                     action=noisy_action,
                     timestep_action=timestep_action,
+                    global_video=global_latents,
                 )
 
                 # Euler step for video. Spatial truncation in training

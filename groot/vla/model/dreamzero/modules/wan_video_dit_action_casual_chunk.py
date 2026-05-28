@@ -2288,11 +2288,18 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         state=None,
         embodiment_id=None,
         role_id=None,
+        global_video=None,
         **_unused,
     ):
         """Training-time multi-agent forward. Thin 2-tuple wrapper around
         :meth:`_forward_multi_agent_body` (which is the real implementation
         and also serves inference). Returns ``(video_pred, action_pred)``.
+
+        ``global_video`` (PR 23, optional): pre-encoded clean VAE latent
+        of the shared scene camera with shape ``[B, C_in, F, H, W]`` (no
+        agent axis). When provided, the body splices its patchified
+        tokens into the sequence under a P-less SHARED bucket. ``None``
+        keeps the legacy duplicated-global tile layout.
         """
         video_pred, action_pred, _, _, _ = self._forward_multi_agent_body(
             x=x,
@@ -2306,6 +2313,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             embodiment_id=embodiment_id,
             kv_cache=None,
             role_id=role_id,
+            global_video=global_video,
         )
         return video_pred, action_pred
 
@@ -2324,6 +2332,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         start_frame: int = 0,
         cached_token_agent_id: torch.Tensor | None = None,
         role_id: torch.Tensor | None = None,
+        global_video: torch.Tensor | None = None,
     ):
         r"""Multi-agent forward body shared by training and inference.
 
@@ -2438,6 +2447,42 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         assert x.shape[1] == seq_len, (
             f"seq_len mismatch: expected P*F*H*W={P * L_per_agent}, got seq_len={seq_len}"
         )
+
+        # PR 23 (shared-global): patchify the scene camera latent ONCE,
+        # outside the per-agent sequence. The resulting tokens live in
+        # their own P-less block (no simplex agent id) that the body
+        # splices in between the per-agent video block and the per-agent
+        # register block. ``global_video`` is always clean (not a noisy
+        # latent): we don't noise it, we don't predict its noise, and we
+        # strip its tokens before unpatchify.
+        global_token_count = 0
+        F_g_global = 0
+        H_g_global = 0
+        W_g_global = 0
+        global_seq = None
+        if global_video is not None:
+            assert global_video.dim() == 5, (
+                f"global_video must be [B, C, F, H, W]; got {tuple(global_video.shape)}"
+            )
+            assert global_video.shape[0] == B, (
+                f"global_video batch mismatch: B={B}, got {global_video.shape[0]}"
+            )
+            global_flat = self.patch_embedding(global_video.to(x.dtype))
+            _, _, F_g_global, H_g_global, W_g_global = global_flat.shape
+            global_flat = global_flat.flatten(start_dim=2).transpose(1, 2)  # [B, L_g, dim]
+            global_seq = global_flat
+            global_token_count = F_g_global * H_g_global * W_g_global
+            assert global_seq.shape == (B, global_token_count, dim), (
+                f"global_seq shape unexpected: {tuple(global_seq.shape)} vs "
+                f"expected [B={B}, L_g={global_token_count}, dim={dim}]"
+            )
+            # Sanity: temporal grid must match the per-agent video so the
+            # block-causal frame ids line up.
+            assert F_g_global == F_g, (
+                f"global_video temporal grid F_g_global={F_g_global} must "
+                f"equal per-agent F_g={F_g}; resize/encode upstream so the "
+                f"F dim matches before patchify."
+            )
 
         # PR 7: per-agent role token (asymmetric task semantics).
         # The role embedding is broadcast across this agent's video
@@ -2599,8 +2644,29 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             if use_hub else None
         )
 
+        # PR 23: global token freqs use real F/H/W positions but identity
+        # rotation on the simplex (agent) band -- they share the temporal
+        # phase with the per-agent video so block-causal stays consistent.
+        if global_token_count > 0:
+            assert polar, (
+                "Multi-agent shared-global tokens currently only support "
+                "polar (complex) RoPE; ENABLE_TENSORRT path is future work."
+            )
+            global_freqs = self.simplex_rope.global_freqs(
+                f=F_g_global,
+                h=H_g_global,
+                w=W_g_global,
+                start_frame=start_frame,
+            )
+        else:
+            global_freqs = None
+
         if polar:
             parts = [agent_freqs]
+            # Sequence order: [agent_video, global_video, registers, hub].
+            # The freqs cat must match exactly.
+            if global_freqs is not None:
+                parts.append(global_freqs)
             if register_freqs is not None:
                 parts.append(register_freqs)
             if hub_freqs is not None:
@@ -2611,6 +2677,9 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             # in dim 0. Stitch all cos halves first, then all sin halves.
             assert register_token_count == 0, (
                 "no-polar + register tokens not yet supported"
+            )
+            assert global_token_count == 0, (
+                "no-polar + shared-global tokens not yet supported"
             )
             Na = (P * F_g * H_g * W_g)
             Nh = hub_token_count
@@ -2625,6 +2694,21 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         # broadcast over all spatial tokens AND over all P agents.
         timestep = timestep.unsqueeze(-1).expand(B, F_lat, L_per_agent // F_lat)
         agent_time = timestep.reshape(B, L_per_agent).repeat(1, P)
+
+        # PR 23: shared-global tokens reuse the per-frame timestep so that
+        # AdaLN modulation along F matches the per-agent video stream.
+        # They're clean (not noisy), but reusing timestep keeps the
+        # block-causal frame schedule consistent across the sequence.
+        if global_token_count > 0:
+            global_per_frame = H_g_global * W_g_global
+            ts_per_frame = timestep.reshape(B, F_lat, L_per_agent // F_lat)[:, :, 0]
+            global_time = (
+                ts_per_frame.unsqueeze(-1)
+                .expand(B, F_lat, global_per_frame)
+                .reshape(B, global_token_count)
+            )
+        else:
+            global_time = None
 
         # Register token timesteps follow the existing single-agent
         # convention: action register tokens use ``timestep_action``,
@@ -2656,6 +2740,10 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             hub_time = None
 
         time_chunks = [agent_time]
+        # Sequence order matches the freqs/x assembly:
+        # [agent_video, global_video, registers, hub].
+        if global_time is not None:
+            time_chunks.append(global_time)
         if register_time is not None:
             time_chunks.append(register_time)
         if hub_time is not None:
@@ -2669,9 +2757,12 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         e0 = self.time_projection(e)
         e0 = e0.unflatten(dim=2, sizes=(6, self.dim))
 
-        # Append register block and hub tokens to the sequence in
-        # agent-major layout:
-        #   [agent_0..agent_{P-1}_video, agent_0..agent_{P-1}_register, hub]
+        # Append global / register / hub tokens to the sequence. Layout
+        # (agent-major then P-less shared then registers then hub):
+        #   [agent_0..agent_{P-1}_video, global_video?,
+        #    agent_0..agent_{P-1}_register, hub]
+        if global_seq is not None:
+            x = torch.cat([x, global_seq.to(dtype=x.dtype)], dim=1)
         if register_seq is not None:
             x = torch.cat([x, register_seq], dim=1)
         if use_hub:
@@ -2697,16 +2788,29 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         # Queries are the NEW tokens, keys are the cached PAST tokens
         # concatenated with the new tokens (the per-block self-attention
         # builds full K/V via ``cat([cached, new], dim=1)``).
+        # Sentinel ids for non-per-agent buckets:
+        #   hub_id    = P     (existing -- shared communication state)
+        #   shared_id = P + 1 (PR 23 -- shared scene camera tokens)
+        hub_id = P
+        shared_id = P + 1
         video_ids = torch.arange(P, device=x.device).repeat_interleave(L_per_agent)
+        global_ids = torch.full(
+            (global_token_count,),
+            fill_value=shared_id,
+            device=x.device,
+            dtype=torch.long,
+        )
         register_ids = (
             torch.arange(P, device=x.device).repeat_interleave(R_per_agent)
             if register_token_count > 0
             else torch.empty(0, dtype=torch.long, device=x.device)
         )
         hub_ids = torch.full(
-            (hub_token_count,), fill_value=P, device=x.device, dtype=torch.long,
+            (hub_token_count,), fill_value=hub_id, device=x.device, dtype=torch.long,
         )
-        new_token_agent_id = torch.cat([video_ids, register_ids, hub_ids], dim=0)
+        new_token_agent_id = torch.cat(
+            [video_ids, global_ids, register_ids, hub_ids], dim=0
+        )
 
         # PR 8: per-token block_id for the block-causal composition.
         # Video tokens for agent p at frame f live in block ``f // n``;
@@ -2722,6 +2826,16 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         video_block_ids = (
             per_frame_block.repeat_interleave(H_g * W_g).repeat(P)
         )  # [P*F*H*W]
+        # PR 23: global tokens at frame f live in block ``f // n``, same
+        # as the per-agent video tokens at that frame (block-causal stays
+        # consistent across the shared scene). They're not predicted, so
+        # the wrist queries' block_causal check (qb >= kb) lets them see
+        # global tokens at the current and past blocks.
+        global_block_ids = (
+            per_frame_block.repeat_interleave(H_g_global * W_g_global)
+            if global_token_count > 0
+            else torch.empty(0, dtype=torch.long, device=x.device)
+        )
         register_block_ids = torch.full(
             (register_token_count,),
             fill_value=last_new_block,
@@ -2730,10 +2844,11 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         )
         hub_block_ids = per_frame_block.repeat_interleave(K_hub)  # [F*K]
         new_token_block_id = torch.cat(
-            [video_block_ids, register_block_ids, hub_block_ids], dim=0
+            [video_block_ids, global_block_ids, register_block_ids, hub_block_ids],
+            dim=0,
         )
 
-        if use_hub or register_token_count > 0 or cached_token_agent_id is not None:
+        if use_hub or register_token_count > 0 or global_token_count > 0 or cached_token_agent_id is not None:
             if cached_token_agent_id is not None:
                 key_agent = torch.cat(
                     [cached_token_agent_id.to(x.device), new_token_agent_id], dim=0
@@ -2761,7 +2876,12 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             # falls back to the O(N^2) math kernel.
             attn_backend = os.getenv("ATTENTION_BACKEND", "FA2").lower()
             if attn_backend == "flex":
-                hub_id = P
+                # ``hub_id`` and ``shared_id`` were assigned above with the
+                # agent_id tensor; mirror them here for the FlexAttention
+                # closure (FlexAttention's _compile=False path captures
+                # these Python ints into the mask_mod function).
+                hub_id_local = hub_id
+                shared_id_local = shared_id
                 # Closure tensors -- ``create_block_mask`` calls ``mask_mod``
                 # with index tensors and we gather agent/block ids by indexing.
                 _agent_q = new_token_agent_id
@@ -2774,9 +2894,16 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                     ka = _agent_k[kv_idx]
                     qb = _block_q[q_idx]
                     kb = _block_k[kv_idx]
-                    same_or_hub = (qa == ka) | (qa == hub_id) | (ka == hub_id)
+                    # Per-agent tokens see their own stream + hub + the
+                    # shared scene; hub and shared tokens see everyone
+                    # (each is permissive on the K side and the Q side).
+                    same_or_hub_or_shared = (
+                        (qa == ka)
+                        | (qa == hub_id_local) | (ka == hub_id_local)
+                        | (qa == shared_id_local) | (ka == shared_id_local)
+                    )
                     block_causal = qb >= kb
-                    return same_or_hub & block_causal
+                    return same_or_hub_or_shared & block_causal
 
                 Lq = int(new_token_agent_id.shape[0])
                 Lk = int(key_agent.shape[0])
@@ -2789,15 +2916,21 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                     _compile=False,
                 )
             else:
-                q_is_hub = (new_token_agent_id == P).unsqueeze(1)
-                k_is_hub = (key_agent == P).unsqueeze(0)
+                q_is_hub = (new_token_agent_id == hub_id).unsqueeze(1)
+                k_is_hub = (key_agent == hub_id).unsqueeze(0)
+                q_is_shared = (new_token_agent_id == shared_id).unsqueeze(1)
+                k_is_shared = (key_agent == shared_id).unsqueeze(0)
                 same_agent = (
                     new_token_agent_id.unsqueeze(1) == key_agent.unsqueeze(0)
                 )
                 block_causal = (
                     new_token_block_id.unsqueeze(1) >= key_block_id.unsqueeze(0)
                 )
-                mask_2d = (same_agent | q_is_hub | k_is_hub) & block_causal
+                mask_2d = (
+                    same_agent
+                    | q_is_hub | k_is_hub
+                    | q_is_shared | k_is_shared
+                ) & block_causal
                 attn_mask = mask_2d.unsqueeze(0).unsqueeze(0)
         else:
             attn_mask = None
@@ -2840,10 +2973,21 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                     assert updated_kv is None
 
         # Strip hub tokens (internal communication state only) and split
-        # into video block + register block.
+        # into video block + (global block, dropped) + register block.
+        # Sequence at this point: [agent_video, global?, registers?, hub?].
         if use_hub:
             x = x[:, : -hub_token_count]
             e = e[:, : -hub_token_count]
+
+        # PR 23: strip the shared scene tokens. They were attended over
+        # (queries from per-agent video can read them), but their own
+        # final hidden states are NOT used downstream -- we don't predict
+        # global noise and we don't decode actions from them.
+        global_start = P * L_per_agent
+        global_end = global_start + global_token_count
+        if global_token_count > 0:
+            x = torch.cat([x[:, :global_start], x[:, global_end:]], dim=1)
+            e = torch.cat([e[:, :global_start], e[:, global_end:]], dim=1)
 
         if register_token_count > 0:
             x_register = x[:, P * L_per_agent : P * L_per_agent + register_token_count]
@@ -2889,6 +3033,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         # cache between calls.
         new_chunk_token_counts = {
             "video": P * L_per_agent,
+            "global": global_token_count,
             "register": register_token_count,
             "hub": hub_token_count,
         }
@@ -2917,6 +3062,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         embodiment_id=None,
         agent_perm=None,
         role_id=None,
+        global_video=None,
         **_unused,
     ) -> tuple[torch.Tensor, torch.Tensor | None, list[torch.Tensor]]:
         r"""Multi-agent inference dispatcher (PR 6a + PR 6b).
@@ -3011,44 +3157,50 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             start_frame=current_start_frame,
             cached_token_agent_id=cached_token_agent_id,
             role_id=role_id,
+            global_video=global_video,
         )
 
-        # PR 6e: strip per-call register positions from the persistent
-        # cache. Register tokens encode the noisy action being denoised
-        # in *this* chunk -- they should not be visible to future chunks'
-        # queries. The current call still attended over them (the body
-        # built the mask from the full new_token_agent_id), so the
-        # current step is unchanged; we just keep them out of the cache.
+        # PR 6e + PR 23: strip per-call register AND shared-global
+        # positions from the persistent cache.
+        #   * Register tokens encode the noisy action being denoised in
+        #     THIS chunk; they must not bleed into future queries' K/V.
+        #   * Global (shared scene) tokens are re-encoded each call from
+        #     the latest observation. They're useful within a call but
+        #     would otherwise pin stale scene latents into the cache.
+        # The current call still attended over them (mask built from the
+        # full new_token_agent_id); only the persistent cache is trimmed.
         num_video = new_chunk_counts["video"]
+        num_global = new_chunk_counts.get("global", 0)
         num_register = new_chunk_counts["register"]
         num_hub = new_chunk_counts["hub"]
-        if cache_present and num_register > 0 and updated_kv is not None:
+        # Strip everything between [video] and [hub] from the cache.
+        num_strip = num_global + num_register
+        if cache_present and num_strip > 0 and updated_kv is not None:
             cached_len = (
                 cached_token_agent_id.shape[0]
                 if cached_token_agent_id is not None
                 else 0
             )
-            reg_start = cached_len + num_video
-            reg_end = reg_start + num_register
+            strip_start = cached_len + num_video
+            strip_end = strip_start + num_strip
             stripped_kv = []
             for layer_cache in updated_kv:
                 # Each layer's cache is [2, B, L_total, n_heads, head_dim].
-                # Drop the register slice along the sequence dim.
                 stripped = torch.cat(
                     [
-                        layer_cache[:, :, :reg_start],
-                        layer_cache[:, :, reg_end:],
+                        layer_cache[:, :, :strip_start],
+                        layer_cache[:, :, strip_end:],
                     ],
                     dim=2,
                 )
                 stripped_kv.append(stripped)
             updated_kv = stripped_kv
-            # And drop the register positions from the new chunk's
-            # agent_id before extending the session tracker.
+            # And drop the same positions from the new chunk's agent_id
+            # before extending the session tracker.
             new_video_hub_agent_id = torch.cat(
                 [
                     new_token_agent_id[:num_video],
-                    new_token_agent_id[num_video + num_register:],
+                    new_token_agent_id[num_video + num_strip:],
                 ],
                 dim=0,
             )

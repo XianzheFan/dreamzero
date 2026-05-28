@@ -48,8 +48,30 @@ class BimanualDreamTransform(DreamTransform):
         ...,
         description=(
             "Per-agent indices into the raw ``V`` axis of ``data['video']``. "
-            "e.g. ``[[0, 1], [0, 2]]`` for YAM = (top-shared, left-wrist) "
-            "and (top-shared, right-wrist). At most 4 views per agent."
+            "Two layouts are supported:\n\n"
+            "(1) **Old / duplicated-global**: include the shared scene "
+            "camera in every agent (e.g. ``[[0, 1], [0, 2]]`` -- top is "
+            "duplicated). The transform 2x2-tiles each agent's views into "
+            "a single image. ``global_views`` must be left ``None``.\n\n"
+            "(2) **Shared-global**: pair with ``global_views`` to factor "
+            "the shared scene camera out (e.g. ``global_views=[0]`` + "
+            "``agent_video_views=[[1], [2]]``). The transform then emits "
+            "per-agent wrist tiles **and** a separate ``video_global`` "
+            "stream the downstream model treats as clean conditioning. "
+            "Up to 4 views per agent in either layout."
+        ),
+    )
+    global_views: list[int] | None = Field(
+        default=None,
+        description=(
+            "Optional indices into the raw ``V`` axis for the **shared** "
+            "scene cameras (encoded once, not per-agent). When set, those "
+            "views are emitted under the ``video_global`` key in the "
+            "transform output and the per-agent ``video`` key contains "
+            "only the views listed in ``agent_video_views`` (no longer a "
+            "tile of (global + wrist)). When ``None`` (default) the "
+            "transform stays backward-compatible with the duplicated-"
+            "global layout."
         ),
     )
     agent_state_dims: list[tuple[int, int]] = Field(
@@ -130,19 +152,38 @@ class BimanualDreamTransform(DreamTransform):
             out[:, :, h:, w:] = views[3]
         return out
 
+    @staticmethod
+    def _maybe_tile(views: np.ndarray) -> np.ndarray:
+        """Return ``views[0]`` as-is when there is only one view, else
+        delegate to :meth:`_tile_views_2x2`. The single-view shortcut
+        avoids the 75% zero-padding cost of running 2x2 on a single
+        view (which is the typical wrist-only / global-only layout in
+        shared-global mode).
+        """
+        if views.shape[0] == 1:
+            return views[0]  # [T, C, H, W]
+        return BimanualDreamTransform._tile_views_2x2(views)
+
     def _split_dense(self, tensor, dims):
         """``[T, D]`` -> ``[P, T, D_per_agent]`` (also works for masks)."""
         per_agent = [tensor[:, a:b] for (a, b) in dims]
         return self._stack_agents(per_agent)
 
     def _prepare_video(self, data: dict):
-        """Multi-agent override: per-agent V-tile, no global concat.
+        """Multi-agent override: per-agent video assembly.
 
-        Returns ``[P, T, C, 2H, 2W]`` -- per-agent 2x2-tiled images
-        with a new leading P axis. Each agent's slot picks ``V_per_agent``
-        views out of the raw ``V`` axis (via ``agent_video_views``) and
-        tiles them into one image. P replaces the V dim that the parent
-        would have collapsed via ``_apply_vlm_processing``.
+        Two output shapes, gated by ``self.global_views``:
+
+        * ``global_views is None`` (legacy 2x2-tile layout): each agent's
+          views are tiled into a single ``[T, C, 2H, 2W]`` image and
+          stacked along a new ``P`` axis -> ``[P, T, C, 2H, 2W]``. The
+          shared scene camera is duplicated into every agent's tile.
+        * ``global_views is not None`` (shared-global layout): the
+          shared scene camera is factored out (see
+          :meth:`apply_single`) and each agent gets ONLY its own wrist
+          views. With the typical single wrist per agent we skip the
+          tile entirely and return ``[P, T, C, H, W]``; with >=2
+          per-agent views the same 2x2 tile rule applies.
         """
         self._validate_groups()
         # Raw layout: [T, V, H, W, C] (from LeRobot loader) -> [V, T, C, H, W].
@@ -150,8 +191,18 @@ class BimanualDreamTransform(DreamTransform):
         per_agent = []
         for view_idxs in self.agent_video_views:
             agent_views = images[list(view_idxs)]  # [V_per_agent, T, C, H, W]
-            per_agent.append(self._tile_views_2x2(agent_views))
-        # [P, T, C, 2H, 2W]
+            if self.global_views is None:
+                # Legacy: always go through the 2x2 tile so per-agent
+                # spatial shape stays calibrated against the pretrained
+                # 2H x 2W token grid. This is the codepath the existing
+                # checkpoints were trained against; do NOT change it.
+                per_agent.append(self._tile_views_2x2(agent_views))
+            else:
+                # Shared-global: only tile when there's >=2 per-agent
+                # views (the rare multi-wrist case); single-view wrist
+                # stays at the camera's native H x W.
+                per_agent.append(self._maybe_tile(agent_views))
+        # [P, T, C, H_per, W_per] -- shape depends on the branch above.
         return np.stack(per_agent, axis=0)
 
     def _apply_vlm_processing(self, batch: dict) -> dict:
@@ -195,6 +246,33 @@ class BimanualDreamTransform(DreamTransform):
             out["lapa_action_mask"] = self._split_dense(
                 out["lapa_action_mask"], self.agent_action_dims
             )
+
+        # Shared-global stream: factor the scene camera out of the
+        # per-agent video and emit it once under ``video_global``. The
+        # downstream multi-agent action head detects this key and routes
+        # it through a single VAE encode + a P-less token block in the
+        # DiT (see :meth:`_forward_multi_agent_body`). When global_views
+        # is None we stay in the legacy duplicated-global layout and
+        # this key is absent.
+        if self.global_views is not None:
+            assert all(
+                v not in g
+                for g in self.agent_video_views
+                for v in self.global_views
+            ), (
+                "global_views must be disjoint from every agent's "
+                "agent_video_views in shared-global layout; otherwise "
+                "the shared camera ends up duplicated again."
+            )
+            raw = rearrange(data["video"], "t v h w c -> v t c h w")
+            gv = raw[list(self.global_views)]                  # [V_g, T, C, H, W]
+            global_video = self._maybe_tile(gv)                # [T, C, H, W] or [T, C, 2H, 2W]
+            # C-last, uint8 -- mirrors the per-agent ``images`` layout
+            # so the action head can run them through the same VAE
+            # normalize/encode helper.
+            out["video_global"] = rearrange(
+                global_video, "t c h w -> t h w c"
+            ).astype(np.uint8)
 
         out["num_agents"] = np.int64(self.num_agents)
         return out

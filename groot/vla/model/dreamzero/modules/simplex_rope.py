@@ -373,6 +373,80 @@ class SimplexRotaryPositionEmbedding4D(nn.Module):
             return torch.complex(freqs_cos, freqs_sin)
         return torch.cat([freqs_cos, freqs_sin], dim=0)
 
+    def global_freqs(
+        self,
+        f: int,
+        h: int,
+        w: int,
+        start_frame: int = 0,
+    ) -> torch.Tensor:
+        """Build RoPE freqs for ``f * h * w`` *shared-global* tokens (PR 23).
+
+        Global tokens carry a real ``(F, H, W)`` position but have no
+        agent identity -- the agent simplex band is pinned to identity
+        rotation (matching :meth:`hub_freqs`), while ``H`` and ``W`` use
+        their normal spatial frequencies so the model can localize within
+        the shared scene image. The output is C-order ``(F, H, W)``.
+
+        Args:
+            f: Number of latent frames.
+            h: Number of vertical spatial positions (post patch_embedding).
+            w: Number of horizontal spatial positions (post patch_embedding).
+            start_frame: Temporal index of the first frame in this call.
+
+        Returns:
+            Same layout as :meth:`forward` (real-stacked or complex,
+            depending on ``polar_output``), with sequence length
+            ``f * h * w``.
+        """
+        d_t_full_half = self.d_t_full // 2
+        agent_half = self.agent_dim // 2
+        d_h_half = self.d_h // 2
+        d_w_half = self.d_w // 2
+        d_t_active_half = self.d_t_active // 2
+
+        device = self.t_cos.device
+
+        # Temporal: keep the high-freq active slots, identity on agent band.
+        t_cos = self.t_cos[start_frame : start_frame + f]                # [F, d_t_full/2]
+        t_sin = self.t_sin[start_frame : start_frame + f]
+        ident_cos = torch.ones(f, agent_half, device=device, dtype=t_cos.dtype)
+        ident_sin = torch.zeros(f, agent_half, device=device, dtype=t_sin.dtype)
+        upper_cos = t_cos[:, :d_t_active_half]
+        upper_sin = t_sin[:, :d_t_active_half]
+        tp_cos = torch.cat([upper_cos, ident_cos], dim=-1)               # [F, d_t_full/2]
+        tp_sin = torch.cat([upper_sin, ident_sin], dim=-1)
+
+        # Spatial: REAL H and W phases (unlike hub_freqs which is identity).
+        h_cos = self.h_cos[:h]                                           # [H, d_h/2]
+        h_sin = self.h_sin[:h]
+        w_cos = self.w_cos[:w]                                           # [W, d_w/2]
+        w_sin = self.w_sin[:w]
+
+        # Outer-product over (F, H, W). Each token at (t, hh, ww) gets
+        # [tp(t) | h(hh) | w(ww)] in the head_dim/2 cat.
+        # Use broadcasting to construct [F, H, W, head_dim/2].
+        tp_cos_exp = tp_cos.view(f, 1, 1, d_t_full_half).expand(f, h, w, d_t_full_half)
+        tp_sin_exp = tp_sin.view(f, 1, 1, d_t_full_half).expand(f, h, w, d_t_full_half)
+        h_cos_exp = h_cos.view(1, h, 1, d_h_half).expand(f, h, w, d_h_half)
+        h_sin_exp = h_sin.view(1, h, 1, d_h_half).expand(f, h, w, d_h_half)
+        w_cos_exp = w_cos.view(1, 1, w, d_w_half).expand(f, h, w, d_w_half)
+        w_sin_exp = w_sin.view(1, 1, w, d_w_half).expand(f, h, w, d_w_half)
+
+        freqs_cos = torch.cat([tp_cos_exp, h_cos_exp, w_cos_exp], dim=-1).reshape(
+            f * h * w, 1, -1
+        )
+        freqs_sin = torch.cat([tp_sin_exp, h_sin_exp, w_sin_exp], dim=-1).reshape(
+            f * h * w, 1, -1
+        )
+
+        if self.polar_output:
+            if freqs_cos.dtype == torch.bfloat16:
+                freqs_cos = freqs_cos.float()
+                freqs_sin = freqs_sin.float()
+            return torch.complex(freqs_cos, freqs_sin)
+        return torch.cat([freqs_cos, freqs_sin], dim=0)
+
     def post_initialize(self):
         """Move precomputed buffers to CUDA, matching the existing RoPE API."""
         device = torch.device("cuda")
