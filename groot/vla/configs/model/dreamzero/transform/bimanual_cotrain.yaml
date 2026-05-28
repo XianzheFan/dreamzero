@@ -27,5 +27,10 @@ model_specific_transform:
   embodiment_tag_mapping: ${embodiment_tag_to_projector_index}
   tokenizer_path: ${tokenizer_path}
   agent_video_views: ${agent_video_views}
+  # PR 23 shared-global: opt-in. When set, the transform emits the
+  # scene cameras under ``video_global`` and each agent's video stream
+  # contains only its private wrist view(s). Default null keeps the
+  # legacy 2x2 duplicated-global tile path bit-for-bit.
+  global_views: ${oc.select:global_views,null}
   agent_state_dims: ${agent_state_dims}
   agent_action_dims: ${agent_action_dims}

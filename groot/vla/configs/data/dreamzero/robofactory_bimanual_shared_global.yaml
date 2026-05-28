@@ -1,0 +1,88 @@
+# @package _global_
+
+# RoboFactory bimanual training config -- *shared-global* variant (PR 23).
+#
+# Self-contained copy of ``robofactory_bimanual_relative`` with the two
+# camera-routing fields swapped to the shared-global layout.
+#
+# Architectural difference vs the legacy ``robofactory_bimanual_relative``:
+#
+#   * Legacy: each agent's video stream is a 2x2 tile of
+#     (shared_global_camera, own_wrist_camera). The shared camera is
+#     therefore encoded TWICE per step and the model must reconcile two
+#     potentially divergent representations of the same scene.
+#   * Shared-global: the scene camera is factored out and encoded ONCE
+#     as a P-less ``video_global`` stream; each agent's stream contains
+#     ONLY its own wrist view. The DiT body splices the global tokens
+#     into the sequence under a SHARED sentinel agent id; both agents'
+#     wrist tokens (and the action/state register tokens) attend to it
+#     through the hub-like topology.
+#
+# Required CLI overrides:
+#   data=dreamzero/robofactory_bimanual_shared_global
+#   model/dreamzero/transform=bimanual_cotrain
+#   robofactory_data_root=/path/to/converted/lerobot_v2
+#
+# Pair with ``scripts/train/robofactory_bimanual_shared_global_slurm.sh``
+# for the production 50k-step training launch.
+
+defaults:
+  - dreamzero/base_48_wan_fine_aug_relative
+  - _self_
+
+max_state_dim: 64
+use_global_metadata: false
+# RoboFactory ManiSkill controller is delta_joint_pos style (actions are
+# already small deltas), so we don't need the additional relative-action
+# transform layer.
+relative_action: false
+relative_action_per_horizon: false
+relative_action_keys: []
+max_chunk_size: 5
+dataset_shard_sampling_rate: 0.1
+mixture_dataset_cls: groot.vla.data.dataset.lerobot_sharded.ShardedLeRobotMixtureDataset.from_mixture_spec
+single_dataset_cls: groot.vla.data.dataset.lerobot_sharded.ShardedLeRobotSubLangSingleActionChunkDatasetDROID
+
+robofactory_data_root: ???
+
+train_dataset:
+  _target_: ${mixture_dataset_cls}
+  _convert_: object
+  mixture_spec:
+    - dataset_path:
+        robofactory:
+          - ${robofactory_data_root}
+      dataset_weight: 1.0
+      distribute_weights: true
+
+  dataset_class: ${single_dataset_cls}
+  all_modality_configs: ${modality_configs}
+  all_transforms: ${transforms}
+  metadata_versions: ${metadata_versions}
+  fps: ${fps}
+  dataset_kwargs:
+    video_backend: decord
+    use_global_metadata: ${use_global_metadata}
+    max_chunk_size: ${max_chunk_size}
+    relative_action: ${relative_action}
+    relative_action_keys: ${relative_action_keys}
+    relative_action_per_horizon: ${relative_action_per_horizon}
+  mixture_kwargs:
+    training: true
+    balance_dataset_weights: false
+    seed: 42
+    shard_sampling_rate: ${dataset_shard_sampling_rate}
+
+# Shared-global camera layout. The lerobot_v2 video key order from
+# ``scripts/data/robofactory_to_lerobot_v2.py`` is:
+#   0 = global_camera (shared scene view)
+#   1 = agent0_camera (left arm wrist)
+#   2 = agent1_camera (right arm wrist)
+# In the legacy layout this would be ``[[0, 1], [0, 2]]`` (each agent
+# sees a tile of [global, own_wrist]); here we factor the global out.
+global_views: [0]
+agent_video_views: [[1], [2]]
+# Per-arm state width = 8 (7 panda joints + 1 gripper finger).
+agent_state_dims: [[0, 8], [8, 16]]
+# Per-arm action width = 8 (7 joint deltas + 1 gripper command).
+agent_action_dims: [[0, 8], [8, 16]]

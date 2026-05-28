@@ -32,12 +32,27 @@ export HYDRA_FULL_ERROR=1
 export ATTENTION_BACKEND=${ATTENTION_BACKEND:-flex}
 
 NUM_ARMS=${NUM_ARMS:-2}
+# PR 23: SHARED_GLOBAL=1 swaps the bimanual data config to the variant
+# that emits a separate ``video_global`` stream + per-agent wrist-only
+# video (no duplicated global view). Only supported for NUM_ARMS=2 for
+# now; 3/4-arm shared-global yamls can be added later.
+SHARED_GLOBAL=${SHARED_GLOBAL:-0}
 case "$NUM_ARMS" in
-    2) DATA_CFG="dreamzero/robofactory_bimanual_relative" ;;
+    2)
+        if [ "$SHARED_GLOBAL" = "1" ]; then
+            DATA_CFG="dreamzero/robofactory_bimanual_shared_global"
+        else
+            DATA_CFG="dreamzero/robofactory_bimanual_relative"
+        fi
+        ;;
     3) DATA_CFG="dreamzero/robofactory_3arm_relative" ;;
     4) DATA_CFG="dreamzero/robofactory_4arm_relative" ;;
     *) echo "Unsupported NUM_ARMS=$NUM_ARMS (expected 2, 3, or 4)" >&2; exit 1 ;;
 esac
+if [ "$SHARED_GLOBAL" = "1" ] && [ "$NUM_ARMS" -ne 2 ]; then
+    echo "SHARED_GLOBAL=1 is currently only wired for NUM_ARMS=2 (bimanual)" >&2
+    exit 1
+fi
 # Gradient checkpointing trade-off, post FlexAttention switch (PR 20):
 #  * P=2 under FlexAttention: the sparse-hub attention no longer
 #    materializes the [B,H,N,N] score matrix (~7 GB/layer/forward under
@@ -70,7 +85,7 @@ fi
 # Allocator fragmentation hint (PyTorch's own OOM message suggests this).
 export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
 
-echo "NUM_ARMS=$NUM_ARMS -> data=$DATA_CFG  gradient_checkpointing=$GRAD_CKPT  deepspeed=$DEEPSPEED_CFG"
+echo "NUM_ARMS=$NUM_ARMS  SHARED_GLOBAL=$SHARED_GLOBAL  data=$DATA_CFG  gradient_checkpointing=$GRAD_CKPT  deepspeed=$DEEPSPEED_CFG"
 
 ROBOFACTORY_DATA_ROOT=${ROBOFACTORY_DATA_ROOT:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/data/robofactory_lerobot_v2/LiftBarrier-rf"}
 OUTPUT_DIR=${OUTPUT_DIR:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/robofactory_bimanual_smoke"}
