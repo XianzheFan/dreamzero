@@ -96,7 +96,10 @@ SERVER_PID=$!
 
 # ----- 2) wait until server is listening (or it dies) -----
 echo "[$(date)] waiting for server ready (server pid=${SERVER_PID})"
-DEADLINE=$(( SECONDS + 900 ))   # 15 min wall for the 4-step load
+# Was 900s (15 min) but lustre + DROID base shards is sometimes ~10 min
+# alone (recent runs), pushing total 4-step load past 15 min. Bumped to
+# 1800s so a slow filesystem moment doesn't abort the eval prematurely.
+DEADLINE=$(( SECONDS + 1800 ))   # 30 min wall for the 4-step load
 while true; do
     if grep -q "server listening on" "${SERVER_LOG}" 2>/dev/null; then
         echo "[$(date)] server is up"
