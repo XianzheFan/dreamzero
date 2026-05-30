@@ -579,6 +579,57 @@ class WANPolicyHead(ActionHead):
             # concat: B * (4+16) * (1+(T-1)/4) * H_latent * W_latent
             y = torch.concat([msk, y], dim=1)
         return clip_context, y, new_image
+
+    def _prepare_multi_agent_i2v_conditioning(
+        self,
+        videos: torch.Tensor,
+        latents: torch.Tensor,
+        condition_frame_index: int,
+    ) -> tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
+        """Build per-agent I2V conditioning for the multi-agent path.
+
+        ``videos`` is normalized ``[B, P, C, T, H, W]`` and ``latents`` is
+        clean VAE latent ``[B, P, C_lat, F_lat, H_lat, W_lat]``. The
+        returned ``clean_x`` repeats the selected current-observation
+        latent across the latent time axis so training and closed-loop
+        inference condition on observed frames only, not future video.
+        """
+        model_type = getattr(self.model, "model_type", "t2v")
+        if model_type not in ("i2v", "ti2v"):
+            return None, None, None
+        if not hasattr(self, "image_encoder") or not hasattr(self, "vae"):
+            return None, None, None
+
+        assert videos.dim() == 6, (
+            f"videos must be [B, P, C, T, H, W]; got {tuple(videos.shape)}"
+        )
+        assert latents.dim() == 6, (
+            f"latents must be [B, P, C, F, H, W]; got {tuple(latents.shape)}"
+        )
+        b, p, c, t, h, w = videos.shape
+        assert latents.shape[0] == b and latents.shape[1] == p
+
+        frame = videos[:, :, :, condition_frame_index:condition_frame_index + 1]
+        if condition_frame_index < 0:
+            frame = videos[:, :, :, condition_frame_index:]
+        assert frame.shape[3] == 1, (
+            f"conditioning frame slice must contain one frame; got {tuple(frame.shape)}"
+        )
+
+        image = frame.permute(0, 1, 3, 2, 4, 5).reshape(b * p, 1, c, h, w)
+        clip_bp, y_bp, _ = self.encode_image(image, t, h, w)
+        clip_feature = clip_bp.reshape(b, p, *clip_bp.shape[1:]).to(self._device)
+        y = y_bp.reshape(b, p, *y_bp.shape[1:]).to(self._device)
+
+        latent_frame_index = condition_frame_index
+        clean_frame = latents[:, :, :, latent_frame_index:latent_frame_index + 1]
+        if latent_frame_index < 0:
+            clean_frame = latents[:, :, :, latent_frame_index:]
+        clean_x = clean_frame.expand(
+            -1, -1, -1, latents.shape[3], -1, -1
+        ).contiguous()
+
+        return clip_feature, y, clean_x
     
     def prepare_extra_input(self, latents=None):
         return {}
@@ -705,11 +756,11 @@ class WANPolicyHead(ActionHead):
           * ``embodiment_id``, ``has_real_action``: ``[B]`` (shared)
           * ``text``, ``text_attention_mask``:     shared across agents
 
-        First-frame conditioning (``clip_feature``, ``y``) and
-        ``clean_x`` are NOT passed through to the model: the multi-agent
-        body in :meth:`CausalWanModel._forward_train_multi_agent`
-        ignores them (they live in ``**_unused``) and the multi-agent
-        forward does not currently support image-to-video conditioning.
+        Image-to-video conditioning is preserved for Wan I2V/TI2V models:
+        each agent gets CLIP/y conditioning from its observed frame and a
+        clean current-observation latent prefix. Training uses frame 0
+        from the sampled window; closed-loop inference uses the latest
+        frame from the rolling history.
         """
         self.set_frozen_modules_to_eval_mode()
 
@@ -793,6 +844,15 @@ class WANPolicyHead(ActionHead):
         latents = latents_bp.reshape(b, p, c_lat, F_lat, h_lat, w_lat)
         latents = latents.to(self._device)
         prompt_embs = prompt_embs.to(self._device)
+        clip_features, ys, clean_latents = self._prepare_multi_agent_i2v_conditioning(
+            videos=videos,
+            latents=latents,
+            condition_frame_index=0,
+        )
+        if ys is not None:
+            ys = ys.to(dtype=latents.dtype)
+        if clean_latents is not None:
+            clean_latents = clean_latents.to(dtype=latents.dtype)
 
         # Noise + transpose to put frame axis second (matches the
         # single-agent layout, just with an extra leading P).
@@ -948,6 +1008,9 @@ class WANPolicyHead(ActionHead):
                     embodiment_id=embodiment_id,
                     action=noisy_actions,
                     timestep_action=timestep_action,
+                    clip_feature=clip_features,
+                    y=ys,
+                    clean_x=clean_latents,
                     global_video=global_latents,
                 )
             else:
@@ -959,6 +1022,9 @@ class WANPolicyHead(ActionHead):
                     seq_len=seq_len,
                     state=state_features,
                     embodiment_id=embodiment_id,
+                    clip_feature=clip_features,
+                    y=ys,
+                    clean_x=clean_latents,
                     global_video=global_latents,
                 )
 
@@ -1086,6 +1152,15 @@ class WANPolicyHead(ActionHead):
         # there, so we just stay in this layout throughout the rollout.
         latents = latents_bp.reshape(b, p, c_lat, F_lat, h_lat, w_lat).to(self._device)
         prompt_embs = prompt_embs.to(self._device)
+        clip_features, ys, clean_latents = self._prepare_multi_agent_i2v_conditioning(
+            videos=videos,
+            latents=latents,
+            condition_frame_index=-1,
+        )
+        if ys is not None:
+            ys = ys.to(dtype=latents.dtype)
+        if clean_latents is not None:
+            clean_latents = clean_latents.to(dtype=latents.dtype)
 
         H_g = h_lat // 2
         W_g = w_lat // 2
@@ -1163,6 +1238,9 @@ class WANPolicyHead(ActionHead):
                     embodiment_id=embodiment_id,
                     action=noisy_action,
                     timestep_action=timestep_action,
+                    clip_feature=clip_features,
+                    y=ys,
+                    clean_x=clean_latents,
                     global_video=global_latents,
                 )
 

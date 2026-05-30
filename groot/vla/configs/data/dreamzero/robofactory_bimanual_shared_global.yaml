@@ -81,6 +81,7 @@ train_dataset:
 # In the legacy layout this would be ``[[0, 1], [0, 2]]`` (each agent
 # sees a tile of [global, own_wrist]); here we factor the global out.
 global_views: [0]
+global_condition_mode: current_repeat
 agent_video_views: [[1], [2]]
 # Per-arm state width = 8 (7 panda joints + 1 gripper finger).
 agent_state_dims: [[0, 8], [8, 16]]

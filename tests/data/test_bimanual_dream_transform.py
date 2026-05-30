@@ -40,11 +40,17 @@ def _maybe_load_bimanual_transform():
 
 def _make_inst(Cls, *, views=((0, 1), (0, 2)),
                state_dims=((0, 7), (7, 14)),
-               action_dims=((0, 7), (7, 14))):
+               action_dims=((0, 7), (7, 14)),
+               global_views=None,
+               global_condition_mode="full"):
     """Build a lite instance via ``__new__`` (skip the full pydantic init
     that pulls in a tokenizer)."""
     inst = Cls.__new__(Cls)
     inst.__dict__["agent_video_views"] = [list(v) for v in views]
+    inst.__dict__["global_views"] = (
+        None if global_views is None else list(global_views)
+    )
+    inst.__dict__["global_condition_mode"] = global_condition_mode
     inst.__dict__["agent_state_dims"] = [tuple(s) for s in state_dims]
     inst.__dict__["agent_action_dims"] = [tuple(a) for a in action_dims]
     return inst
@@ -187,3 +193,46 @@ def test_too_many_views_per_agent_raises():
     )
     with pytest.raises(AssertionError, match="At most 4 views"):
         inst._validate_groups()
+
+
+def test_shared_global_current_repeat_removes_future_frames(yam_post_dream):
+    Cls = _maybe_load_bimanual_transform()
+    video = yam_post_dream["video"].copy()
+    # Make the global view time-varying so future leakage would be visible.
+    for t in range(video.shape[0]):
+        video[t, 0, ...] = t
+    inst = _make_inst(
+        Cls,
+        views=((1,), (2,)),
+        global_views=(0,),
+        global_condition_mode="current_repeat",
+    )
+
+    global_video = inst._prepare_global_video({"video": video})
+
+    assert global_video.shape == (33, 176, 320, 3)
+    # Every frame in the clean global stream must be the current frame
+    # (delta index 0), not the future frames 1..24.
+    np.testing.assert_array_equal(
+        global_video,
+        np.repeat(global_video[0:1], global_video.shape[0], axis=0),
+    )
+    np.testing.assert_array_equal(global_video[0], video[0, 0])
+
+
+def test_shared_global_full_mode_preserves_window(yam_post_dream):
+    Cls = _maybe_load_bimanual_transform()
+    video = yam_post_dream["video"].copy()
+    for t in range(video.shape[0]):
+        video[t, 0, ...] = t
+    inst = _make_inst(
+        Cls,
+        views=((1,), (2,)),
+        global_views=(0,),
+        global_condition_mode="full",
+    )
+
+    global_video = inst._prepare_global_video({"video": video})
+
+    assert int(global_video[0, 0, 0, 0]) == 0
+    assert int(global_video[-1, 0, 0, 0]) == video.shape[0] - 1

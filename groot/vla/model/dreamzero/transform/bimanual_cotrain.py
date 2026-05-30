@@ -74,6 +74,17 @@ class BimanualDreamTransform(DreamTransform):
             "global layout."
         ),
     )
+    global_condition_mode: str = Field(
+        default="full",
+        description=(
+            "How to build ``video_global`` when ``global_views`` is set. "
+            "``full`` preserves the historical behavior and emits the "
+            "full sampled global video window. ``current_repeat`` emits "
+            "only the current global observation (delta index 0) repeated "
+            "across the window, preventing future-frame leakage into the "
+            "clean global-conditioning stream."
+        ),
+    )
     agent_state_dims: list[tuple[int, int]] = Field(
         ...,
         description=(
@@ -119,6 +130,10 @@ class BimanualDreamTransform(DreamTransform):
         assert len(action_widths) == 1, (
             f"All agents must have the same action width; got "
             f"{[b - a for (a, b) in self.agent_action_dims]}"
+        )
+        assert self.global_condition_mode in ("full", "current_repeat"), (
+            "global_condition_mode must be 'full' or 'current_repeat'; "
+            f"got {self.global_condition_mode!r}"
         )
 
     @staticmethod
@@ -168,6 +183,23 @@ class BimanualDreamTransform(DreamTransform):
         """``[T, D]`` -> ``[P, T, D_per_agent]`` (also works for masks)."""
         per_agent = [tensor[:, a:b] for (a, b) in dims]
         return self._stack_agents(per_agent)
+
+    def _prepare_global_video(self, data: dict) -> np.ndarray:
+        """Build the shared global conditioning stream.
+
+        Training video samples use delta indices starting at 0, so the
+        current observation is frame 0 and later frames are future. In
+        ``current_repeat`` mode we repeat that first frame over the whole
+        global-conditioning window to keep train/eval causal while still
+        matching the latent temporal shape expected by the DiT body.
+        """
+        assert self.global_views is not None
+        raw = rearrange(data["video"], "t v h w c -> v t c h w")
+        gv = raw[list(self.global_views)]                  # [V_g, T, C, H, W]
+        global_video = self._maybe_tile(gv)                # [T, C, H, W] or [T, C, 2H, 2W]
+        if self.global_condition_mode == "current_repeat":
+            global_video = np.repeat(global_video[0:1], global_video.shape[0], axis=0)
+        return rearrange(global_video, "t c h w -> t h w c").astype(np.uint8)
 
     def _prepare_video(self, data: dict):
         """Multi-agent override: per-agent video assembly.
@@ -264,15 +296,10 @@ class BimanualDreamTransform(DreamTransform):
                 "agent_video_views in shared-global layout; otherwise "
                 "the shared camera ends up duplicated again."
             )
-            raw = rearrange(data["video"], "t v h w c -> v t c h w")
-            gv = raw[list(self.global_views)]                  # [V_g, T, C, H, W]
-            global_video = self._maybe_tile(gv)                # [T, C, H, W] or [T, C, 2H, 2W]
             # C-last, uint8 -- mirrors the per-agent ``images`` layout
             # so the action head can run them through the same VAE
             # normalize/encode helper.
-            out["video_global"] = rearrange(
-                global_video, "t c h w -> t h w c"
-            ).astype(np.uint8)
+            out["video_global"] = self._prepare_global_video(data)
 
         out["num_agents"] = np.int64(self.num_agents)
         return out

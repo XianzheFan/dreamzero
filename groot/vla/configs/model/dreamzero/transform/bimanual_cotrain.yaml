@@ -32,5 +32,6 @@ model_specific_transform:
   # contains only its private wrist view(s). Default null keeps the
   # legacy 2x2 duplicated-global tile path bit-for-bit.
   global_views: ${oc.select:global_views,null}
+  global_condition_mode: ${oc.select:global_condition_mode,full}
   agent_state_dims: ${agent_state_dims}
   agent_action_dims: ${agent_action_dims}

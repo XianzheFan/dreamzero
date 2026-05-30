@@ -36,6 +36,11 @@ PROMPT=${PROMPT:-"the two robot arms lift the steel barrier together off the tab
 # latents at each infer() call and write one mp4 per agent. Adds ~5-15s
 # per inference (heavy VAE decode); use only for diagnostics.
 SAVE_VIDEO_PRED=${SAVE_VIDEO_PRED:-0}
+# Set DUMP_ACTIONS=1 to write one episode_<seed>.npz per episode with the
+# full predicted action chunks (raw [-1,1] space), the qpos the model saw,
+# and the executed actions. Cheap (small npz); use to inspect the gripper
+# dims 7/15 (>0=open, <0=close) for the approach-but-no-grasp diagnosis.
+DUMP_ACTIONS=${DUMP_ACTIONS:-0}
 
 REPO_DIR=/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/dreamzero
 CONDA_BASE=/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/miniconda3
@@ -50,6 +55,7 @@ SERVER_LOG=${OUT_BASE}/server.log
 CLIENT_LOG=${OUT_BASE}/client.log
 RESULTS_JSON=${OUT_BASE}/results.json
 VIDEO_DIR=${OUT_BASE}/videos
+DUMP_DIR=${OUT_BASE}/action_dump
 
 echo "[$(date)] eval start"
 echo "  CKPT_DIR=${CKPT_DIR}"
@@ -127,6 +133,10 @@ export VK_ICD_FILENAMES=${SAPIEN_VKLIB}/nvidia_icd.json
 export __EGL_VENDOR_LIBRARY_FILENAMES=${SAPIEN_VKLIB}/10_nvidia.json
 export LD_LIBRARY_PATH=${ROBOFACTORY_ENV}/lib:/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}
 
+DUMP_FLAG=""
+if [ "${DUMP_ACTIONS}" = "1" ]; then
+    DUMP_FLAG="--dump-actions ${DUMP_DIR}"
+fi
 echo "[$(date)] launching client -> ${CLIENT_LOG}"
 CUDA_VISIBLE_DEVICES=1 \
 "${ROBOFACTORY_PY}" "${REPO_DIR}/scripts/eval/eval_robofactory_ws.py" \
@@ -139,6 +149,7 @@ CUDA_VISIBLE_DEVICES=1 \
     --prompt "${PROMPT}" \
     --log "${RESULTS_JSON}" \
     --video-dir "${VIDEO_DIR}" \
+    ${DUMP_FLAG} \
     > "${CLIENT_LOG}" 2>&1
 CLIENT_RC=$?
 

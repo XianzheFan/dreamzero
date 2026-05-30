@@ -324,6 +324,18 @@ class BimanualPolicy:
         sess["infer_idx"] = 0
         return "reset successful"
 
+    def _uses_shared_global(self) -> bool:
+        """Whether the loaded transform emits ``video_global``.
+
+        The outer object is a ComposedModalityTransform; the inner
+        BimanualDreamTransform carries ``global_views`` when the
+        checkpoint was trained with the shared-global layout.
+        """
+        for t in getattr(self._transform, "transforms", []):
+            if getattr(t, "global_views", None) is not None:
+                return True
+        return False
+
     # ----- inference ----------------------------------------------------
     def infer(self, obs: dict) -> dict:
         """Pre-Concat dotted-key batch construction (PR 11+).
@@ -373,7 +385,14 @@ class BimanualPolicy:
         # [T, H, W, 3] uint8 per camera. head=global, lft=agent0, rgt=agent1
         # (matches the LeRobot v2 camera naming written by
         # ``scripts/data/robofactory_to_lerobot_v2.py``).
-        global_video = np.stack([h for (h, _, _) in history], axis=0)
+        if self._uses_shared_global():
+            # Shared-global checkpoints train ``video_global`` as the
+            # current scene observation repeated across the conditioning
+            # window. Keep inference identical instead of feeding a
+            # rolling past window into the clean global-conditioning path.
+            global_video = np.repeat(head[None], self.num_frames, axis=0)
+        else:
+            global_video = np.stack([h for (h, _, _) in history], axis=0)
         agent0_video = np.stack([l for (_, l, _) in history], axis=0)
         agent1_video = np.stack([r for (_, _, r) in history], axis=0)
 

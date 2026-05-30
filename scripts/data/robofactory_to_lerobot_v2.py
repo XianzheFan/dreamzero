@@ -13,7 +13,7 @@ agents 0..N-1::
     obs/agent/panda-i/qpos                       [T,   9]    (7 arm + 2 finger)
     obs/sensor_data/head_camera_global/rgb       [T, H, W, 3]  uint8
     obs/sensor_data/head_camera_agent{i}/rgb     [T, H, W, 3]
-    actions/panda-i                              [T-1, 8]    (7 joint deltas + 1 gripper)
+    actions/panda-i                              [T-1, 8]    (7 absolute joint targets + 1 gripper cmd)
 
 Output (the LeRobot v2 schema expected by
 ``ShardedLeRobotSubLangSingleActionChunkDatasetDROID``)::
@@ -252,7 +252,12 @@ def write_meta(
         action_modality[f"panda{n}_joint_pos"] = {
             "original_key": "action",
             "start": a_start, "end": a_start + 7,
-            "rotation_type": None, "absolute": False,
+            # RoboFactory's pd_joint_pos planner stores ABSOLUTE joint
+            # targets (verified: action[:, :7] == next-frame qpos, not
+            # deltas). absolute=True makes the loader pad chunks that
+            # overrun the episode end with the last real pose
+            # ("first_last") instead of zeroing the arm targets.
+            "rotation_type": None, "absolute": True,
             "dtype": "float32", "range": None,
         }
         action_modality[f"panda{n}_gripper_pos"] = {

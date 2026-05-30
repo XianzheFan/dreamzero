@@ -37,13 +37,13 @@ def cuda_available():
         pytest.skip("CUDA required for multi-agent inference smoke")
 
 
-def _make_model(num_agents=2, device="cuda"):
+def _make_model(num_agents=2, device="cuda", model_type="t2v"):
     from groot.vla.model.dreamzero.modules.wan_video_dit_action_casual_chunk import (
         CausalWanModel,
     )
 
     model = CausalWanModel(
-        model_type="t2v",
+        model_type=model_type,
         patch_size=(1, 2, 2),
         frame_seqlen=4,
         text_len=8,
@@ -156,6 +156,40 @@ def test_inference_writes_kv_cache(cuda_available):
             f"layer {layer} slot shape {tuple(slot.shape)} != expected "
             f"(2, {B}, {expected_L}, {n_heads}, {head_dim})"
         )
+
+
+def test_i2v_clean_conditioning_stripped_from_cache(cuda_available):
+    """I2V multi-agent calls accept per-agent clip/y/clean_x conditioning.
+
+    The clean prefix is useful within the current denoising call but must
+    not persist in the streaming cache; future calls rebuild it from the
+    latest observation.
+    """
+    torch.manual_seed(0)
+    model = _make_model(num_agents=2, model_type="i2v")
+    inputs = _make_inputs()
+    B, P, _, F_lat, H, W = inputs["x"].shape
+    num_layers = len(model.blocks)
+    inputs.update(
+        clean_x=inputs["x"].clone(),
+        y=torch.zeros(B, P, 20, F_lat, H, W, device="cuda", dtype=torch.bfloat16),
+        clip_feature=torch.randn(B, P, 1, 1280, device="cuda", dtype=torch.bfloat16),
+    )
+
+    with torch.no_grad():
+        video, action_pred, returned_cache = model(
+            **inputs,
+            kv_cache=[None] * num_layers,
+            crossattn_cache=[None] * num_layers,
+            current_start_frame=0,
+        )
+
+    assert video.shape == (B, P, 8, F_lat, H, W)
+    assert action_pred.shape == inputs["action"].shape
+    F_g, H_g, W_g = F_lat, H // 2, W // 2
+    expected_persistent = P * F_g * H_g * W_g + F_g * model.num_hub_tokens
+    assert returned_cache[0].shape[2] == expected_persistent
+    assert model._cached_token_agent_id.shape == (expected_persistent,)
 
 
 def test_streaming_accepts_action_register_tokens(cuda_available):

@@ -124,7 +124,8 @@ def _bool_from(info_val) -> bool:
     return bool(info_val)
 
 
-def run_episode(env, ws, seed: int, prompt: str, replan_every: int, max_steps: int):
+def run_episode(env, ws, seed: int, prompt: str, replan_every: int, max_steps: int,
+                dump: dict | None = None):
     raw_obs, _ = env.reset(seed=seed)
     session_id = uuid.uuid4().hex
     ws.send(
@@ -147,6 +148,7 @@ def run_episode(env, ws, seed: int, prompt: str, replan_every: int, max_steps: i
                     "head_rgb": head,
                     "left_rgb": left,
                     "right_rgb": right,
+                    "step": int(steps),
                     "prompt": prompt,
                 },
                 use_bin_type=True,
@@ -159,12 +161,24 @@ def run_episode(env, ws, seed: int, prompt: str, replan_every: int, max_steps: i
         actions = np.asarray(reply["action_chunk"], dtype=np.float32)
         assert actions.ndim == 2 and actions.shape[1] == 16
 
+        if dump is not None:
+            # Record the FULL predicted chunk (not just the executed
+            # prefix) in raw [-1,1] action space, the step it was
+            # requested at, and the qpos the model conditioned on. This
+            # is read-only bookkeeping -- the replan/open-loop logic
+            # below is untouched.
+            dump["infer_step"].append(int(steps))
+            dump["pred_chunk"].append(actions.copy())
+            dump["obs_qpos"].append(qpos.copy())
+
         cur = qpos.copy()
         for da in actions[:replan_every]:
             abs16 = integrate_action(da, cur)
             raw_obs, reward, term, trunc, info = env.step(env_action_dict(abs16))
             cur = abs16
             steps += 1
+            if dump is not None:
+                dump["exec_action"].append(abs16.copy())
             if _bool_from(info.get("success", False)):
                 return True, steps
             if _bool_from(term) or _bool_from(trunc):
@@ -193,6 +207,14 @@ def main():
         "--video-dir",
         default=None,
         help="If set, wrap env with RecordEpisode and write one mp4 per seed.",
+    )
+    ap.add_argument(
+        "--dump-actions",
+        default=None,
+        help="If set, write one episode_<seed>.npz per episode containing the "
+        "full predicted action chunks (raw [-1,1] space), the qpos the model "
+        "saw, and the executed actions. Gripper dims are 7 (left) and 15 "
+        "(right): >0=open, <0=close.",
     )
     args = ap.parse_args()
 
@@ -280,21 +302,47 @@ def main():
                 f, indent=2,
             )
 
+    if args.dump_actions:
+        os.makedirs(args.dump_actions, exist_ok=True)
+        print(f"Dumping action chunks -> {args.dump_actions}", flush=True)
+
+    def _save_dump(seed: int, dump: dict | None, success: bool) -> None:
+        if dump is None or not dump["pred_chunk"]:
+            return
+        path = os.path.join(args.dump_actions, f"episode_{seed}.npz")
+        np.savez_compressed(
+            path,
+            seed=seed,
+            success=bool(success),
+            infer_step=np.asarray(dump["infer_step"], dtype=np.int32),
+            pred_chunk=np.stack(dump["pred_chunk"]),       # (n_infer, chunk_len, 16)
+            obs_qpos=np.stack(dump["obs_qpos"]),           # (n_infer, 16)
+            exec_action=np.stack(dump["exec_action"]),     # (n_steps, 16)
+        )
+
     for i in range(args.num_episodes):
         seed = args.seed_start + i
         t0 = time.time()
+        dump = (
+            {"infer_step": [], "pred_chunk": [], "obs_qpos": [], "exec_action": []}
+            if args.dump_actions
+            else None
+        )
         try:
             success, steps = run_episode(
-                env, ws, seed, args.prompt, args.replan_every, args.max_steps
+                env, ws, seed, args.prompt, args.replan_every, args.max_steps,
+                dump=dump,
             )
         except Exception as e:
             print(f"seed={seed} ERROR: {type(e).__name__}: {e}", flush=True)
             results.append({"seed": seed, "success": False, "steps": -1, "wall_s": 0.0, "error": str(e)})
+            _save_dump(seed, dump, False)   # persist whatever chunks we got before the error
             _write_partial()    # persist partial so a slurm preempt doesn't lose finished seeds
             continue
         dt = time.time() - t0
         results.append({"seed": seed, "success": bool(success), "steps": int(steps), "wall_s": round(dt, 1)})
         print(f"seed={seed} success={success} steps={steps} wall={dt:.1f}s", flush=True)
+        _save_dump(seed, dump, success)
         _write_partial()
 
     ok = sum(1 for r in results if r.get("success"))

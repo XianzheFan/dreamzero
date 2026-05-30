@@ -17,7 +17,10 @@
 
 set -e
 
-# Shared-global defaults: distinct from the legacy v4_long_50k run.
+# Shared-global defaults: distinct from both the legacy v4_long_50k run and
+# the pre-fix shared-global run. Do not resume the old
+# ``robofactory_bimanual_liftbarrier_shared_global_50k`` checkpoint: it was
+# trained with full future global video as clean conditioning.
 SHARED_GLOBAL=${SHARED_GLOBAL:-1}
 TARGET_STEPS=${TARGET_STEPS:-50000}
 MAX_STEPS=${MAX_STEPS:-50000}
@@ -26,8 +29,8 @@ SAVE_STEPS=${SAVE_STEPS:-2000}
 LEARNING_RATE=${LEARNING_RATE:-1e-5}
 REPORT_TO=${REPORT_TO:-wandb}
 WANDB_PROJECT=${WANDB_PROJECT:-dreamzero_robofactory}
-WANDB_RUN_NAME=${WANDB_RUN_NAME:-robofactory_bimanual_liftbarrier_shared_global_50k}
-OUTPUT_DIR=${OUTPUT_DIR:-/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/robofactory_bimanual_liftbarrier_shared_global_50k}
+WANDB_RUN_NAME=${WANDB_RUN_NAME:-robofactory_bimanual_liftbarrier_shared_global_fixed_50k}
+OUTPUT_DIR=${OUTPUT_DIR:-/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/robofactory_bimanual_liftbarrier_shared_global_fixed_50k}
 ROBOFACTORY_DATA_ROOT=${ROBOFACTORY_DATA_ROOT:-/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/data/robofactory_lerobot_v2/LiftBarrier-rf}
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
