@@ -20,17 +20,17 @@ export HYDRA_FULL_ERROR=1
 # avoids the legacy torch math kernel's dense [B,H,N,N] score matrix.
 export ATTENTION_BACKEND=${ATTENTION_BACKEND:-flex}
 
-# RoboTwin's 33-frame, 3-view bimanual batches still sit close to the
-# 80 GB H100 limit. Keep recomputation on by default; FlexAttention
-# removes the dense score-matrix blowup while gradient checkpointing
-# keeps per-layer activations from filling the card.
+# RoboTwin's 33-frame bimanual batches sit close to the 80 GB H100 limit.
+# Keep recomputation on and default to the shared-global data layout so the
+# scene camera is encoded once instead of being duplicated into both agents.
 GRAD_CKPT=${GRAD_CKPT:-true}
-DEEPSPEED_CFG=${DEEPSPEED_CFG:-groot/vla/configs/deepspeed/zero2.json}
-DATA_CFG=${DATA_CFG:-dreamzero/robotwin_franka_bimanual_relative}
+# ZeRO-2 CPU offload gives a few extra GB of GPU headroom for long runs.
+DEEPSPEED_CFG=${DEEPSPEED_CFG:-groot/vla/configs/deepspeed/zero2_offload.json}
+DATA_CFG=${DATA_CFG:-dreamzero/robotwin_franka_bimanual_shared_global}
 export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
 
 ROBOTWIN_DATA_ROOT=${ROBOTWIN_DATA_ROOT:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/data/robotwin_lerobot_v2/beat_block_hammer-rt"}
-OUTPUT_DIR=${OUTPUT_DIR:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/robotwin_franka_bimanual_smoke"}
+OUTPUT_DIR=${OUTPUT_DIR:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/robotwin_franka_bimanual_shared_global_smoke"}
 NUM_GPUS=${NUM_GPUS:-1}
 MAX_STEPS=${MAX_STEPS:-10}
 BATCH_SIZE=${BATCH_SIZE:-1}
@@ -38,7 +38,7 @@ SAVE_STEPS=${SAVE_STEPS:-$MAX_STEPS}
 LEARNING_RATE=${LEARNING_RATE:-1e-5}
 REPORT_TO=${REPORT_TO:-none}
 WANDB_PROJECT=${WANDB_PROJECT:-dreamzero_robotwin_smoke}
-WANDB_RUN_NAME=${WANDB_RUN_NAME:-robotwin_franka_bimanual_smoke}
+WANDB_RUN_NAME=${WANDB_RUN_NAME:-robotwin_franka_bimanual_shared_global_smoke}
 
 WAN_CKPT_DIR=${WAN_CKPT_DIR:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/Wan2.1-I2V-14B-480P"}
 TOKENIZER_DIR=${TOKENIZER_DIR:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/umt5-xxl"}

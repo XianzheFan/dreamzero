@@ -13,8 +13,7 @@
 #SBATCH --signal=B:USR1@300
 #
 # Chained 8xH100 training for DreamZero RoboTwin Franka bimanual
-# (beat_block_hammer-rt).
-# Mirrors robofactory_bimanual_slurm.sh — different data root + ckpt dir.
+# (beat_block_hammer-rt), using the shared-global camera layout.
 #
 # Submit from a login node:
 #   cd /lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/dreamzero
@@ -33,8 +32,8 @@ SAVE_STEPS=${SAVE_STEPS:-500}
 LEARNING_RATE=${LEARNING_RATE:-1e-5}
 REPORT_TO=${REPORT_TO:-wandb}
 WANDB_PROJECT=${WANDB_PROJECT:-dreamzero_robotwin}
-WANDB_RUN_NAME=${WANDB_RUN_NAME:-robotwin_franka_bimanual_beat_block_hammer_droid_ma_50k}
-OUTPUT_DIR=${OUTPUT_DIR:-/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/robotwin_franka_bimanual_beat_block_hammer_droid_ma_50k}
+WANDB_RUN_NAME=${WANDB_RUN_NAME:-robotwin_franka_bimanual_beat_block_hammer_droid_ma_sg_50k}
+OUTPUT_DIR=${OUTPUT_DIR:-/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/robotwin_franka_bimanual_beat_block_hammer_droid_ma_sg_50k}
 ROBOTWIN_DATA_ROOT=${ROBOTWIN_DATA_ROOT:-/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/data/robotwin_lerobot_v2/beat_block_hammer-rt}
 
 WANDB_ID_FILE="${OUTPUT_DIR}/wandb_run_id"
