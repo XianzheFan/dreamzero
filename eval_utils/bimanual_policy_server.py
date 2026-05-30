@@ -595,11 +595,15 @@ class BimanualPolicy:
         pred = data["action_pred"]
         if isinstance(pred, torch.Tensor):
             pred = pred.detach().float().cpu().numpy()
-        pred = np.asarray(pred)                               # [B, P, T_a, D]
+        pred = np.asarray(pred, dtype=np.float32)             # [B, P, T_a, D]
         if pred.ndim != 4:
             raise ValueError(
                 f"action_pred must be 4-D [B, P, T_a, D]; got {pred.shape}"
             )
+        # The diffusion head samples in q01/q99-normalized action space, but
+        # samples are unconstrained. Clip before inverse normalization so eval
+        # never sends commands outside the training/controller range.
+        pred = np.clip(pred, -1.0, 1.0)
         B, P, T_a, D_per_arm = pred.shape
         if P != 2 or D_per_arm != 8:
             raise ValueError(
