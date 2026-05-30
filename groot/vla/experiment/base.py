@@ -533,6 +533,10 @@ class BaseTrainer(transformers.Trainer):
             self.state = TrainerState.load_from_json(
                 os.path.join(resume_from_checkpoint, TRAINER_STATE_NAME)
             )
+            # A resumed TrainerState persists the old checkpoint's
+            # save_steps. Honor the current run's TrainingArguments so
+            # chained Slurm jobs can safely change SAVE_STEPS.
+            self.state.save_steps = self.args.save_steps
         return super().train(resume_from_checkpoint, trial, ignore_keys_for_eval, **kwargs)
 
     def get_train_dataloader(self) -> DataLoader:
