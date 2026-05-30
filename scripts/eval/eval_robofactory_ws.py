@@ -162,14 +162,21 @@ def run_episode(env, ws, seed: int, prompt: str, replan_every: int, max_steps: i
         assert actions.ndim == 2 and actions.shape[1] == 16
 
         if dump is not None:
-            # Record the FULL predicted chunk (not just the executed
-            # prefix) in raw [-1,1] action space, the step it was
-            # requested at, and the qpos the model conditioned on. This
-            # is read-only bookkeeping -- the replan/open-loop logic
-            # below is untouched.
+            # Record the full denormalized predicted chunk, optional
+            # normalized raw/clipped chunks, the request step, and the qpos
+            # the model conditioned on. This is read-only bookkeeping; the
+            # replan/open-loop logic below is untouched.
             dump["infer_step"].append(int(steps))
             dump["pred_chunk"].append(actions.copy())
             dump["obs_qpos"].append(qpos.copy())
+            if "action_norm_raw" in reply:
+                dump["action_norm_raw"].append(
+                    np.asarray(reply["action_norm_raw"], dtype=np.float32).copy()
+                )
+            if "action_norm_clipped" in reply:
+                dump["action_norm_clipped"].append(
+                    np.asarray(reply["action_norm_clipped"], dtype=np.float32).copy()
+                )
 
         cur = qpos.copy()
         for da in actions[:replan_every]:
@@ -203,6 +210,8 @@ def main():
         default="the two robot arms lift the steel barrier together off the table",
     )
     ap.add_argument("--log", default=None)
+    ap.add_argument("--ckpt-dir", default=None)
+    ap.add_argument("--ckpt-setting", default=None)
     ap.add_argument(
         "--video-dir",
         default=None,
@@ -212,9 +221,9 @@ def main():
         "--dump-actions",
         default=None,
         help="If set, write one episode_<seed>.npz per episode containing the "
-        "full predicted action chunks (raw [-1,1] space), the qpos the model "
-        "saw, and the executed actions. Gripper dims are 7 (left) and 15 "
-        "(right): >0=open, <0=close.",
+        "full denormalized predicted action chunks, optional raw/clipped "
+        "normalized chunks, the qpos the model saw, and executed actions. "
+        "Gripper dims are 7 (left) and 15 (right): >0=open, <0=close.",
     )
     args = ap.parse_args()
 
@@ -295,7 +304,18 @@ def main():
                 {
                     "results": results,
                     "success_rate": rate,
-                    "ckpt": args.host,
+                    "ckpt": args.ckpt_setting or args.host,
+                    "ckpt_dir": args.ckpt_dir,
+                    "ckpt_setting": args.ckpt_setting,
+                    "server": {"host": args.host, "port": args.port, "meta": meta},
+                    "eval_config": {
+                        "task": args.task,
+                        "seed_start": args.seed_start,
+                        "num_episodes": args.num_episodes,
+                        "max_steps": args.max_steps,
+                        "replan_every": args.replan_every,
+                        "prompt": args.prompt,
+                    },
                     "n_completed": len(results),
                     "n_target": args.num_episodes,
                 },
@@ -310,21 +330,32 @@ def main():
         if dump is None or not dump["pred_chunk"]:
             return
         path = os.path.join(args.dump_actions, f"episode_{seed}.npz")
-        np.savez_compressed(
-            path,
-            seed=seed,
-            success=bool(success),
-            infer_step=np.asarray(dump["infer_step"], dtype=np.int32),
-            pred_chunk=np.stack(dump["pred_chunk"]),       # (n_infer, chunk_len, 16)
-            obs_qpos=np.stack(dump["obs_qpos"]),           # (n_infer, 16)
-            exec_action=np.stack(dump["exec_action"]),     # (n_steps, 16)
-        )
+        payload = {
+            "seed": seed,
+            "success": bool(success),
+            "infer_step": np.asarray(dump["infer_step"], dtype=np.int32),
+            "pred_chunk": np.stack(dump["pred_chunk"]),       # denorm [n_infer, chunk_len, 16]
+            "obs_qpos": np.stack(dump["obs_qpos"]),           # [n_infer, 16]
+            "exec_action": np.stack(dump["exec_action"]),     # [n_steps, 16]
+        }
+        if dump.get("action_norm_raw"):
+            payload["action_norm_raw"] = np.stack(dump["action_norm_raw"])
+        if dump.get("action_norm_clipped"):
+            payload["action_norm_clipped"] = np.stack(dump["action_norm_clipped"])
+        np.savez_compressed(path, **payload)
 
     for i in range(args.num_episodes):
         seed = args.seed_start + i
         t0 = time.time()
         dump = (
-            {"infer_step": [], "pred_chunk": [], "obs_qpos": [], "exec_action": []}
+            {
+                "infer_step": [],
+                "pred_chunk": [],
+                "obs_qpos": [],
+                "exec_action": [],
+                "action_norm_raw": [],
+                "action_norm_clipped": [],
+            }
             if args.dump_actions
             else None
         )

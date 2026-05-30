@@ -89,6 +89,11 @@ action_head_cfg:
 
     action_dim: ${max_action_dim}
     action_horizon: ${action_horizon}
+    action_loss_weight: 1.0
+    gripper_action_loss_weight: 1.0
+    gripper_action_dims: [7]
+    action_prefix_loss_weight: 1.0
+    action_prefix_loss_len: 0
     num_inference_timesteps: 4  # not used during training
     noise_beta_alpha: 1.5
     noise_beta_beta: 1.0

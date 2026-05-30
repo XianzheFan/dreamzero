@@ -88,6 +88,7 @@ class BimanualServerConfig:
     action_horizon: int = 24
     action_dim: int = 16
     fps: int = 20
+    return_action_debug: bool = False
 
 
 def _make_packer():
@@ -131,6 +132,7 @@ class BimanualPolicy:
         action_dim: int = 16,
         save_video_pred: bool = False,
         video_pred_dir: str | None = None,
+        return_action_debug: bool = False,
     ):
         self.ckpt_dir = Path(ckpt_dir)
         self.ckpt_setting = ckpt_setting
@@ -141,6 +143,8 @@ class BimanualPolicy:
         self.action_dim = action_dim
         self.save_video_pred = save_video_pred
         self.video_pred_dir = Path(video_pred_dir) if video_pred_dir else None
+        self.return_action_debug = return_action_debug
+        self._last_action_debug: dict[str, np.ndarray] = {}
 
         self._sessions: dict[str, dict] = {}
         self._load()
@@ -517,7 +521,15 @@ class BimanualPolicy:
         sess["infer_idx"] = sess.get("infer_idx", 0) + 1
 
         flat_action = self._denorm_action(outputs)
-        return {"action_chunk": flat_action.astype(np.float32)}
+        reply = {"action_chunk": flat_action.astype(np.float32)}
+        if self.return_action_debug:
+            reply.update(
+                {
+                    key: value.astype(np.float32)
+                    for key, value in self._last_action_debug.items()
+                }
+            )
+        return reply
 
     def _dump_video_pred(self, sess: dict, sid: str) -> None:
         """VAE-decode the action_head's last denoised video latents and
@@ -577,6 +589,14 @@ class BimanualPolicy:
         logging.info("wrote predicted video: step=%d session=%s dir=%s",
                      step, sid[:12], out_dir)
 
+    def _flatten_bimanual_action_pred(self, pred: np.ndarray) -> np.ndarray:
+        """Flatten ``[P=2, T, D=8]`` per-arm action to client ``[T, 16]``."""
+        out = np.zeros((self.action_horizon, self.action_dim), dtype=np.float32)
+        T = min(pred.shape[1], self.action_horizon)
+        out[:T, 0:8] = pred[0, :T, :8]
+        out[:T, 8:16] = pred[1, :T, :8]
+        return out
+
     def _denorm_action(self, outputs) -> np.ndarray:
         """Take model output ``action_pred [B=1, P=2, T_a, D_per_arm=8]``
         (normalized to [-1, 1] via q99) and denormalize back to
@@ -595,20 +615,24 @@ class BimanualPolicy:
         pred = data["action_pred"]
         if isinstance(pred, torch.Tensor):
             pred = pred.detach().float().cpu().numpy()
-        pred = np.asarray(pred, dtype=np.float32)             # [B, P, T_a, D]
-        if pred.ndim != 4:
+        raw_pred = np.asarray(pred, dtype=np.float32)         # [B, P, T_a, D]
+        if raw_pred.ndim != 4:
             raise ValueError(
-                f"action_pred must be 4-D [B, P, T_a, D]; got {pred.shape}"
+                f"action_pred must be 4-D [B, P, T_a, D]; got {raw_pred.shape}"
             )
         # The diffusion head samples in q01/q99-normalized action space, but
         # samples are unconstrained. Clip before inverse normalization so eval
         # never sends commands outside the training/controller range.
-        pred = np.clip(pred, -1.0, 1.0)
+        pred = np.clip(raw_pred, -1.0, 1.0)
         B, P, T_a, D_per_arm = pred.shape
         if P != 2 or D_per_arm != 8:
             raise ValueError(
                 f"Expected P=2 arms with D=8 per arm; got P={P} D={D_per_arm}"
             )
+        self._last_action_debug = {
+            "action_norm_raw": self._flatten_bimanual_action_pred(raw_pred[0]),
+            "action_norm_clipped": self._flatten_bimanual_action_pred(pred[0]),
+        }
 
         out = np.zeros((self.action_horizon, self.action_dim), dtype=np.float32)
         emb_meta = (
@@ -650,6 +674,7 @@ class BimanualWebsocketServer:
             action_horizon=policy.action_horizon,
             image_resolution=(policy.image_h, policy.image_w),
             action_dim=policy.action_dim,
+            return_action_debug=policy.return_action_debug,
         )
         logging.getLogger("websockets.server").setLevel(logging.INFO)
 
@@ -731,6 +756,11 @@ def main():
         help="Output dir for predicted-video mp4s; default "
              "{ckpt_dir}/video_pred/session_{sid}.",
     )
+    parser.add_argument(
+        "--return-action-debug",
+        action="store_true",
+        help="Include raw and clipped normalized action chunks in infer replies.",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -748,6 +778,7 @@ def main():
         action_horizon=args.action_horizon,
         save_video_pred=args.save_video_pred,
         video_pred_dir=args.video_pred_dir,
+        return_action_debug=args.return_action_debug,
     )
     server = BimanualWebsocketServer(policy, host=args.host, port=args.port)
     server.serve_forever()

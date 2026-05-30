@@ -4,12 +4,14 @@
 ``episode_<seed>.npz`` per rollout with:
 
 * ``pred_chunk``: full predicted chunks, shape ``[n_infer, chunk_len, 16]``.
+  These are denormalized commands in controller units.
+* ``action_norm_raw`` / ``action_norm_clipped`` (optional): normalized
+  policy samples before/after inference-time clipping to ``[-1, 1]``.
 * ``exec_action``: commands actually executed in the env, shape
   ``[n_steps, 16]``.
 * ``obs_qpos``: qpos observed at each policy call, shape ``[n_infer, 16]``.
 
-LiftBarrier gripper command dims are 7 (left) and 15 (right) in the raw
-``[-1, 1]`` action space:
+LiftBarrier gripper command dims are 7 (left) and 15 (right):
 
 * ``cmd > 0``: open.
 * ``cmd < 0``: close.
@@ -106,6 +108,15 @@ def _chunk_close_offsets(
     return offsets
 
 
+def _range_stats(values: np.ndarray) -> dict[str, float]:
+    return {
+        "min": float(values.min()),
+        "max": float(values.max()),
+        "mean": float(values.mean()),
+        "std": float(values.std()),
+    }
+
+
 def analyze_episode(
     path: str,
     close_threshold: float,
@@ -117,6 +128,16 @@ def analyze_episode(
     success = bool(d["success"])
     exec_action = np.asarray(d["exec_action"], dtype=np.float32)
     pred_chunk = np.asarray(d["pred_chunk"], dtype=np.float32)
+    action_norm_raw = (
+        np.asarray(d["action_norm_raw"], dtype=np.float32)
+        if "action_norm_raw" in d.files
+        else None
+    )
+    action_norm_clipped = (
+        np.asarray(d["action_norm_clipped"], dtype=np.float32)
+        if "action_norm_clipped" in d.files
+        else None
+    )
     infer_step = np.asarray(d["infer_step"] if "infer_step" in d.files else [], dtype=np.int64)
     obs_qpos = np.asarray(d["obs_qpos"] if "obs_qpos" in d.files else [], dtype=np.float32)
     steps = int(exec_action.shape[0])
@@ -147,6 +168,20 @@ def analyze_episode(
         "right": _chunk_close_offsets(pred_chunk, GRIP_DIMS[1], decisive_threshold),
     }
 
+    norm_debug = None
+    if action_norm_raw is not None and action_norm_clipped is not None:
+        raw_grip = action_norm_raw[..., GRIP_DIMS]
+        clipped_grip = action_norm_clipped[..., GRIP_DIMS]
+        clamp_delta = np.abs(action_norm_raw - action_norm_clipped)
+        norm_debug = {
+            "raw_gripper": _range_stats(raw_grip),
+            "clipped_gripper": _range_stats(clipped_grip),
+            "raw_saturation_frac": float((np.abs(action_norm_raw) >= 0.999).mean()),
+            "raw_gripper_saturation_frac": float((np.abs(raw_grip) >= 0.999).mean()),
+            "clamp_delta_mean": float(clamp_delta.mean()),
+            "clamp_delta_max": float(clamp_delta.max()),
+        }
+
     episode = {
         "file": os.path.basename(path),
         "seed": seed,
@@ -160,6 +195,7 @@ def analyze_episode(
         "mean_joint_step_delta": mean_joint_step_delta,
         "first_cmd_delta_mean": first_cmd_delta_mean,
         "first_cmd_delta_max": first_cmd_delta_max,
+        "norm_debug": norm_debug,
     }
 
     print(
@@ -205,6 +241,15 @@ def analyze_episode(
 
     if infer_step.size:
         print(f"  infer steps: first={int(infer_step[0])} last={int(infer_step[-1])} count={infer_step.size}")
+    if norm_debug is not None:
+        rg = norm_debug["raw_gripper"]
+        print(
+            "  raw normalized gripper: "
+            f"min={rg['min']:+.2f} max={rg['max']:+.2f} "
+            f"sat_frac={norm_debug['raw_gripper_saturation_frac']:.2f} "
+            f"clamp_delta_mean={norm_debug['clamp_delta_mean']:.3f} "
+            f"clamp_delta_max={norm_debug['clamp_delta_max']:.3f}"
+        )
 
     return episode
 

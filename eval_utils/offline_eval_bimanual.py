@@ -44,7 +44,7 @@ from torch.utils.data import DataLoader
 
 
 # Per-arm action layout for RoboFactory bimanual (matches data config:
-# agent_action_dims=[[0,8],[8,16]] with 7 joint deltas + 1 gripper).
+# agent_action_dims=[[0,8],[8,16]] with 7 absolute joint targets + 1 gripper).
 PER_ARM_JOINT_DIMS = list(range(0, 7))      # [0..6]
 PER_ARM_GRIPPER_DIMS = [7]
 ARM_SLICES = [(0, 8), (8, 16)]              # left, right
@@ -219,8 +219,8 @@ def move_to_device(batch, device, dtype):
 def find_gt_action(batch: dict) -> tuple[torch.Tensor, torch.Tensor] | tuple[None, None]:
     """Return (action, action_mask) from the post-transform batch.
 
-    Bimanual layout: action is [B, P=2, T_a, D_per_arm=8] (7 joint deltas
-    + 1 gripper per arm). action_mask is the same shape (bool).
+    Bimanual layout: action is [B, P=2, T_a, D_per_arm=8] (7 absolute joint
+    targets + 1 gripper per arm). action_mask is the same shape (bool).
     """
     if "action" not in batch:
         return None, None

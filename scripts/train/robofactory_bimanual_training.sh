@@ -97,6 +97,12 @@ LEARNING_RATE=${LEARNING_RATE:-1e-5}
 REPORT_TO=${REPORT_TO:-none}
 WANDB_PROJECT=${WANDB_PROJECT:-dreamzero_robofactory_smoke}
 WANDB_RUN_NAME=${WANDB_RUN_NAME:-robofactory_bimanual_smoke}
+ACTION_LOSS_WEIGHT=${ACTION_LOSS_WEIGHT:-5.0}
+GRIPPER_ACTION_LOSS_WEIGHT=${GRIPPER_ACTION_LOSS_WEIGHT:-6.0}
+ACTION_PREFIX_LOSS_WEIGHT=${ACTION_PREFIX_LOSS_WEIGHT:-2.0}
+ACTION_PREFIX_LOSS_LEN=${ACTION_PREFIX_LOSS_LEN:-8}
+
+echo "action_loss_weight=$ACTION_LOSS_WEIGHT  gripper_action_loss_weight=$GRIPPER_ACTION_LOSS_WEIGHT  action_prefix_loss_weight=$ACTION_PREFIX_LOSS_WEIGHT  action_prefix_loss_len=$ACTION_PREFIX_LOSS_LEN"
 
 WAN_CKPT_DIR=${WAN_CKPT_DIR:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/Wan2.1-I2V-14B-480P"}
 TOKENIZER_DIR=${TOKENIZER_DIR:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/umt5-xxl"}
@@ -163,6 +169,10 @@ torchrun --nproc_per_node $NUM_GPUS --standalone groot/vla/experiment/experiment
     pretrained_model_path=$PRETRAINED_DIR \
     ++action_head_cfg.config.skip_component_loading=true \
     ++action_head_cfg.config.defer_lora_injection=true \
+    ++action_head_cfg.config.action_loss_weight=$ACTION_LOSS_WEIGHT \
+    ++action_head_cfg.config.gripper_action_loss_weight=$GRIPPER_ACTION_LOSS_WEIGHT \
+    ++action_head_cfg.config.action_prefix_loss_weight=$ACTION_PREFIX_LOSS_WEIGHT \
+    ++action_head_cfg.config.action_prefix_loss_len=$ACTION_PREFIX_LOSS_LEN \
     ++action_head_cfg.config.max_state_dim=8 \
     ++action_head_cfg.config.action_dim=8 \
     ++action_head_cfg.config.diffusion_model_cfg.num_agents=$NUM_ARMS \

@@ -2,7 +2,8 @@
 
 # RoboFactory bimanual training config (mirror of yam_bimanual_relative.yaml).
 # Uses the new ``robofactory`` embodiment tag (8-dim action per Panda arm:
-# 7 joint deltas + 1 gripper), plugs in ``BimanualDreamTransform`` so
+# 7 absolute joint targets + 1 gripper command), plugs in
+# ``BimanualDreamTransform`` so
 # state / action / images carry a leading P axis.
 #
 # Required CLI overrides:
@@ -16,9 +17,9 @@ defaults:
 
 max_state_dim: 64
 use_global_metadata: false
-# RoboFactory ManiSkill controller is delta_joint_pos style (actions are
-# already small deltas), so we don't need the additional relative-action
-# transform layer.
+# RoboFactory planner data stores absolute joint targets plus gripper
+# commands for ManiSkill's pd_joint_pos controller. Keep relative_action
+# off so the transform feeds those targets through unmodified.
 relative_action: false
 relative_action_per_horizon: false
 relative_action_keys: []
@@ -65,5 +66,5 @@ train_dataset:
 agent_video_views: [[0, 1], [0, 2]]
 # Per-arm state width = 8 (7 panda joints + 1 gripper finger).
 agent_state_dims: [[0, 8], [8, 16]]
-# Per-arm action width = 8 (7 joint deltas + 1 gripper command).
+# Per-arm action width = 8 (7 absolute joint targets + 1 gripper command).
 agent_action_dims: [[0, 8], [8, 16]]

@@ -36,10 +36,13 @@ PROMPT=${PROMPT:-"the two robot arms lift the steel barrier together off the tab
 # latents at each infer() call and write one mp4 per agent. Adds ~5-15s
 # per inference (heavy VAE decode); use only for diagnostics.
 SAVE_VIDEO_PRED=${SAVE_VIDEO_PRED:-0}
+# Return raw and clipped normalized action chunks from the policy server so
+# action dumps can diagnose saturation/clamping without saving predicted video.
+RETURN_ACTION_DEBUG=${RETURN_ACTION_DEBUG:-1}
 # Set DUMP_ACTIONS=1 to write one episode_<seed>.npz per episode with the
-# full predicted action chunks (raw [-1,1] space), the qpos the model saw,
-# and the executed actions. Cheap (small npz); use to inspect the gripper
-# dims 7/15 (>0=open, <0=close) for the approach-but-no-grasp diagnosis.
+# denormalized predicted chunks, optional normalized raw/clipped chunks,
+# the qpos the model saw, and executed actions. Cheap (small npz); use to
+# inspect gripper dims 7/15 (>0=open, <0=close).
 DUMP_ACTIONS=${DUMP_ACTIONS:-0}
 
 REPO_DIR=/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/dreamzero
@@ -87,6 +90,10 @@ SAVE_FLAG=""
 if [ "${SAVE_VIDEO_PRED}" = "1" ]; then
     SAVE_FLAG="--save-video-pred --video-pred-dir ${OUT_BASE}/video_pred"
 fi
+DEBUG_FLAG=""
+if [ "${RETURN_ACTION_DEBUG}" = "1" ]; then
+    DEBUG_FLAG="--return-action-debug"
+fi
 echo "[$(date)] launching server -> ${SERVER_LOG}"
 CUDA_VISIBLE_DEVICES=0 \
 LD_LIBRARY_PATH=${CUDA_HOME}/lib:${LD_LIBRARY_PATH:-} \
@@ -96,7 +103,7 @@ LD_LIBRARY_PATH=${CUDA_HOME}/lib:${LD_LIBRARY_PATH:-} \
     --host 127.0.0.1 --port "${PORT}" \
     --image-h 240 --image-w 320 \
     --num-frames 33 --action-horizon 24 \
-    ${SAVE_FLAG} \
+    ${SAVE_FLAG} ${DEBUG_FLAG} \
     > "${SERVER_LOG}" 2>&1 &
 SERVER_PID=$!
 
@@ -148,6 +155,8 @@ CUDA_VISIBLE_DEVICES=1 \
     --replan-every "${REPLAN_EVERY}" \
     --prompt "${PROMPT}" \
     --log "${RESULTS_JSON}" \
+    --ckpt-dir "${CKPT_DIR}" \
+    --ckpt-setting "${CKPT_SETTING}" \
     --video-dir "${VIDEO_DIR}" \
     ${DUMP_FLAG} \
     > "${CLIENT_LOG}" 2>&1
