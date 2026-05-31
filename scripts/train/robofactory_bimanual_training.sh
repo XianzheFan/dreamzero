@@ -93,6 +93,7 @@ NUM_GPUS=${NUM_GPUS:-1}
 MAX_STEPS=${MAX_STEPS:-3}
 BATCH_SIZE=${BATCH_SIZE:-1}
 SAVE_STEPS=${SAVE_STEPS:-$MAX_STEPS}
+SAVE_TOTAL_LIMIT=${SAVE_TOTAL_LIMIT:-4}
 LEARNING_RATE=${LEARNING_RATE:-1e-5}
 REPORT_TO=${REPORT_TO:-none}
 WANDB_PROJECT=${WANDB_PROJECT:-dreamzero_robofactory_smoke}
@@ -102,6 +103,7 @@ GRIPPER_ACTION_LOSS_WEIGHT=${GRIPPER_ACTION_LOSS_WEIGHT:-6.0}
 ACTION_PREFIX_LOSS_WEIGHT=${ACTION_PREFIX_LOSS_WEIGHT:-2.0}
 ACTION_PREFIX_LOSS_LEN=${ACTION_PREFIX_LOSS_LEN:-8}
 
+echo "save_steps=$SAVE_STEPS  save_total_limit=$SAVE_TOTAL_LIMIT"
 echo "action_loss_weight=$ACTION_LOSS_WEIGHT  gripper_action_loss_weight=$GRIPPER_ACTION_LOSS_WEIGHT  action_prefix_loss_weight=$ACTION_PREFIX_LOSS_WEIGHT  action_prefix_loss_len=$ACTION_PREFIX_LOSS_LEN"
 
 WAN_CKPT_DIR=${WAN_CKPT_DIR:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/Wan2.1-I2V-14B-480P"}
@@ -147,7 +149,7 @@ torchrun --nproc_per_node $NUM_GPUS --standalone groot/vla/experiment/experiment
     per_device_train_batch_size=$BATCH_SIZE \
     max_steps=$MAX_STEPS \
     weight_decay=1e-5 \
-    save_total_limit=5 \
+    save_total_limit=$SAVE_TOTAL_LIMIT \
     upload_checkpoints=false \
     bf16=true \
     tf32=true \
