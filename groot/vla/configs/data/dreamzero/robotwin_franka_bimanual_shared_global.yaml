@@ -5,8 +5,10 @@
 # The converted RoboTwin LeRobot v2 data uses the same tensor layout as
 # RoboFactory's two-Panda tasks:
 #   state/action = [left 7 joints, left gripper, right 7 joints, right gripper]
-# The converter writes ``embodiment_tag: robofactory`` so we can reuse the
-# existing Panda modality config and transforms.
+# The converter writes absolute next-qpos targets. DreamZero's
+# ``relative_action`` path converts only the joint targets to
+# target-current offsets during training, matching DROID-style pretraining.
+# Grippers remain absolute commands.
 #
 # Difference vs ``robotwin_franka_bimanual_relative``:
 #   * legacy layout duplicates the shared/global scene camera into both
@@ -27,9 +29,11 @@ defaults:
 
 max_state_dim: 64
 use_global_metadata: false
-relative_action: false
+relative_action: true
 relative_action_per_horizon: false
-relative_action_keys: []
+relative_action_keys:
+  - panda0_joint_pos
+  - panda1_joint_pos
 max_chunk_size: 5
 dataset_shard_sampling_rate: 0.1
 mixture_dataset_cls: groot.vla.data.dataset.lerobot_sharded.ShardedLeRobotMixtureDataset.from_mixture_spec

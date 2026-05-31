@@ -39,10 +39,10 @@ Wire protocol (msgpack-numpy on each direction):
       -> returns
       {
         "action_chunk": np.ndarray [T_a=24, 16] float32,
-        # delta-joint for slots [0:7] and [8:15]; absolute gripper for
-        # slots [7] and [15]. The client adds qpos[:7] and qpos[8:15]
-        # to the corresponding slices to convert to RoboTwin's
-        # action_type='qpos' (absolute joint target).
+        # For checkpoints trained with DreamZero ``relative_action``, the
+        # server adds the denormalized joint offsets back to the current
+        # qpos and returns absolute qpos targets. Legacy checkpoints that
+        # stored deltas directly still return delta-joint slots.
       }
 
 Per-session video history is held server-side as a deque of
@@ -89,6 +89,7 @@ class BimanualServerConfig:
     action_dim: int = 16
     fps: int = 20
     return_action_debug: bool = False
+    action_representation: str = "robotwin_delta"
 
 
 def _make_packer():
@@ -145,6 +146,10 @@ class BimanualPolicy:
         self.video_pred_dir = Path(video_pred_dir) if video_pred_dir else None
         self.return_action_debug = return_action_debug
         self._last_action_debug: dict[str, np.ndarray] = {}
+        self._relative_action = False
+        self._relative_action_per_horizon = False
+        self._relative_action_keys: set[str] = set()
+        self.action_representation = "robotwin_delta"
 
         self._sessions: dict[str, dict] = {}
         self._load()
@@ -165,6 +170,17 @@ class BimanualPolicy:
                 f"{cfg_path} or {self.ckpt_dir / 'experiment_cfg' / 'conf.yaml'}"
             )
         self._cfg = OmegaConf.load(str(cfg_path))
+        rel_keys = self._cfg.get("relative_action_keys", []) or []
+        self._relative_action = bool(self._cfg.get("relative_action", False))
+        self._relative_action_per_horizon = bool(
+            self._cfg.get("relative_action_per_horizon", False)
+        )
+        self._relative_action_keys = {str(k) for k in list(rel_keys)}
+        self.action_representation = (
+            "absolute_qpos"
+            if self._uses_anchor_relative_actions()
+            else "robotwin_delta"
+        )
 
         meta_path = exp_cfg_dir / "metadata.json"
         if meta_path.is_file():
@@ -524,7 +540,7 @@ class BimanualPolicy:
                 logging.exception("save_video_pred failed; continuing without")
         sess["infer_idx"] = sess.get("infer_idx", 0) + 1
 
-        flat_action = self._denorm_action(outputs)
+        flat_action = self._denorm_action(outputs, qpos)
         reply = {"action_chunk": flat_action.astype(np.float32)}
         if self.return_action_debug:
             reply.update(
@@ -690,11 +706,37 @@ class BimanualPolicy:
         out[:T, 8:16] = pred[1, :T, :8]
         return out
 
-    def _denorm_action(self, outputs) -> np.ndarray:
+    def _uses_anchor_relative_actions(self) -> bool:
+        return self._relative_action or self._relative_action_per_horizon
+
+    def _key_is_relative(self, subkey: str) -> bool:
+        if not self._uses_anchor_relative_actions():
+            return False
+        if self._relative_action_keys:
+            return subkey in self._relative_action_keys
+        return "gripper" not in subkey.lower()
+
+    def _add_reference_state_for_relative_keys(
+        self,
+        out: np.ndarray,
+        qpos: np.ndarray,
+    ) -> None:
+        """Match DreamZero sim_policy: relative joint outputs become
+        absolute action targets by adding the latest observed qpos.
+        """
+        if self._key_is_relative("panda0_joint_pos"):
+            out[:, 0:7] += qpos[0:7]
+        if self._key_is_relative("panda1_joint_pos"):
+            out[:, 8:15] += qpos[8:15]
+
+    def _denorm_action(self, outputs, qpos: np.ndarray) -> np.ndarray:
         """Take model output ``action_pred [B=1, P=2, T_a, D_per_arm=8]``
         (normalized to [-1, 1] via q99) and denormalize back to
-        physical units. Concatenates the two arms into the 16-dim
-        flat layout the client expects:
+        physical units. If the checkpoint was trained with DreamZero's
+        ``relative_action`` path, joint slices are denormalized as
+        target-current offsets and then converted back to absolute qpos
+        targets using the latest RoboTwin qpos. Concatenates the two arms
+        into the 16-dim flat layout the client expects:
         ``[panda0_joint(0:7), panda0_gripper(7:8), panda1_joint(8:15),
         panda1_gripper(15:16)]``.
         """
@@ -749,6 +791,7 @@ class BimanualPolicy:
         _denorm(p0[:, 7:8], "action.panda0_gripper_pos",  7, 8)
         _denorm(p1[:, :7],  "action.panda1_joint_pos",    8, 15)
         _denorm(p1[:, 7:8], "action.panda1_gripper_pos", 15, 16)
+        self._add_reference_state_for_relative_keys(out, qpos)
         return out
 
 
@@ -768,6 +811,7 @@ class BimanualWebsocketServer:
             image_resolution=(policy.image_h, policy.image_w),
             action_dim=policy.action_dim,
             return_action_debug=policy.return_action_debug,
+            action_representation=policy.action_representation,
         )
         logging.getLogger("websockets.server").setLevel(logging.INFO)
 

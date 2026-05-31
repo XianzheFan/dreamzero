@@ -21,8 +21,8 @@ Each episode contains::
     /observation/left_camera/rgb     [T] uint8
     /observation/right_camera/rgb    [T] uint8
 
-Output (LeRobot v2 schema, identical to ``robofactory_to_lerobot_v2.py``
-so the existing ``robofactory_bimanual_relative.yaml`` works unchanged)::
+Output (LeRobot v2 schema, reusing the existing two-Panda RoboFactory
+modality names so the bimanual DreamZero transform can be reused)::
 
     {out_dir}/
         data/chunk-000/episode_000000.parquet
@@ -36,11 +36,11 @@ State / action layout (16 dims total, matches ``robofactory``)::
     [left_arm_joint(0:7), left_gripper(7:8),
      right_arm_joint(8:15), right_gripper(15:16)]
 
-Actions are stored as delta-joint + absolute-gripper to match the
-``robofactory`` modality config (``absolute: False`` for joints,
-``absolute: True`` for grippers), so the eval-time policy emits a delta
-joint that the RoboTwin adapter applies as ``current_qpos + delta`` and
-the predicted gripper is sent verbatim.
+Actions are stored as absolute next-step qpos targets. DreamZero's
+``relative_action`` training path then converts the joint targets to
+``target_qpos - current_qpos`` on the fly and normalizes those relative
+joint offsets, matching the DROID-style pretraining convention. Grippers
+remain absolute 0/1 targets.
 
 Usage::
 
@@ -55,8 +55,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 from typing import Sequence
+
+# Avoid OpenBLAS/OpenMP import-time thread storms on login nodes with a
+# tight RLIMIT_NPROC. Video encoding/decoding below is explicitly
+# single-threaded, so this does not reduce useful converter parallelism.
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 
 import av
 import cv2
@@ -131,9 +140,10 @@ def encode_video(frames: np.ndarray, output_path: Path, fps: int) -> None:
 def _read_state_and_action(traj: h5py.File) -> tuple[np.ndarray, np.ndarray]:
     """Return ``(state[T, 16], action[T-1, 16])``.
 
-    The training pipeline expects ``action[t]`` = ``next-qpos minus
-    current-qpos`` for joints, and absolute target for grippers, so the
-    converter does the diff here.
+    ``action[t]`` is the absolute next-step qpos target. The DreamZero
+    dataset loader applies ``relative_action`` for the joint keys during
+    training, so the raw LeRobot rows stay in the same form as DROID:
+    future target action plus current observation state.
     """
     left_arm = traj["/joint_action/left_arm"][()].astype(np.float32)
     right_arm = traj["/joint_action/right_arm"][()].astype(np.float32)
@@ -154,11 +164,10 @@ def _read_state_and_action(traj: h5py.File) -> tuple[np.ndarray, np.ndarray]:
     state = np.concatenate([left_arm, left_grip, right_arm, right_grip], axis=1)
     assert state.shape == (T, STATE_DIM)
 
-    # delta-joint, absolute-gripper actions.
-    delta = state[1:] - state[:-1]                 # [T-1, 16]
-    action = delta.copy()
-    action[:, 7] = state[1:, 7]                    # left  gripper -> absolute target
-    action[:, 15] = state[1:, 15]                  # right gripper -> absolute target
+    # Absolute next-step qpos target. Joint targets are converted to
+    # relative offsets by the DreamZero dataset loader when
+    # ``relative_action`` is enabled; grippers are kept absolute.
+    action = state[1:].copy()
     return state[:-1], action                      # T-1 rows each
 
 
@@ -303,7 +312,7 @@ def write_meta(
             "panda0_joint_pos": {
                 "original_key": "action",
                 "start": 0, "end": 7,
-                "rotation_type": None, "absolute": False, "dtype": "float32", "range": None,
+                "rotation_type": None, "absolute": True, "dtype": "float32", "range": None,
             },
             "panda0_gripper_pos": {
                 "original_key": "action",
@@ -313,7 +322,7 @@ def write_meta(
             "panda1_joint_pos": {
                 "original_key": "action",
                 "start": 8, "end": 15,
-                "rotation_type": None, "absolute": False, "dtype": "float32", "range": None,
+                "rotation_type": None, "absolute": True, "dtype": "float32", "range": None,
             },
             "panda1_gripper_pos": {
                 "original_key": "action",
@@ -367,6 +376,17 @@ def write_meta(
         "timestamp": per_dim_stats(np.array([[0.0]], dtype=np.float32)),
     }
     (meta / "stats.json").write_text(json.dumps(stats, indent=2))
+
+    # If the user reuses an output directory that was previously converted
+    # with a different action convention, force DreamZero to recalculate
+    # relative stats from the new absolute action rows on the next train.
+    for stale_name in (
+        "relative_stats_dreamzero.json",
+        "relative_horizon_stats_dreamzero.json",
+    ):
+        stale_path = meta / stale_name
+        if stale_path.exists():
+            stale_path.unlink()
 
 
 def _list_episodes(episode_dir: Path) -> list[Path]:
