@@ -88,23 +88,23 @@ def extract_obs(obs):
 
 
 def integrate_action(action16: np.ndarray, qpos16: np.ndarray) -> np.ndarray:
-    """Policy outputs *absolute* joint targets + absolute gripper, fed
-    directly into ManiSkill's ``pd_joint_pos`` controller.
+    """Convert delta-joint + absolute-gripper policy output to env action.
 
-    The earlier convention assumed delta joints (``nxt = qpos + action``),
-    but the LiftBarrier raw h5 has ``actions/panda-i[0] == qpos[0][:7]``
-    -- i.e. the planner stored absolute target qpos, not deltas. The
-    data config also sets ``relative_action: false`` so the training
-    transform feeds those raw absolute targets through unmodified. The
-    delta-style integration was therefore doubling the joint displacement
-    each step, which is why the closed-loop rollouts had the arms flying
-    *away* from the barrier instead of grasping it.
-
-    Kept as a helper (instead of inlining the passthrough) for symmetry
-    with future task variants that might genuinely use delta control.
+    The RoboFactory converter stores arm joints as relative deltas
+    (absolute controller target minus the paired qpos) and grippers as
+    verbatim controller commands. ManiSkill's ``pd_joint_pos`` controller
+    still expects absolute joint targets, so rollout integrates each
+    predicted joint delta against the current qpos and forwards grippers
+    unchanged.
     """
-    del qpos16  # unused under absolute-target convention
-    return action16.astype(np.float32, copy=True)
+    action16 = np.asarray(action16, dtype=np.float32)
+    qpos16 = np.asarray(qpos16, dtype=np.float32)
+    out = qpos16.astype(np.float32, copy=True)
+    out[0:7] = qpos16[0:7] + action16[0:7]
+    out[7] = action16[7]
+    out[8:15] = qpos16[8:15] + action16[8:15]
+    out[15] = action16[15]
+    return out
 
 
 def env_action_dict(abs16: np.ndarray) -> dict:

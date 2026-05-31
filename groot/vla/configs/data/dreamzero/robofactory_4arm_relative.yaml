@@ -18,6 +18,9 @@ defaults:
 
 max_state_dim: 64
 use_global_metadata: false
+# The converter stores relative joint deltas plus absolute gripper
+# commands. Keep relative_action off because the action rows are already
+# in the DreamZero/RoboTwin Franka relative-joint convention.
 relative_action: false
 relative_action_per_horizon: false
 relative_action_keys: []
