@@ -1227,7 +1227,10 @@ class WANPolicyHead(ActionHead):
         # Shared-global inference feeds current-repeat camera streams, so
         # condition on frame 0 exactly as training does. Legacy rolling-
         # history inference still conditions on the latest frame.
-        video_global_raw = data.get("video_global", None) if isinstance(data, dict) else getattr(data, "video_global", None)
+        if isinstance(data, dict):
+            video_global_raw = data.get("video_global", None)
+        else:
+            video_global_raw = getattr(data, "video_global", None)
         condition_frame_index = 0 if video_global_raw is not None else -1
         clip_features, ys, clean_latents = self._prepare_multi_agent_i2v_conditioning(
             videos=videos,
