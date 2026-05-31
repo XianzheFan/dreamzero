@@ -392,13 +392,16 @@ class BimanualPolicy:
         if self._uses_shared_global():
             # Shared-global checkpoints train ``video_global`` as the
             # current scene observation repeated across the conditioning
-            # window. Keep inference identical instead of feeding a
-            # rolling past window into the clean global-conditioning path.
+            # window. Keep inference identical for all three camera
+            # streams instead of feeding a rolling past window into the
+            # clean conditioning path.
             global_video = np.repeat(head[None], self.num_frames, axis=0)
+            agent0_video = np.repeat(lft[None], self.num_frames, axis=0)
+            agent1_video = np.repeat(rgt[None], self.num_frames, axis=0)
         else:
             global_video = np.stack([h for (h, _, _) in history], axis=0)
-        agent0_video = np.stack([l for (_, l, _) in history], axis=0)
-        agent1_video = np.stack([r for (_, _, r) in history], axis=0)
+            agent0_video = np.stack([l for (_, l, _) in history], axis=0)
+            agent1_video = np.stack([r for (_, _, r) in history], axis=0)
 
         # Per-arm state slices (T_s=1, current step only).
         T_s = 1
@@ -516,6 +519,7 @@ class BimanualPolicy:
         if self.save_video_pred:
             try:
                 self._dump_video_pred(sess, sid)
+                self._dump_conditioning_pred(sess, sid)
             except Exception:
                 logging.exception("save_video_pred failed; continuing without")
         sess["infer_idx"] = sess.get("infer_idx", 0) + 1
@@ -588,6 +592,95 @@ class BimanualPolicy:
                     container.mux(packet)
         logging.info("wrote predicted video: step=%d session=%s dir=%s",
                      step, sid[:12], out_dir)
+
+    def _decode_latent_video(self, latents):
+        """Decode VAE latents in ``[B, P, C, F, H, W]`` layout."""
+        import torch
+
+        action_head = self._model.action_head
+        B, P, C_lat, F_lat, H_lat, W_lat = latents.shape
+        lat_bp = latents.reshape(B * P, C_lat, F_lat, H_lat, W_lat)
+        with torch.inference_mode():
+            frames = action_head.vae.decode(
+                lat_bp.to(self._device, dtype=self._dtype),
+                tiled=action_head.tiled,
+                tile_size=(action_head.tile_size_height,
+                           action_head.tile_size_width),
+                tile_stride=(action_head.tile_stride_height,
+                             action_head.tile_stride_width),
+            )
+        frames = frames.float()
+        frames = ((frames + 1.0) * 127.5).clamp(0, 255).to(torch.uint8)
+        frames = frames.cpu().numpy()
+        return frames.transpose(0, 2, 3, 4, 1).reshape(
+            B, P, -1, frames.shape[3], frames.shape[4], 3
+        )[0]
+
+    def _write_decoded_video_set(self, frames, out_dir: Path, prefix: str) -> None:
+        import av
+
+        out_dir.mkdir(parents=True, exist_ok=True)
+        P, T, H, W = frames.shape[0], frames.shape[1], frames.shape[2], frames.shape[3]
+        for p in range(P):
+            out_path = out_dir / f"{prefix}_agent{p}.mp4"
+            with av.open(str(out_path), mode="w") as container:
+                stream = container.add_stream("h264", rate=20)
+                stream.width = W
+                stream.height = H
+                stream.pix_fmt = "yuv420p"
+                stream.options = {"crf": "23"}
+                for t in range(T):
+                    av_frame = av.VideoFrame.from_ndarray(frames[p, t], format="rgb24")
+                    for packet in stream.encode(av_frame):
+                        container.mux(packet)
+                for packet in stream.encode():
+                    container.mux(packet)
+
+    def _dump_conditioning_pred(self, sess: dict, sid: str) -> None:
+        """Decode the I2V conditioning latents once for debugging.
+
+        This checks whether the VAE encode/decode path for the current
+        observation is sane. If these files are structured while
+        ``stepXXXX_agent*.mp4`` is noise, the denoising/video-conditioning
+        path is the problem, not the VAE diagnostic decode path.
+        """
+        step = sess.get("infer_idx", 0)
+        if step != 0 or sess.get("condition_debug_dumped", False):
+            return
+
+        action_head = self._model.action_head
+        out_dir = self.video_pred_dir or (self.ckpt_dir / "video_pred")
+        out_dir = Path(out_dir) / f"session_{sid[:12]}" / "conditioning"
+
+        clean_latents = getattr(action_head, "_last_clean_video_cond", None)
+        if clean_latents is not None:
+            clean_frames = self._decode_latent_video(clean_latents)
+            self._write_decoded_video_set(
+                clean_frames, out_dir, f"step{step:04d}_clean_x"
+            )
+            logging.info(
+                "wrote conditioning clean_x video: step=%d session=%s dir=%s",
+                step, sid[:12], out_dir,
+            )
+
+        # ``y`` is [B, P, mask_channels + latent_channels, F, H, W].
+        # Decode only the latent tail when its channel count matches the
+        # clean VAE latent channel count.
+        y_latents = getattr(action_head, "_last_y_video_cond", None)
+        if y_latents is not None and clean_latents is not None:
+            c_lat = clean_latents.shape[2]
+            if y_latents.shape[2] >= c_lat:
+                y_tail = y_latents[:, :, -c_lat:]
+                y_frames = self._decode_latent_video(y_tail)
+                self._write_decoded_video_set(
+                    y_frames, out_dir, f"step{step:04d}_y_latent"
+                )
+                logging.info(
+                    "wrote conditioning y-latent video: step=%d session=%s dir=%s",
+                    step, sid[:12], out_dir,
+                )
+
+        sess["condition_debug_dumped"] = True
 
     def _flatten_bimanual_action_pred(self, pred: np.ndarray) -> np.ndarray:
         """Flatten ``[P=2, T, D=8]`` per-arm action to client ``[T, 16]``."""

@@ -1041,7 +1041,10 @@ class WANPolicyHead(ActionHead):
         # ``_forward_multi_agent_body``'s ``global_video`` kwarg).
         # Training stays in "predict wrist only" mode: ``noisy_latents`` is
         # still per-agent wrist, ``training_target`` still per-agent wrist.
-        video_global_raw = data.get("video_global", None) if isinstance(data, dict) else getattr(data, "video_global", None)
+        if isinstance(data, dict):
+            video_global_raw = data.get("video_global", None)
+        else:
+            video_global_raw = getattr(data, "video_global", None)
         if video_global_raw is not None:
             global_latents = self._encode_global_video(video_global_raw)
             global_latents = global_latents.to(dtype=self.dtype)
@@ -1221,15 +1224,24 @@ class WANPolicyHead(ActionHead):
         # there, so we just stay in this layout throughout the rollout.
         latents = latents_bp.reshape(b, p, c_lat, F_lat, h_lat, w_lat).to(self._device)
         prompt_embs = prompt_embs.to(self._device)
+        # Shared-global inference feeds current-repeat camera streams, so
+        # condition on frame 0 exactly as training does. Legacy rolling-
+        # history inference still conditions on the latest frame.
+        video_global_raw = data.get("video_global", None) if isinstance(data, dict) else getattr(data, "video_global", None)
+        condition_frame_index = 0 if video_global_raw is not None else -1
         clip_features, ys, clean_latents = self._prepare_multi_agent_i2v_conditioning(
             videos=videos,
             latents=latents,
-            condition_frame_index=-1,
+            condition_frame_index=condition_frame_index,
         )
         if ys is not None:
             ys = ys.to(dtype=latents.dtype)
         if clean_latents is not None:
             clean_latents = clean_latents.to(dtype=latents.dtype)
+        self._last_clean_video_cond = (
+            clean_latents.detach() if clean_latents is not None else None
+        )
+        self._last_y_video_cond = ys.detach() if ys is not None else None
 
         H_g = h_lat // 2
         W_g = w_lat // 2
@@ -1273,7 +1285,6 @@ class WANPolicyHead(ActionHead):
         # and feed it to every denoising step as clean conditioning. The
         # latents are reused across all 16 steps so the per-step cost is
         # unchanged. The denoising loop still only updates wrist + action.
-        video_global_raw = data.get("video_global", None) if isinstance(data, dict) else getattr(data, "video_global", None)
         if video_global_raw is not None:
             global_latents = self._encode_global_video(video_global_raw).to(dtype=latents.dtype)
         else:
