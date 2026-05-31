@@ -30,13 +30,13 @@ SAVE_TOTAL_LIMIT=${SAVE_TOTAL_LIMIT:-4}
 LEARNING_RATE=${LEARNING_RATE:-1e-5}
 REPORT_TO=${REPORT_TO:-wandb}
 WANDB_PROJECT=${WANDB_PROJECT:-dreamzero_robofactory}
-WANDB_RUN_NAME=${WANDB_RUN_NAME:-robofactory_bimanual_liftbarrier_shared_global_delta_50k}
+WANDB_RUN_NAME=${WANDB_RUN_NAME:-robofactory_bimanual_liftbarrier_shared_global_dzrel_50k}
 ACTION_LOSS_WEIGHT=${ACTION_LOSS_WEIGHT:-5.0}
 GRIPPER_ACTION_LOSS_WEIGHT=${GRIPPER_ACTION_LOSS_WEIGHT:-6.0}
 ACTION_PREFIX_LOSS_WEIGHT=${ACTION_PREFIX_LOSS_WEIGHT:-2.0}
 ACTION_PREFIX_LOSS_LEN=${ACTION_PREFIX_LOSS_LEN:-8}
-OUTPUT_DIR=${OUTPUT_DIR:-/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/robofactory_bimanual_liftbarrier_shared_global_delta_50k}
-ROBOFACTORY_DATA_ROOT=${ROBOFACTORY_DATA_ROOT:-/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/data/robofactory_lerobot_v2_delta/LiftBarrier-rf}
+OUTPUT_DIR=${OUTPUT_DIR:-/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/robofactory_bimanual_liftbarrier_shared_global_dzrel_50k}
+ROBOFACTORY_DATA_ROOT=${ROBOFACTORY_DATA_ROOT:-/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/data/robofactory_lerobot_v2/LiftBarrier-rf}
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 

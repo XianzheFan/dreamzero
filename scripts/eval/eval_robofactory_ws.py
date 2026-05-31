@@ -87,18 +87,24 @@ def extract_obs(obs):
     return head, left, right, qpos
 
 
-def integrate_action(action16: np.ndarray, qpos16: np.ndarray) -> np.ndarray:
-    """Convert delta-joint + absolute-gripper policy output to env action.
+def integrate_action(
+    action16: np.ndarray,
+    qpos16: np.ndarray,
+    action_representation: str,
+) -> np.ndarray:
+    """Convert policy output to ManiSkill ``pd_joint_pos`` action.
 
-    The RoboFactory converter stores arm joints as relative deltas
-    (absolute controller target minus the paired qpos) and grippers as
-    verbatim controller commands. ManiSkill's ``pd_joint_pos`` controller
-    still expects absolute joint targets, so rollout integrates each
-    predicted joint delta against the current qpos and forwards grippers
-    unchanged.
+    Checkpoints trained through DreamZero's ``relative_action`` path are
+    converted back to absolute qpos targets by the policy server. Legacy
+    checkpoints that stored joint deltas directly still need integration
+    against the latest observed qpos here. Gripper commands are always
+    forwarded verbatim.
     """
     action16 = np.asarray(action16, dtype=np.float32)
     qpos16 = np.asarray(qpos16, dtype=np.float32)
+    if action_representation == "absolute_qpos":
+        return action16.astype(np.float32, copy=True)
+
     out = qpos16.astype(np.float32, copy=True)
     out[0:7] = qpos16[0:7] + action16[0:7]
     out[7] = action16[7]
@@ -124,8 +130,16 @@ def _bool_from(info_val) -> bool:
     return bool(info_val)
 
 
-def run_episode(env, ws, seed: int, prompt: str, replan_every: int, max_steps: int,
-                dump: dict | None = None):
+def run_episode(
+    env,
+    ws,
+    seed: int,
+    prompt: str,
+    replan_every: int,
+    max_steps: int,
+    action_representation: str,
+    dump: dict | None = None,
+):
     raw_obs, _ = env.reset(seed=seed)
     session_id = uuid.uuid4().hex
     ws.send(
@@ -180,7 +194,7 @@ def run_episode(env, ws, seed: int, prompt: str, replan_every: int, max_steps: i
 
         cur = qpos.copy()
         for da in actions[:replan_every]:
-            abs16 = integrate_action(da, cur)
+            abs16 = integrate_action(da, cur, action_representation)
             raw_obs, reward, term, trunc, info = env.step(env_action_dict(abs16))
             cur = abs16
             steps += 1
@@ -292,6 +306,7 @@ def main():
     meta = msgpack.unpackb(meta_raw, raw=False) if isinstance(meta_raw, (bytes, bytearray)) else json.loads(meta_raw)
     print(f"Server meta: {meta}", flush=True)
     assert meta.get("num_agents") == 2, f"server reports num_agents={meta.get('num_agents')}"
+    action_representation = meta.get("action_representation", "robotwin_delta")
 
     results = []
     def _write_partial() -> None:
@@ -362,7 +377,7 @@ def main():
         try:
             success, steps = run_episode(
                 env, ws, seed, args.prompt, args.replan_every, args.max_steps,
-                dump=dump,
+                action_representation=action_representation, dump=dump,
             )
         except Exception as e:
             print(f"seed={seed} ERROR: {type(e).__name__}: {e}", flush=True)

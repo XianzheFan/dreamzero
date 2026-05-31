@@ -30,11 +30,11 @@ State / action concat layout (per row, ``num_arms * 8`` dims total)::
      panda1_joint(8:15), panda1_gripper(15:16),
      ... up to N ...]
 
-Actions are stored as delta-joint + absolute-gripper to match the
-Franka/Panda relative-joint convention used by DreamZero and the
-RoboTwin converter. RoboFactory's raw ManiSkill controller actions are
-absolute joint targets; this converter writes ``target_joint - qpos`` for
-the seven arm joints and keeps the gripper command verbatim.
+Actions are stored as absolute controller targets, matching DreamZero's
+raw LeRobot action convention. During training the dataset config enables
+``relative_action`` for joint keys, so the loader converts joint targets
+to ``target_joint - current_qpos`` on the fly while grippers remain
+absolute commands.
 
 Usage::
 
@@ -118,9 +118,9 @@ def _per_arm_action(traj: h5py.Group, arm: str) -> np.ndarray:
     """Raw ``actions/{arm}`` -> [T-1, 8].
 
     RoboFactory stores controller commands as absolute joint targets plus
-    a gripper command. ``convert_episode`` converts the joint part to a
-    relative delta against the paired observation qpos before writing the
-    LeRobot action row.
+    a gripper command. The LeRobot row keeps that raw convention; the
+    DreamZero dataset loader converts joint targets to relative offsets
+    when ``relative_action`` is enabled.
     """
     return traj[f"actions/{arm}"][:].astype(np.float32)
 
@@ -139,23 +139,16 @@ def convert_episode(
     accumulate global stats and the index counter.
     """
     per_arm_state = [_per_arm_state(traj, f"panda-{n}") for n in range(num_arms)]
-    per_arm_raw_action = [
-        _per_arm_action(traj, f"panda-{n}") for n in range(num_arms)
-    ]
+    per_arm_action = [_per_arm_action(traj, f"panda-{n}") for n in range(num_arms)]
 
     # ManiSkill emits one extra obs at the terminal step (no paired
     # action). Trim to min length so each row has a real action.
     T = min(
         min(len(s) for s in per_arm_state),
-        min(len(a) for a in per_arm_raw_action),
+        min(len(a) for a in per_arm_action),
     )
     state = np.concatenate([s[:T] for s in per_arm_state], axis=1)
-    per_arm_action: list[np.ndarray] = []
-    for s, raw_a in zip(per_arm_state, per_arm_raw_action):
-        a = raw_a[:T].copy()
-        a[:, :7] = raw_a[:T, :7] - s[:T, :7]
-        per_arm_action.append(a)
-    action = np.concatenate(per_arm_action, axis=1)
+    action = np.concatenate([a[:T] for a in per_arm_action], axis=1)
 
     chunk_idx = episode_index // CHUNK_SIZE
     chunk_dir = f"chunk-{chunk_idx:03d}"
@@ -274,10 +267,10 @@ def write_meta(
         action_modality[f"panda{n}_joint_pos"] = {
             "original_key": "action",
             "start": a_start, "end": a_start + 7,
-            # Stored as target_joint - current_qpos, matching the
-            # DreamZero/RoboTwin Franka relative-joint convention. Keep
-            # absolute=False so chunk padding uses zeros for idle deltas.
-            "rotation_type": None, "absolute": False,
+            # Stored as absolute target qpos. DreamZero's
+            # ``relative_action`` training path turns this into
+            # target_joint - current_qpos for Franka joint keys.
+            "rotation_type": None, "absolute": True,
             "dtype": "float32", "range": None,
         }
         action_modality[f"panda{n}_gripper_pos"] = {
@@ -333,6 +326,17 @@ def write_meta(
         "timestamp": per_dim_stats(np.array([[0.0]], dtype=np.float32)),
     }
     (meta / "stats.json").write_text(json.dumps(stats, indent=2))
+
+    # If an output directory is reused after changing action rows, force
+    # DreamZero to recalculate relative stats from the current absolute
+    # action targets on the next train.
+    for stale_name in (
+        "relative_stats_dreamzero.json",
+        "relative_horizon_stats_dreamzero.json",
+    ):
+        stale_path = meta / stale_name
+        if stale_path.exists():
+            stale_path.unlink()
 
 
 def main():

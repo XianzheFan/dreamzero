@@ -19,12 +19,15 @@ defaults:
 
 max_state_dim: 64
 use_global_metadata: false
-# The converter stores relative joint deltas plus absolute gripper
-# commands. Keep relative_action off because the action rows are already
-# in the DreamZero/RoboTwin Franka relative-joint convention.
-relative_action: false
+# The converter stores absolute controller targets. Match DreamZero main:
+# convert only Franka joint targets to target-current offsets in the
+# dataset loader; leave gripper commands absolute.
+relative_action: true
 relative_action_per_horizon: false
-relative_action_keys: []
+relative_action_keys:
+  - panda0_joint_pos
+  - panda1_joint_pos
+  - panda2_joint_pos
 max_chunk_size: 5
 dataset_shard_sampling_rate: 0.1
 mixture_dataset_cls: groot.vla.data.dataset.lerobot_sharded.ShardedLeRobotMixtureDataset.from_mixture_spec

@@ -41,7 +41,7 @@ SAVE_TOTAL_LIMIT=${SAVE_TOTAL_LIMIT:-4}
 LEARNING_RATE=${LEARNING_RATE:-1e-5}
 REPORT_TO=${REPORT_TO:-wandb}
 WANDB_PROJECT=${WANDB_PROJECT:-dreamzero_robofactory}
-WANDB_RUN_NAME=${WANDB_RUN_NAME:-robofactory_bimanual_liftbarrier_delta_50k}
+WANDB_RUN_NAME=${WANDB_RUN_NAME:-robofactory_bimanual_liftbarrier_dzrel_50k}
 ACTION_LOSS_WEIGHT=${ACTION_LOSS_WEIGHT:-5.0}
 GRIPPER_ACTION_LOSS_WEIGHT=${GRIPPER_ACTION_LOSS_WEIGHT:-6.0}
 ACTION_PREFIX_LOSS_WEIGHT=${ACTION_PREFIX_LOSS_WEIGHT:-2.0}
@@ -49,9 +49,9 @@ ACTION_PREFIX_LOSS_LEN=${ACTION_PREFIX_LOSS_LEN:-8}
 # Pin wandb's run id so chained jobs append to the SAME run instead of
 # spawning a new one each segment. Stored next to ckpts so all chain links
 # read it. (Generated on first launch if missing.)
-WANDB_ID_FILE="${OUTPUT_DIR:-/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/robofactory_bimanual_liftbarrier_delta_50k}/wandb_run_id"
-OUTPUT_DIR=${OUTPUT_DIR:-/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/robofactory_bimanual_liftbarrier_delta_50k}
-ROBOFACTORY_DATA_ROOT=${ROBOFACTORY_DATA_ROOT:-/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/data/robofactory_lerobot_v2_delta/LiftBarrier-rf}
+WANDB_ID_FILE="${OUTPUT_DIR:-/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/robofactory_bimanual_liftbarrier_dzrel_50k}/wandb_run_id"
+OUTPUT_DIR=${OUTPUT_DIR:-/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/robofactory_bimanual_liftbarrier_dzrel_50k}
+ROBOFACTORY_DATA_ROOT=${ROBOFACTORY_DATA_ROOT:-/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/data/robofactory_lerobot_v2/LiftBarrier-rf}
 
 REPO_DIR=/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/dreamzero
 CONDA_BASE=/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/miniconda3
