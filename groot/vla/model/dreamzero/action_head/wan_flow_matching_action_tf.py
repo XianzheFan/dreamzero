@@ -1293,7 +1293,28 @@ class WANPolicyHead(ActionHead):
         else:
             global_latents = None
 
+        anchor_i2v_first_frame = (
+            _os.environ.get("MAI_ANCHOR_I2V_FIRST_FRAME", "0").lower()
+            in ("1", "true", "yes", "on")
+        )
+        if anchor_i2v_first_frame and clean_latents is not None:
+            anchor_video_latent = clean_latents[:, :, :, :1].to(dtype=latents.dtype)
+        else:
+            anchor_video_latent = None
+        self._mai_anchor_i2v_first_frame = anchor_video_latent is not None
+
+        def _anchor_i2v_sample(sample: torch.Tensor) -> torch.Tensor:
+            if anchor_video_latent is None:
+                return sample
+            h = min(sample.shape[-2], anchor_video_latent.shape[-2])
+            w = min(sample.shape[-1], anchor_video_latent.shape[-1])
+            sample[:, :, :, :1, :h, :w] = anchor_video_latent[
+                :, :, :, :, :h, :w
+            ].to(device=sample.device, dtype=sample.dtype)
+            return sample
+
         noisy_video = torch.randn_like(latents)
+        noisy_video = _anchor_i2v_sample(noisy_video)
         noisy_action = torch.randn(
             B, P, T_a, D_a, device=self._device, dtype=latents.dtype
         )
@@ -1340,6 +1361,7 @@ class WANPolicyHead(ActionHead):
                     sample=noisy_video,
                     to_final=(index == self._mai_num_inference_steps - 1),
                 )
+                noisy_video = _anchor_i2v_sample(noisy_video)
 
                 # Euler step for action.
                 noisy_action = sample_scheduler_action.step(
