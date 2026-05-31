@@ -1,12 +1,12 @@
 #!/bin/bash
 #SBATCH --job-name=dz_rt_bimanual
 #SBATCH --account=nvr_lpr_agentic
-#SBATCH --partition=batch_block1
+#SBATCH --partition=batch_short
 #SBATCH --qos=normal
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=8
 #SBATCH --cpus-per-task=224
-#SBATCH --time=03:50:00
+#SBATCH --time=01:50:00
 #SBATCH --output=/lustre/fsw/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/logs/dz_rt_bimanual/%j.out
 #SBATCH --error=/lustre/fsw/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/logs/dz_rt_bimanual/%j.err
 #SBATCH --requeue
@@ -122,7 +122,7 @@ if [ "${TRAIN_RC}" -ne 0 ] && [ "${DURATION}" -lt 600 ]; then
 fi
 
 NEXT=$(sbatch --parsable --dependency=afterany:${SLURM_JOB_ID} \
-    --partition="${SLURM_JOB_PARTITION:-batch_block1}" \
+    --partition="${SLURM_JOB_PARTITION:-batch_short}" \
     --export=ALL,TARGET_STEPS=${TARGET_STEPS},MAX_STEPS=${MAX_STEPS},BATCH_SIZE=${BATCH_SIZE},SAVE_STEPS=${SAVE_STEPS},LEARNING_RATE=${LEARNING_RATE},REPORT_TO=${REPORT_TO},WANDB_PROJECT=${WANDB_PROJECT},WANDB_RUN_NAME=${WANDB_RUN_NAME},OUTPUT_DIR=${OUTPUT_DIR},ROBOTWIN_DATA_ROOT=${ROBOTWIN_DATA_ROOT} \
     "${REPO_DIR}/scripts/train/robotwin_bimanual_slurm.sh")
-echo "[$(date)] Queued follow-up job: ${NEXT} on partition=${SLURM_JOB_PARTITION:-batch_block1}"
+echo "[$(date)] Queued follow-up job: ${NEXT} on partition=${SLURM_JOB_PARTITION:-batch_short}"
