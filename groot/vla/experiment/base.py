@@ -79,6 +79,36 @@ LAYERNORM_LAYERS = [
     torch.nn.SyncBatchNorm,
 ]
 
+SLICE_COMPATIBLE_PRETRAINED_KEYS = frozenset(
+    {
+        "action_head.model.action_decoder.layer2.W",
+        "action_head.model.action_decoder.layer2.b",
+        "action_head.model.action_encoder.W1.W",
+        "action_head.model.patch_embedding.weight",
+        "action_head.model.state_encoder.layer1.W",
+    }
+)
+
+
+def _slice_copy_pretrained_tensor(
+    key: str, ckpt_tensor: torch.Tensor, model_tensor: torch.Tensor
+) -> torch.Tensor | None:
+    """Copy overlapping leading dimensions for known embodiment-specific tensors."""
+    if key not in SLICE_COMPATIBLE_PRETRAINED_KEYS:
+        return None
+    if ckpt_tensor.ndim != model_tensor.ndim:
+        return None
+
+    adapted_tensor = model_tensor.detach().clone()
+    copy_slices = tuple(
+        slice(0, min(ckpt_size, model_size))
+        for ckpt_size, model_size in zip(ckpt_tensor.shape, model_tensor.shape)
+    )
+    adapted_tensor[copy_slices].copy_(
+        ckpt_tensor[copy_slices].to(device=adapted_tensor.device, dtype=adapted_tensor.dtype)
+    )
+    return adapted_tensor
+
 
 class LossLoggerCallback(TrainerCallback):
     """Callback that writes per-step loss metrics to a JSONL file for offline analysis."""
@@ -720,17 +750,24 @@ class BaseExperiment(ABC):
             # only ignores missing / unexpected keys. Filter the ckpt
             # state dict against the model's current parameter shapes so a
             # smoke run is possible across these variants. Keys that match
-            # in name but not in shape are dropped (re-init from
+            # in name but not in shape are either slice-copied for known
+            # embodiment-specific projections, or dropped (re-init from
             # ``init_weights``) and logged.
             model_state = model.state_dict()
             dropped_mismatched: dict[str, tuple] = {}
+            sliced_mismatched: dict[str, tuple] = {}
 
             def _filter_shape_mismatches(sd: dict) -> dict:
                 kept = {}
                 for k, v in sd.items():
                     ref = model_state.get(k)
                     if ref is not None and tuple(ref.shape) != tuple(v.shape):
-                        dropped_mismatched[k] = (tuple(v.shape), tuple(ref.shape))
+                        adapted = _slice_copy_pretrained_tensor(k, v, ref)
+                        if adapted is not None:
+                            sliced_mismatched[k] = (tuple(v.shape), tuple(ref.shape))
+                            kept[k] = adapted
+                        else:
+                            dropped_mismatched[k] = (tuple(v.shape), tuple(ref.shape))
                         continue
                     kept[k] = v
                 return kept
@@ -755,6 +792,16 @@ class BaseExperiment(ABC):
                     f"No weights found at '{ckpt_dir}'. "
                     "Expected 'model.safetensors' or 'model.safetensors.index.json'."
                 )
+
+            if sliced_mismatched:
+                mprint(
+                    f"[partial-load] Slice-copied {len(sliced_mismatched)} "
+                    "shape-mismatched embodiment tensor(s) from overlapping dimensions."
+                )
+                for k, (ckpt_shape, model_shape) in list(sliced_mismatched.items())[:10]:
+                    mprint(f"  - {k}: ckpt={ckpt_shape} -> model={model_shape}")
+                if len(sliced_mismatched) > 10:
+                    mprint(f"  ... and {len(sliced_mismatched) - 10} more")
 
             if dropped_mismatched:
                 mprint(
