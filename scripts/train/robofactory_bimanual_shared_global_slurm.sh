@@ -48,6 +48,10 @@ PARTITION_ARG=""
 if [ -n "${PARTITION:-}" ]; then
     PARTITION_ARG="--partition=${PARTITION}"
 fi
+TIME_ARG=""
+if [ -n "${TIME_LIMIT:-}" ]; then
+    TIME_ARG="--time=${TIME_LIMIT}"
+fi
 
 echo "[$(date)] launching shared-global training:"
 echo "  SHARED_GLOBAL=$SHARED_GLOBAL"
@@ -60,10 +64,11 @@ echo "  GRIPPER_ACTION_LOSS_WEIGHT=$GRIPPER_ACTION_LOSS_WEIGHT"
 echo "  ACTION_PREFIX_LOSS_WEIGHT=$ACTION_PREFIX_LOSS_WEIGHT"
 echo "  ACTION_PREFIX_LOSS_LEN=$ACTION_PREFIX_LOSS_LEN"
 echo "  PARTITION=${PARTITION:-(default batch_block1)}"
+echo "  TIME_LIMIT=${TIME_LIMIT:-(script default)}"
 
 mkdir -p "$OUTPUT_DIR"
 
-exec sbatch ${PARTITION_ARG} --export=ALL,\
+exec sbatch ${PARTITION_ARG} ${TIME_ARG} --export=ALL,\
 SHARED_GLOBAL=${SHARED_GLOBAL},\
 TARGET_STEPS=${TARGET_STEPS},\
 MAX_STEPS=${MAX_STEPS},\
