@@ -101,6 +101,7 @@ ARM_ACTION_DIM = 8
 STATE_DIM = 2 * ARM_STATE_DIM  # 16
 ACTION_DIM = 2 * ARM_ACTION_DIM  # 16
 JOINT_INDICES = np.array([0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14])
+GRIPPER_INDICES = np.array([7, 15])
 RELATIVE_ACTION_SLICES = {
     "panda0_joint_pos": slice(0, 7),
     "panda1_joint_pos": slice(8, 15),
@@ -195,24 +196,41 @@ def _next_step_joint_motion_scores(
     return scores
 
 
+def _next_step_gripper_motion_scores(
+    state: np.ndarray,
+    action: np.ndarray,
+) -> np.ndarray:
+    """Score each anchor by its next-step normalized gripper displacement."""
+    scores = np.zeros(len(state), dtype=np.float32)
+    gripper_delta = action[:, GRIPPER_INDICES] - state[:, GRIPPER_INDICES]
+    scores[: len(gripper_delta)] = np.max(np.abs(gripper_delta), axis=1)
+    return scores
+
+
 def _step_filter_and_relative_samples(
     state: np.ndarray,
     action: np.ndarray,
     action_horizon: int,
     idle_threshold: float,
+    gripper_threshold: float,
 ) -> tuple[list[int], dict[str, np.ndarray], dict[str, float]]:
     """Return excluded anchor indices and relative joint samples to normalize.
 
     ``step_filter.jsonl`` stores indices to remove. A row is treated as idle
-    when its next-step joint target stays within ``idle_threshold`` L2
-    distance from the anchor state. Relative stats are pooled over the same
-    kept anchors and the full action horizon.
+    only when both its next-step joint target and normalized gripper command
+    stay within their thresholds. Gripper-only transitions are task-relevant
+    anchors for RoboTwin and must remain trainable. Relative stats are pooled
+    over the same kept anchors and the full action horizon.
     """
     if action_horizon <= 0:
         raise ValueError(f"action_horizon must be positive, got {action_horizon}")
 
-    scores = _next_step_joint_motion_scores(state, action)
-    filtered = np.flatnonzero(scores <= idle_threshold).astype(np.int64)
+    joint_scores = _next_step_joint_motion_scores(state, action)
+    gripper_scores = _next_step_gripper_motion_scores(state, action)
+    filtered = np.flatnonzero(
+        (joint_scores <= idle_threshold)
+        & (gripper_scores <= gripper_threshold)
+    ).astype(np.int64)
 
     # Keep at least one valid anchor so tiny smoke datasets remain usable.
     if len(filtered) == len(state) and len(state) > 0:
@@ -251,8 +269,15 @@ def _step_filter_and_relative_samples(
         "kept_rows": float(len(state) - len(filtered)),
         "kept_full_horizon_anchors": float(kept_full_horizon),
         "idle_threshold": float(idle_threshold),
-        "motion_score_p50": float(np.quantile(scores, 0.50)) if len(scores) else 0.0,
-        "motion_score_p95": float(np.quantile(scores, 0.95)) if len(scores) else 0.0,
+        "gripper_threshold": float(gripper_threshold),
+        "joint_motion_score_p50": float(np.quantile(joint_scores, 0.50)) if len(joint_scores) else 0.0,
+        "joint_motion_score_p95": float(np.quantile(joint_scores, 0.95)) if len(joint_scores) else 0.0,
+        "gripper_motion_score_p50": float(np.quantile(gripper_scores, 0.50)) if len(gripper_scores) else 0.0,
+        "gripper_motion_score_p95": float(np.quantile(gripper_scores, 0.95)) if len(gripper_scores) else 0.0,
+        "gripper_motion_rows": float(np.count_nonzero(gripper_scores > gripper_threshold)),
+        "filtered_gripper_motion_rows": float(
+            np.count_nonzero(gripper_scores[filtered] > gripper_threshold)
+        ),
     }
     return filtered.tolist(), rel_arrays, summary
 
@@ -276,6 +301,7 @@ def convert_episode(
     cumulative_index: int,
     action_horizon: int,
     idle_threshold: float,
+    gripper_threshold: float,
 ) -> tuple[
     int,
     np.ndarray,
@@ -294,6 +320,7 @@ def convert_episode(
             action=action,
             action_horizon=action_horizon,
             idle_threshold=idle_threshold,
+            gripper_threshold=gripper_threshold,
         )
 
         chunk_idx = episode_index // CHUNK_SIZE
@@ -519,11 +546,26 @@ def write_meta(
         "idle_threshold": idle_filter_summaries[0]["idle_threshold"]
         if idle_filter_summaries
         else None,
-        "motion_score_p50_mean": float(
-            np.mean([item["motion_score_p50"] for item in idle_filter_summaries])
+        "gripper_threshold": idle_filter_summaries[0]["gripper_threshold"]
+        if idle_filter_summaries
+        else None,
+        "gripper_motion_rows": int(
+            sum(item["gripper_motion_rows"] for item in idle_filter_summaries)
+        ),
+        "filtered_gripper_motion_rows": int(
+            sum(item["filtered_gripper_motion_rows"] for item in idle_filter_summaries)
+        ),
+        "joint_motion_score_p50_mean": float(
+            np.mean([item["joint_motion_score_p50"] for item in idle_filter_summaries])
         ) if idle_filter_summaries else 0.0,
-        "motion_score_p95_mean": float(
-            np.mean([item["motion_score_p95"] for item in idle_filter_summaries])
+        "joint_motion_score_p95_mean": float(
+            np.mean([item["joint_motion_score_p95"] for item in idle_filter_summaries])
+        ) if idle_filter_summaries else 0.0,
+        "gripper_motion_score_p50_mean": float(
+            np.mean([item["gripper_motion_score_p50"] for item in idle_filter_summaries])
+        ) if idle_filter_summaries else 0.0,
+        "gripper_motion_score_p95_mean": float(
+            np.mean([item["gripper_motion_score_p95"] for item in idle_filter_summaries])
         ) if idle_filter_summaries else 0.0,
     }
     (meta / "idle_filter_summary.json").write_text(
@@ -552,7 +594,9 @@ def main() -> None:
     parser.add_argument("--action-horizon", type=int, default=24,
                         help="Action horizon used for idle filtering and relative stats")
     parser.add_argument("--idle-filter-threshold", type=float, default=1e-3,
-                        help="Filter anchors whose future joint-motion L2 max is <= this")
+                        help="Filter anchors whose next-step joint-motion L2 is <= this")
+    parser.add_argument("--idle-filter-gripper-threshold", type=float, default=1e-4,
+                        help="Keep anchors when normalized gripper motion exceeds this")
     args = parser.parse_args()
 
     args.out.mkdir(parents=True, exist_ok=True)
@@ -580,6 +624,7 @@ def main() -> None:
             cumulative_index=cumulative,
             action_horizon=args.action_horizon,
             idle_threshold=args.idle_filter_threshold,
+            gripper_threshold=args.idle_filter_gripper_threshold,
         )
         if sample_hw is None:
             sample_hw = hw
