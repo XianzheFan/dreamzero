@@ -245,3 +245,83 @@ def test_forward_multi_agent_backward_runs(cuda_available):
     grads = [p.grad for p in head.model.parameters() if p.grad is not None]
     assert len(grads) > 0
     assert any(torch.isfinite(g).all().item() for g in grads)
+
+
+def test_gripper_clean_action_loss_masks_and_close_weights():
+    Cls = _load_head_cls()
+    head = Cls.__new__(Cls)
+    torch.nn.Module.__init__(head)
+    head.config = types.SimpleNamespace(
+        gripper_clean_action_loss_weight=2.0,
+        gripper_clean_close_action_loss_weight=4.0,
+        gripper_close_threshold=0.0,
+        gripper_action_dims=[1],
+    )
+
+    clean_action_pred = torch.zeros(1, 1, 2, 3)
+    actions = torch.tensor([[[[0.25, -0.80, 0.50], [0.75, 0.70, -0.25]]]])
+    action_mask = torch.ones_like(actions, dtype=torch.bool)
+    has_real_action = torch.ones(1, dtype=torch.bool)
+
+    loss = head._compute_gripper_clean_action_loss(
+        clean_action_pred=clean_action_pred,
+        actions=actions,
+        action_mask=action_mask,
+        has_real_action=has_real_action,
+    )
+
+    expected = ((0.80 ** 2) * 4.0 + (0.70 ** 2)) / 2.0 * 2.0
+    assert torch.isclose(loss, torch.tensor(expected, dtype=loss.dtype))
+
+
+def test_clean_sample_reconstruction_matches_flow_scheduler_target():
+    Cls = _load_head_cls()
+    head = Cls.__new__(Cls)
+    torch.nn.Module.__init__(head)
+
+    actions = torch.tensor([[[[0.25, -0.80], [0.75, 0.70]]]], dtype=torch.float32)
+    noise = torch.tensor([[[[0.90, 0.10], [-0.40, 0.30]]]], dtype=torch.float32)
+    sigma = torch.tensor([[[[0.25], [0.75]]]], dtype=torch.float32)
+    noisy = (1.0 - sigma) * actions + sigma * noise
+    training_target = noise - noisy
+
+    clean = head._reconstruct_clean_sample_from_flow_target(
+        noisy_sample=noisy,
+        model_output=training_target,
+        sigma=sigma,
+    )
+
+    torch.testing.assert_close(clean, actions)
+
+
+def test_gripper_clean_action_loss_ignores_fake_or_masked_actions():
+    Cls = _load_head_cls()
+    head = Cls.__new__(Cls)
+    torch.nn.Module.__init__(head)
+    head.config = types.SimpleNamespace(
+        gripper_clean_action_loss_weight=2.0,
+        gripper_clean_close_action_loss_weight=4.0,
+        gripper_close_threshold=0.0,
+        gripper_action_dims=[1],
+    )
+
+    clean_action_pred = torch.zeros(1, 1, 2, 3)
+    actions = torch.ones(1, 1, 2, 3)
+    action_mask = torch.ones_like(actions, dtype=torch.bool)
+    action_mask[..., 1] = False
+
+    masked_loss = head._compute_gripper_clean_action_loss(
+        clean_action_pred=clean_action_pred,
+        actions=actions,
+        action_mask=action_mask,
+        has_real_action=torch.ones(1, dtype=torch.bool),
+    )
+    fake_loss = head._compute_gripper_clean_action_loss(
+        clean_action_pred=clean_action_pred,
+        actions=actions,
+        action_mask=torch.ones_like(actions, dtype=torch.bool),
+        has_real_action=torch.zeros(1, dtype=torch.bool),
+    )
+
+    assert masked_loss.item() == 0.0
+    assert fake_loss.item() == 0.0

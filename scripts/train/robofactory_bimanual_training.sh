@@ -102,11 +102,13 @@ ACTION_LOSS_WEIGHT=${ACTION_LOSS_WEIGHT:-5.0}
 GRIPPER_ACTION_LOSS_WEIGHT=${GRIPPER_ACTION_LOSS_WEIGHT:-6.0}
 GRIPPER_CLOSE_ACTION_LOSS_WEIGHT=${GRIPPER_CLOSE_ACTION_LOSS_WEIGHT:-4.0}
 GRIPPER_CLOSE_THRESHOLD=${GRIPPER_CLOSE_THRESHOLD:-0.0}
+GRIPPER_CLEAN_ACTION_LOSS_WEIGHT=${GRIPPER_CLEAN_ACTION_LOSS_WEIGHT:-2.0}
+GRIPPER_CLEAN_CLOSE_ACTION_LOSS_WEIGHT=${GRIPPER_CLEAN_CLOSE_ACTION_LOSS_WEIGHT:-4.0}
 ACTION_PREFIX_LOSS_WEIGHT=${ACTION_PREFIX_LOSS_WEIGHT:-2.0}
 ACTION_PREFIX_LOSS_LEN=${ACTION_PREFIX_LOSS_LEN:-8}
 
 echo "save_steps=$SAVE_STEPS  save_total_limit=$SAVE_TOTAL_LIMIT"
-echo "action_loss_weight=$ACTION_LOSS_WEIGHT  gripper_action_loss_weight=$GRIPPER_ACTION_LOSS_WEIGHT  gripper_close_action_loss_weight=$GRIPPER_CLOSE_ACTION_LOSS_WEIGHT  gripper_close_threshold=$GRIPPER_CLOSE_THRESHOLD  action_prefix_loss_weight=$ACTION_PREFIX_LOSS_WEIGHT  action_prefix_loss_len=$ACTION_PREFIX_LOSS_LEN"
+echo "action_loss_weight=$ACTION_LOSS_WEIGHT  gripper_action_loss_weight=$GRIPPER_ACTION_LOSS_WEIGHT  gripper_close_action_loss_weight=$GRIPPER_CLOSE_ACTION_LOSS_WEIGHT  gripper_close_threshold=$GRIPPER_CLOSE_THRESHOLD  gripper_clean_action_loss_weight=$GRIPPER_CLEAN_ACTION_LOSS_WEIGHT  gripper_clean_close_action_loss_weight=$GRIPPER_CLEAN_CLOSE_ACTION_LOSS_WEIGHT  action_prefix_loss_weight=$ACTION_PREFIX_LOSS_WEIGHT  action_prefix_loss_len=$ACTION_PREFIX_LOSS_LEN"
 
 WAN_CKPT_DIR=${WAN_CKPT_DIR:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/Wan2.1-I2V-14B-480P"}
 TOKENIZER_DIR=${TOKENIZER_DIR:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/umt5-xxl"}
@@ -177,6 +179,8 @@ torchrun --nproc_per_node $NUM_GPUS --standalone groot/vla/experiment/experiment
     ++action_head_cfg.config.gripper_action_loss_weight=$GRIPPER_ACTION_LOSS_WEIGHT \
     ++action_head_cfg.config.gripper_close_action_loss_weight=$GRIPPER_CLOSE_ACTION_LOSS_WEIGHT \
     ++action_head_cfg.config.gripper_close_threshold=$GRIPPER_CLOSE_THRESHOLD \
+    ++action_head_cfg.config.gripper_clean_action_loss_weight=$GRIPPER_CLEAN_ACTION_LOSS_WEIGHT \
+    ++action_head_cfg.config.gripper_clean_close_action_loss_weight=$GRIPPER_CLEAN_CLOSE_ACTION_LOSS_WEIGHT \
     ++action_head_cfg.config.action_prefix_loss_weight=$ACTION_PREFIX_LOSS_WEIGHT \
     ++action_head_cfg.config.action_prefix_loss_len=$ACTION_PREFIX_LOSS_LEN \
     ++action_head_cfg.config.max_state_dim=8 \

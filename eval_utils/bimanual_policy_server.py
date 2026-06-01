@@ -65,6 +65,7 @@ import dataclasses
 import gc
 import json
 import logging
+import os
 import sys
 import traceback
 from collections import deque
@@ -134,6 +135,8 @@ class BimanualPolicy:
         save_video_pred: bool = False,
         video_pred_dir: str | None = None,
         return_action_debug: bool = False,
+        prompt_override: str | None = None,
+        gripper_binarize_threshold: float | None = None,
     ):
         self.ckpt_dir = Path(ckpt_dir)
         self.ckpt_setting = ckpt_setting
@@ -145,6 +148,26 @@ class BimanualPolicy:
         self.save_video_pred = save_video_pred
         self.video_pred_dir = Path(video_pred_dir) if video_pred_dir else None
         self.return_action_debug = return_action_debug
+        self.prompt_override = (
+            prompt_override
+            if prompt_override is not None
+            else os.environ.get("DREAMZERO_PROMPT_OVERRIDE", "")
+        ).strip()
+        if gripper_binarize_threshold is None:
+            gripper_threshold_env = os.environ.get(
+                "DREAMZERO_GRIPPER_BINARIZE_THRESHOLD", ""
+            ).strip()
+            gripper_binarize_threshold = (
+                float(gripper_threshold_env) if gripper_threshold_env else None
+            )
+        if gripper_binarize_threshold is not None and not (
+            0.0 <= gripper_binarize_threshold <= 1.0
+        ):
+            raise ValueError(
+                "gripper_binarize_threshold must be in [0, 1], got "
+                f"{gripper_binarize_threshold}"
+            )
+        self.gripper_binarize_threshold = gripper_binarize_threshold
         self._last_action_debug: dict[str, np.ndarray] = {}
         self._relative_action = False
         self._relative_action_per_horizon = False
@@ -153,6 +176,11 @@ class BimanualPolicy:
 
         self._sessions: dict[str, dict] = {}
         self._load()
+
+    def _effective_prompt(self, prompt: str | None) -> str:
+        if self.prompt_override:
+            return self.prompt_override
+        return prompt or ""
 
     def _load(self) -> None:
         import torch
@@ -337,7 +365,7 @@ class BimanualPolicy:
 
     def reset(self, info: dict) -> str:
         sid = info.get("session_id", "")
-        prompt = info.get("prompt", "")
+        prompt = self._effective_prompt(info.get("prompt", ""))
         sess = self._session(sid)
         sess["history"].clear()
         sess["prompt"] = prompt
@@ -381,7 +409,7 @@ class BimanualPolicy:
         sid = obs.get("session_id", "")
         sess = self._session(sid)
         if obs.get("prompt"):
-            sess["prompt"] = obs["prompt"]
+            sess["prompt"] = self._effective_prompt(obs["prompt"])
 
         qpos = np.asarray(obs["qpos"], dtype=np.float32).reshape(-1)
         assert qpos.shape == (16,), f"need 16-dim qpos, got {qpos.shape}"
@@ -422,7 +450,7 @@ class BimanualPolicy:
         # Per-arm state slices (T_s=1, current step only).
         T_s = 1
         T_a = self.action_horizon
-        prompt = sess.get("prompt", "") or ""
+        prompt = self._effective_prompt(sess.get("prompt", ""))
 
         # ``action.*`` keys are required by ``StateActionTransform`` /
         # ``ConcatTransform`` even at inference time -- the model
@@ -729,6 +757,13 @@ class BimanualPolicy:
         if self._key_is_relative("panda1_joint_pos"):
             out[:, 8:15] += qpos[8:15]
 
+    def _binarize_gripper_targets(self, out: np.ndarray) -> None:
+        if self.gripper_binarize_threshold is None:
+            return
+        threshold = float(self.gripper_binarize_threshold)
+        out[:, 7] = (out[:, 7] >= threshold).astype(np.float32)
+        out[:, 15] = (out[:, 15] >= threshold).astype(np.float32)
+
     def _denorm_action(self, outputs, qpos: np.ndarray) -> np.ndarray:
         """Take model output ``action_pred [B=1, P=2, T_a, D_per_arm=8]``
         (normalized to [-1, 1] via q99) and denormalize back to
@@ -740,15 +775,17 @@ class BimanualPolicy:
         ``[panda0_joint(0:7), panda0_gripper(7:8), panda1_joint(8:15),
         panda1_gripper(15:16)]``.
         """
-        import torch
-
         data = outputs.data if hasattr(outputs, "data") else outputs
         if "action_pred" not in data:
             raise KeyError(
                 f"Expected action_pred in model output, got {list(data.keys())}"
             )
         pred = data["action_pred"]
-        if isinstance(pred, torch.Tensor):
+        try:
+            import torch
+        except ModuleNotFoundError:
+            torch = None
+        if torch is not None and isinstance(pred, torch.Tensor):
             pred = pred.detach().float().cpu().numpy()
         raw_pred = np.asarray(pred, dtype=np.float32)         # [B, P, T_a, D]
         if raw_pred.ndim != 4:
@@ -776,10 +813,47 @@ class BimanualPolicy:
             .get("action", {})
         )
 
+        def _stats_for_key(key: str, width: int) -> tuple[np.ndarray, np.ndarray]:
+            candidates = [key]
+            if key.startswith("action."):
+                candidates.append(key[len("action."):])
+            else:
+                candidates.append(f"action.{key}")
+
+            stats = None
+            matched_key = None
+            for candidate in candidates:
+                stats = emb_meta.get(candidate)
+                if stats is not None:
+                    matched_key = candidate
+                    break
+            if stats is None:
+                available = ", ".join(sorted(str(k) for k in emb_meta.keys()))
+                raise KeyError(
+                    f"Missing action normalization stats for {key!r}. "
+                    f"Tried {candidates}; available action stats: [{available}]"
+                )
+
+            try:
+                q01 = np.asarray(stats["q01"], dtype=np.float32).reshape(-1)
+                q99 = np.asarray(stats["q99"], dtype=np.float32).reshape(-1)
+            except KeyError as exc:
+                raise KeyError(
+                    f"Action stats for {matched_key!r} must contain q01 and q99; "
+                    f"found keys {sorted(stats.keys())}"
+                ) from exc
+
+            if q01.shape != (width,) or q99.shape != (width,):
+                raise ValueError(
+                    f"Action stats for {matched_key!r} have incompatible shape: "
+                    f"q01={q01.shape}, q99={q99.shape}, expected ({width},)"
+                )
+            if not (np.isfinite(q01).all() and np.isfinite(q99).all()):
+                raise ValueError(f"Action stats for {matched_key!r} contain non-finite values")
+            return q01, q99
+
         def _denorm(slice_pred: np.ndarray, key: str, lo: int, hi: int) -> None:
-            stats = emb_meta.get(key.replace("action.", ""), {})
-            q01 = np.asarray(stats.get("q01", np.zeros(hi - lo)), dtype=np.float32)
-            q99 = np.asarray(stats.get("q99", np.ones(hi - lo)), dtype=np.float32)
+            q01, q99 = _stats_for_key(key, hi - lo)
             span = q99 - q01
             span[span == 0] = 1.0
             T = min(slice_pred.shape[0], self.action_horizon)
@@ -792,6 +866,7 @@ class BimanualPolicy:
         _denorm(p1[:, :7],  "action.panda1_joint_pos",    8, 15)
         _denorm(p1[:, 7:8], "action.panda1_gripper_pos", 15, 16)
         self._add_reference_state_for_relative_keys(out, qpos)
+        self._binarize_gripper_targets(out)
         return out
 
 
@@ -898,6 +973,21 @@ def main():
         action="store_true",
         help="Include raw and clipped normalized action chunks in infer replies.",
     )
+    parser.add_argument(
+        "--prompt-override",
+        default=None,
+        help="Optional prompt sent to the model regardless of the client prompt. "
+             "If unset, DREAMZERO_PROMPT_OVERRIDE is honored when present.",
+    )
+    parser.add_argument(
+        "--gripper-binarize-threshold",
+        type=float,
+        default=None,
+        help="Optional physical gripper threshold in [0, 1]. When set, "
+             "gripper targets below the threshold become 0 (close) and "
+             "targets at/above it become 1 (open). If unset, "
+             "DREAMZERO_GRIPPER_BINARIZE_THRESHOLD is honored when present.",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -916,6 +1006,8 @@ def main():
         save_video_pred=args.save_video_pred,
         video_pred_dir=args.video_pred_dir,
         return_action_debug=args.return_action_debug,
+        prompt_override=args.prompt_override,
+        gripper_binarize_threshold=args.gripper_binarize_threshold,
     )
     server = BimanualWebsocketServer(policy, host=args.host, port=args.port)
     server.serve_forever()
