@@ -95,6 +95,7 @@ action_head_cfg:
     gripper_close_threshold: 0.0
     gripper_clean_action_loss_weight: 0.0
     gripper_clean_close_action_loss_weight: 1.0
+    gripper_clean_max_sigma: 1.0
     gripper_action_dims: [7]
     action_prefix_loss_weight: 1.0
     action_prefix_loss_len: 0

@@ -101,6 +101,36 @@ def test_denorm_action_uses_prefixed_negative_gripper_stats():
     np.testing.assert_allclose(out[:, [7, 15]], np.full((2, 2), -0.5))
 
 
+def test_gripper_binarize_preserves_signed_gripper_convention():
+    metadata = _metadata_with_action_stats()
+    action_stats = metadata["robofactory"]["statistics"]["action"]
+    action_stats["panda0_gripper_pos"] = _stats([-1.0], [1.0])
+    action_stats["panda1_gripper_pos"] = _stats([-1.0], [1.0])
+    policy = _make_policy(metadata)
+    policy.gripper_binarize_threshold = 0.0
+    pred = np.zeros((1, 2, 2, 8), dtype=np.float32)
+    pred[0, 0, :, 7] = [-0.1, 0.2]
+    pred[0, 1, :, 7] = [0.3, -0.4]
+
+    out = policy._denorm_action({"action_pred": pred}, np.zeros(16, dtype=np.float32))
+
+    np.testing.assert_allclose(out[:, 7], [-1.0, 1.0])
+    np.testing.assert_allclose(out[:, 15], [1.0, -1.0])
+
+
+def test_gripper_binarize_preserves_zero_one_gripper_convention():
+    policy = _make_policy(_metadata_with_action_stats())
+    policy.gripper_binarize_threshold = 0.5
+    pred = np.zeros((1, 2, 2, 8), dtype=np.float32)
+    pred[0, 0, :, 7] = [-0.8, 0.8]  # denorms to 0.1 and 0.9
+    pred[0, 1, :, 7] = [0.8, -0.8]
+
+    out = policy._denorm_action({"action_pred": pred}, np.zeros(16, dtype=np.float32))
+
+    np.testing.assert_allclose(out[:, 7], [0.0, 1.0])
+    np.testing.assert_allclose(out[:, 15], [1.0, 0.0])
+
+
 def test_denorm_action_raises_when_action_stats_are_missing():
     metadata = _metadata_with_action_stats()
     del metadata["robofactory"]["statistics"]["action"]["panda1_gripper_pos"]

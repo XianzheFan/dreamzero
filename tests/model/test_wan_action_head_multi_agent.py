@@ -294,6 +294,20 @@ def test_clean_sample_reconstruction_matches_flow_scheduler_target():
     torch.testing.assert_close(clean, actions)
 
 
+def test_clean_action_loss_mask_respects_max_sigma():
+    Cls = _load_head_cls()
+    head = Cls.__new__(Cls)
+    torch.nn.Module.__init__(head)
+    head.config = types.SimpleNamespace(gripper_clean_max_sigma=0.8)
+
+    action_mask = torch.ones(1, 1, 4, 1, dtype=torch.bool)
+    sigma = torch.tensor([[[[0.0], [0.5], [0.9], [1.0]]]], dtype=torch.float32)
+
+    mask = head._clean_action_loss_mask(action_mask, sigma)
+
+    assert mask.tolist() == [[[[True], [True], [False], [False]]]]
+
+
 def test_gripper_clean_action_loss_ignores_fake_or_masked_actions():
     Cls = _load_head_cls()
     head = Cls.__new__(Cls)

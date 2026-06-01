@@ -160,6 +160,12 @@ class WANPolicyHeadConfig(PretrainedConfig):
             "help": "Additional multiplier for close targets in the clean gripper action loss."
         },
     )
+    gripper_clean_max_sigma: float = field(
+        default=1.0,
+        metadata={
+            "help": "Only apply clean gripper action loss at or below this flow sigma."
+        },
+    )
     gripper_action_dims: list[int] = field(
         default_factory=lambda: [7],
         metadata={"help": "Per-agent action dimensions treated as grippers."},
@@ -629,6 +635,20 @@ class WANPolicyHead(ActionHead):
         weighted = clean_loss * weights.float() * valid_f
         denom = valid_f.sum().clamp_min(1.0)
         return weighted.sum() / denom * loss_weight
+
+    def _clean_action_loss_mask(
+        self,
+        action_mask: torch.Tensor,
+        sigma_action: torch.Tensor,
+    ) -> torch.Tensor:
+        max_sigma = float(
+            getattr(self.config, "gripper_clean_max_sigma", 1.0) or 1.0
+        )
+        return (
+            action_mask.bool()
+            & ((1.0 - sigma_action.float()) > 1e-4)
+            & (sigma_action.float() <= max_sigma)
+        )
 
     def _reconstruct_clean_sample_from_flow_target(
         self,
@@ -1328,8 +1348,9 @@ class WANPolicyHead(ActionHead):
                         model_output=action_noise_pred,
                         sigma=sigma_action,
                     )
-                    clean_action_mask = action_mask.bool() & (
-                        (1.0 - sigma_action.float()) > 1e-4
+                    clean_action_mask = self._clean_action_loss_mask(
+                        action_mask=action_mask,
+                        sigma_action=sigma_action,
                     )
                     gripper_clean_action_loss = self._compute_gripper_clean_action_loss(
                         clean_action_pred=clean_action_pred,
@@ -1828,8 +1849,9 @@ class WANPolicyHead(ActionHead):
                         model_output=action_noise_pred,
                         sigma=sigma_action,
                     )
-                    clean_action_mask = action_mask.bool() & (
-                        (1.0 - sigma_action.float()) > 1e-4
+                    clean_action_mask = self._clean_action_loss_mask(
+                        action_mask=action_mask,
+                        sigma_action=sigma_action,
                     )
                     gripper_clean_action_loss = self._compute_gripper_clean_action_loss(
                         clean_action_pred=clean_action_pred,

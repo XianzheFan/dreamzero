@@ -161,10 +161,10 @@ class BimanualPolicy:
                 float(gripper_threshold_env) if gripper_threshold_env else None
             )
         if gripper_binarize_threshold is not None and not (
-            0.0 <= gripper_binarize_threshold <= 1.0
+            -1.0 <= gripper_binarize_threshold <= 1.0
         ):
             raise ValueError(
-                "gripper_binarize_threshold must be in [0, 1], got "
+                "gripper_binarize_threshold must be in [-1, 1], got "
                 f"{gripper_binarize_threshold}"
             )
         self.gripper_binarize_threshold = gripper_binarize_threshold
@@ -757,12 +757,62 @@ class BimanualPolicy:
         if self._key_is_relative("panda1_joint_pos"):
             out[:, 8:15] += qpos[8:15]
 
+    def _action_stats_for_key(self, key: str, width: int) -> tuple[np.ndarray, np.ndarray]:
+        emb_meta = (
+            self._metadata.get("robofactory", {})
+            .get("statistics", {})
+            .get("action", {})
+        )
+        candidates = [key]
+        if key.startswith("action."):
+            candidates.append(key[len("action."):])
+        else:
+            candidates.append(f"action.{key}")
+
+        stats = None
+        matched_key = None
+        for candidate in candidates:
+            stats = emb_meta.get(candidate)
+            if stats is not None:
+                matched_key = candidate
+                break
+        if stats is None:
+            available = ", ".join(sorted(str(k) for k in emb_meta.keys()))
+            raise KeyError(
+                f"Missing action normalization stats for {key!r}. "
+                f"Tried {candidates}; available action stats: [{available}]"
+            )
+
+        try:
+            q01 = np.asarray(stats["q01"], dtype=np.float32).reshape(-1)
+            q99 = np.asarray(stats["q99"], dtype=np.float32).reshape(-1)
+        except KeyError as exc:
+            raise KeyError(
+                f"Action stats for {matched_key!r} must contain q01 and q99; "
+                f"found keys {sorted(stats.keys())}"
+            ) from exc
+
+        if q01.shape != (width,) or q99.shape != (width,):
+            raise ValueError(
+                f"Action stats for {matched_key!r} have incompatible shape: "
+                f"q01={q01.shape}, q99={q99.shape}, expected ({width},)"
+            )
+        if not (np.isfinite(q01).all() and np.isfinite(q99).all()):
+            raise ValueError(f"Action stats for {matched_key!r} contain non-finite values")
+        return q01, q99
+
     def _binarize_gripper_targets(self, out: np.ndarray) -> None:
         if self.gripper_binarize_threshold is None:
             return
         threshold = float(self.gripper_binarize_threshold)
-        out[:, 7] = (out[:, 7] >= threshold).astype(np.float32)
-        out[:, 15] = (out[:, 15] >= threshold).astype(np.float32)
+        for dim, key in (
+            (7, "action.panda0_gripper_pos"),
+            (15, "action.panda1_gripper_pos"),
+        ):
+            q01, q99 = self._action_stats_for_key(key, 1)
+            close_value = float(q01[0])
+            open_value = float(q99[0])
+            out[:, dim] = np.where(out[:, dim] >= threshold, open_value, close_value)
 
     def _denorm_action(self, outputs, qpos: np.ndarray) -> np.ndarray:
         """Take model output ``action_pred [B=1, P=2, T_a, D_per_arm=8]``
@@ -807,50 +857,8 @@ class BimanualPolicy:
         }
 
         out = np.zeros((self.action_horizon, self.action_dim), dtype=np.float32)
-        emb_meta = (
-            self._metadata.get("robofactory", {})
-            .get("statistics", {})
-            .get("action", {})
-        )
-
         def _stats_for_key(key: str, width: int) -> tuple[np.ndarray, np.ndarray]:
-            candidates = [key]
-            if key.startswith("action."):
-                candidates.append(key[len("action."):])
-            else:
-                candidates.append(f"action.{key}")
-
-            stats = None
-            matched_key = None
-            for candidate in candidates:
-                stats = emb_meta.get(candidate)
-                if stats is not None:
-                    matched_key = candidate
-                    break
-            if stats is None:
-                available = ", ".join(sorted(str(k) for k in emb_meta.keys()))
-                raise KeyError(
-                    f"Missing action normalization stats for {key!r}. "
-                    f"Tried {candidates}; available action stats: [{available}]"
-                )
-
-            try:
-                q01 = np.asarray(stats["q01"], dtype=np.float32).reshape(-1)
-                q99 = np.asarray(stats["q99"], dtype=np.float32).reshape(-1)
-            except KeyError as exc:
-                raise KeyError(
-                    f"Action stats for {matched_key!r} must contain q01 and q99; "
-                    f"found keys {sorted(stats.keys())}"
-                ) from exc
-
-            if q01.shape != (width,) or q99.shape != (width,):
-                raise ValueError(
-                    f"Action stats for {matched_key!r} have incompatible shape: "
-                    f"q01={q01.shape}, q99={q99.shape}, expected ({width},)"
-                )
-            if not (np.isfinite(q01).all() and np.isfinite(q99).all()):
-                raise ValueError(f"Action stats for {matched_key!r} contain non-finite values")
-            return q01, q99
+            return self._action_stats_for_key(key, width)
 
         def _denorm(slice_pred: np.ndarray, key: str, lo: int, hi: int) -> None:
             q01, q99 = _stats_for_key(key, hi - lo)
@@ -983,9 +991,10 @@ def main():
         "--gripper-binarize-threshold",
         type=float,
         default=None,
-        help="Optional physical gripper threshold in [0, 1]. When set, "
-             "gripper targets below the threshold become 0 (close) and "
-             "targets at/above it become 1 (open). If unset, "
+        help="Optional gripper threshold in [-1, 1]. When set, "
+             "gripper targets below the threshold become the metadata q01 "
+             "(close) and targets at/above it become metadata q99 (open), "
+             "preserving both 0/1 and -1/+1 gripper conventions. If unset, "
              "DREAMZERO_GRIPPER_BINARIZE_THRESHOLD is honored when present.",
     )
     args = parser.parse_args()
