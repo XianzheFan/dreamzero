@@ -143,9 +143,7 @@ def apply_gripper_override(
     elif mode == "close":
         target = close_value
     elif mode == "close-after-step":
-        if step < close_after_step:
-            return out
-        target = close_value
+        target = close_value if step >= close_after_step else open_value
     else:
         raise ValueError(f"unknown gripper override mode: {mode}")
 
@@ -282,7 +280,10 @@ def main():
         "--gripper-close-after-step",
         type=int,
         default=40,
-        help="First env step to force close when --gripper-override=close-after-step.",
+        help=(
+            "First env step to force close when --gripper-override=close-after-step; "
+            "earlier steps are forced open."
+        ),
     )
     ap.add_argument("--gripper-open-value", type=float, default=1.0)
     ap.add_argument("--gripper-close-value", type=float, default=-1.0)
