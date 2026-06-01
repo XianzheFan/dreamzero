@@ -1,0 +1,411 @@
+workflow:
+  timeout:
+    queue_timeout: 2h
+    exec_timeout: 14d
+  name: dreamzero-rt-stack-blocks-two-train-shared-global-xianzhef-20260531-231103
+  resources:
+    default:
+      cpu: 80
+      gpu: 8
+      memory: 800Gi
+      storage: 800Gi
+  tasks:
+    - name: train
+      image: nvcr.io/nvidian/gear-h100-train:latest
+      credentials:
+        gear-aws-cred:
+          AWS_ACCESS_KEY_ID: aws_access_key_id
+          AWS_SECRET_ACCESS_KEY: aws_secret_access_key
+          AWS_DEFAULT_REGION: aws_default_region
+          AWS_ENDPOINT_URL: aws_endpoint_url
+        gear-data-credentials:
+          GEAR_DATA_CREDENTIALS: data_credentials
+        wandb-api-key:
+          WANDB_API_KEY: WANDB_API_KEY
+      command: ["bash"]
+      environment:
+        ACCEPT_EULA: "Y"
+        NO_NUCLEUS: "Y"
+      exitActions:
+        RESCHEDULE: 3001
+      args: ["/tmp/train_stack_blocks_two.sh"]
+      files:
+        - path: /tmp/train_stack_blocks_two.sh
+          contents: |
+            #!/usr/bin/env bash
+            set -euo pipefail
+
+            exec > >(tee /tmp/train_stack_blocks_two.log) 2>&1
+
+            RUN_NAME="dreamzero-rt-stack-blocks-two-train-shared-global-xianzhef-20260531-231103"
+            CODE_S3_URI="s3://GearHome/users/xianzhef/oci-migration/dreamzero"
+            CONVERTED_DATA_S3_URI="s3://GearHome/users/xianzhef/oci-migration/data/robotwin_lerobot_v2/stack_blocks_two-rt"
+            MODEL_CACHE_S3_URI="s3://GearHome/users/xianzhef/oci-migration/checkpoints"
+            RUN_S3_ROOT="s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/${RUN_NAME}"
+            OUTPUT_S3_URI="${RUN_S3_ROOT}/checkpoints"
+            LOG_S3_URI="${RUN_S3_ROOT}/logs"
+
+            for uri in "$CODE_S3_URI" "$CONVERTED_DATA_S3_URI" "$MODEL_CACHE_S3_URI" "$RUN_S3_ROOT" "$OUTPUT_S3_URI" "$LOG_S3_URI"; do
+              case "$uri" in
+                s3://GearHome/users/xianzhef/*) ;;
+                *)
+                  echo "Refusing non-xianzhef S3 URI: $uri" >&2
+                  exit 64
+                  ;;
+              esac
+            done
+
+            upload_artifacts() {
+              status=$?
+              set +e
+              echo "Training workflow exit status: $status"
+              osmo data upload "${LOG_S3_URI}/" /tmp/train_stack_blocks_two.log
+              if [ -d "${OUTPUT_DIR:-}" ]; then
+                osmo data upload "${OUTPUT_S3_URI}/" "${OUTPUT_DIR}"
+              else
+                echo "No OUTPUT_DIR found to upload: ${OUTPUT_DIR:-unset}"
+              fi
+              exit "$status"
+            }
+            trap upload_artifacts EXIT
+
+            export PYTHONUNBUFFERED=1
+            export HYDRA_FULL_ERROR=1
+            export MUJOCO_GL=egl
+            export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+            export GIT_LFS_SKIP_SMUDGE=1
+            export OSMO_CACHE_ROOT="${OSMO_CACHE_ROOT:-/mnt/amlfs-01/home/xianzhef/osmo_cache}"
+            export DREAMZERO_CACHE_ROOT="${DREAMZERO_CACHE_ROOT:-${OSMO_CACHE_ROOT}/dreamzero}"
+            export HF_HOME="${DREAMZERO_CACHE_ROOT}/hf"
+            export HF_HUB_CACHE="${HF_HOME}/hub"
+            export TRANSFORMERS_CACHE="${HF_HOME}/transformers"
+            export WANDB_DIR="${DREAMZERO_CACHE_ROOT}/wandb"
+            export WANDB_CACHE_DIR="${WANDB_DIR}/cache"
+            export WANDB_RESUME=allow
+            export UPLOAD_MODEL_CACHE="${UPLOAD_MODEL_CACHE:-0}"
+
+            mkdir -p \
+              /workspace/code/dreamzero \
+              /workspace/data/robotwin_lerobot_v2/stack_blocks_two-rt \
+              "${DREAMZERO_CACHE_ROOT}/checkpoints" \
+              /workspace/outputs \
+              "$HF_HOME" \
+              "$WANDB_CACHE_DIR"
+
+            ln -sfn "${DREAMZERO_CACHE_ROOT}/checkpoints" /workspace/checkpoints
+            echo "Using persistent OSMO cache root: $OSMO_CACHE_ROOT"
+            df -h "$OSMO_CACHE_ROOT" || true
+
+            dir_has_files() {
+              [ -d "$1" ] && [ -n "$(find "$1" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]
+            }
+
+            has_lerobot_meta() {
+              [ -d "$1/meta" ] && [ -f "$1/meta/info.json" ] && [ -f "$1/meta/modality.json" ]
+            }
+
+            resolve_lerobot_root() {
+              root="$1"
+              if has_lerobot_meta "$root"; then
+                printf '%s\n' "$root"
+                return 0
+              fi
+
+              meta_file="$(find "$root" -maxdepth 4 -path "*/meta/info.json" -print -quit 2>/dev/null || true)"
+              if [ -n "$meta_file" ]; then
+                dirname "$(dirname "$meta_file")"
+                return 0
+              fi
+
+              return 1
+            }
+
+            hf_download() {
+              repo="$1"
+              repo_type="$2"
+              dest="$3"
+              mkdir -p "$dest"
+              if command -v hf >/dev/null 2>&1; then
+                hf download "$repo" --repo-type "$repo_type" --local-dir "$dest"
+              else
+                huggingface-cli download "$repo" --repo-type "$repo_type" --local-dir "$dest"
+              fi
+            }
+
+            model_dir_is_usable() {
+              cache_name="$1"
+              dest="$2"
+              case "$cache_name" in
+                Wan2.1-I2V-14B-480P)
+                  [ -f "$dest/Wan2.1_VAE.pth" ] &&
+                    [ -f "$dest/models_t5_umt5-xxl-enc-bf16.pth" ] &&
+                    [ -f "$dest/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth" ]
+                  ;;
+                DreamZero-DROID)
+                  [ -f "$dest/model.safetensors" ] || [ -f "$dest/model.safetensors.index.json" ]
+                  ;;
+                *)
+                  dir_has_files "$dest"
+                  ;;
+              esac
+            }
+
+            resolve_model_root() {
+              cache_name="$1"
+              dest="$2"
+              if model_dir_is_usable "$cache_name" "$dest"; then
+                printf '%s\n' "$dest"
+                return 0
+              fi
+
+              case "$cache_name" in
+                Wan2.1-I2V-14B-480P)
+                  root="$(find "$dest" -maxdepth 3 -name Wan2.1_VAE.pth -print -quit 2>/dev/null || true)"
+                  ;;
+                DreamZero-DROID)
+                  root="$(find "$dest" -maxdepth 3 \( -name model.safetensors -o -name model.safetensors.index.json \) -print -quit 2>/dev/null || true)"
+                  ;;
+                *)
+                  root=""
+                  ;;
+              esac
+
+              if [ -n "${root:-}" ]; then
+                dirname "$root"
+                return 0
+              fi
+
+              return 1
+            }
+
+            promote_model_root() {
+              resolved="$1"
+              dest="$2"
+              if [ "$resolved" = "$dest" ]; then
+                return 0
+              fi
+              echo "Promoting nested model cache from ${resolved} into ${dest}."
+              case "$resolved" in
+                "$dest"/*)
+                  find "$resolved" -mindepth 1 -maxdepth 1 -exec mv -n -t "$dest" {} +
+                  ;;
+                *)
+                  cp -an "${resolved}/." "$dest/"
+                  ;;
+              esac
+            }
+
+            download_or_restore_model() {
+              cache_name="$1"
+              repo="$2"
+              repo_type="$3"
+              dest="$4"
+              mkdir -p "$dest"
+
+              if model_dir_is_usable "$cache_name" "$dest"; then
+                echo "Model already present locally: $dest"
+                return 0
+              fi
+
+              echo "Trying xianzhef S3 model cache: ${MODEL_CACHE_S3_URI}/${cache_name}/"
+              set +e
+              osmo data download --resume "${MODEL_CACHE_S3_URI}/${cache_name}/" "$dest"
+              cache_status=$?
+              set -e
+              resolved_cache_root="$(resolve_model_root "$cache_name" "$dest" || true)"
+
+              if [ "$cache_status" -eq 0 ] && [ -n "$resolved_cache_root" ]; then
+                promote_model_root "$resolved_cache_root" "$dest"
+                echo "Restored ${cache_name} from xianzhef S3 cache."
+                return 0
+              fi
+
+              if ! command -v huggingface-cli >/dev/null 2>&1 && ! command -v hf >/dev/null 2>&1; then
+                python -m pip install -q "huggingface_hub[cli]"
+              fi
+
+              echo "No usable S3 cache for ${cache_name}; downloading from Hugging Face repo ${repo}."
+              hf_download "$repo" "$repo_type" "$dest"
+              resolved_download_root="$(resolve_model_root "$cache_name" "$dest" || true)"
+              if [ -n "$resolved_download_root" ]; then
+                promote_model_root "$resolved_download_root" "$dest"
+              fi
+              if ! model_dir_is_usable "$cache_name" "$dest"; then
+                echo "ERROR: downloaded ${cache_name} into ${dest}, but required checkpoint files are still missing." >&2
+                exit 8
+              fi
+
+              if [ "${UPLOAD_MODEL_CACHE:-1}" = "1" ]; then
+                echo "Uploading ${cache_name} to xianzhef S3 model cache."
+                set +e
+                osmo data upload "${MODEL_CACHE_S3_URI}/${cache_name}/" "$dest"
+                upload_status=$?
+                set -e
+                if [ "$upload_status" -ne 0 ]; then
+                  echo "WARNING: failed to upload model cache ${cache_name}; training will still continue."
+                fi
+              fi
+            }
+
+            valid_tokenizer_dir() {
+              [ -f "$1/tokenizer_config.json" ] && { [ -f "$1/tokenizer.json" ] || [ -f "$1/spiece.model" ]; }
+            }
+
+            download_or_restore_tokenizer() {
+              cache_name="$1"
+              repo="$2"
+              dest="$3"
+              mkdir -p "$dest"
+
+              if valid_tokenizer_dir "$dest"; then
+                echo "Tokenizer already present locally: $dest"
+                return 0
+              fi
+
+              echo "Trying xianzhef S3 tokenizer cache: ${MODEL_CACHE_S3_URI}/${cache_name}/"
+              set +e
+              osmo data download --resume "${MODEL_CACHE_S3_URI}/${cache_name}/" "$dest"
+              cache_status=$?
+              set -e
+
+              if [ "$cache_status" -eq 0 ] && valid_tokenizer_dir "$dest"; then
+                echo "Restored ${cache_name} from xianzhef S3 cache."
+                return 0
+              fi
+
+              python - <<'PY'
+            import importlib.util
+            import subprocess
+            import sys
+
+            if importlib.util.find_spec("huggingface_hub") is None:
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "huggingface_hub"])
+            PY
+
+              echo "Downloading tokenizer files from Hugging Face repo ${repo}."
+              python - "$repo" "$dest" <<'PY'
+            import sys
+            from huggingface_hub import snapshot_download
+
+            repo, dest = sys.argv[1], sys.argv[2]
+            snapshot_download(
+                repo_id=repo,
+                repo_type="model",
+                local_dir=dest,
+                allow_patterns=[
+                    "config.json",
+                    "special_tokens_map.json",
+                    "spiece.model",
+                    "tokenizer.json",
+                    "tokenizer_config.json",
+                ],
+            )
+            PY
+
+              if ! valid_tokenizer_dir "$dest"; then
+                echo "ERROR: tokenizer cache ${dest} is still missing tokenizer_config.json plus tokenizer.json or spiece.model." >&2
+                exit 7
+              fi
+
+              if [ "${UPLOAD_MODEL_CACHE:-1}" = "1" ]; then
+                echo "Uploading ${cache_name} to xianzhef S3 model cache."
+                set +e
+                osmo data upload "${MODEL_CACHE_S3_URI}/${cache_name}/" "$dest"
+                upload_status=$?
+                set -e
+                if [ "$upload_status" -ne 0 ]; then
+                  echo "WARNING: failed to upload tokenizer cache ${cache_name}; training will still continue."
+                fi
+              fi
+            }
+
+            require_wandb() {
+              if [ -z "${WANDB_API_KEY:-}" ]; then
+                echo "ERROR: REPORT_TO=wandb but WANDB_API_KEY is not set." >&2
+                exit 5
+              fi
+              python - <<'PY'
+            import importlib.util
+            import subprocess
+            import sys
+
+            if importlib.util.find_spec("wandb") is None:
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "wandb"])
+            PY
+              python -c 'import os, wandb; wandb.login(key=os.environ["WANDB_API_KEY"], relogin=True)'
+            }
+
+            echo "Downloading persistent converted RoboTwin stack_blocks_two dataset from ${CONVERTED_DATA_S3_URI}/"
+            DATA_PARENT="/workspace/data/robotwin_lerobot_v2"
+            DATA_ROOT="${DATA_PARENT}/stack_blocks_two-rt"
+            mkdir -p "$DATA_PARENT"
+            set +e
+            osmo data download --resume "${CONVERTED_DATA_S3_URI}/" "$DATA_PARENT"
+            converted_download_status=$?
+            set -e
+
+            RESOLVED_DATA_ROOT="$(resolve_lerobot_root "$DATA_ROOT" || true)"
+            if [ "$converted_download_status" -ne 0 ] || [ -z "$RESOLVED_DATA_ROOT" ]; then
+              echo "ERROR: persistent stack_blocks_two LeRobot v2 dataset is missing at ${CONVERTED_DATA_S3_URI}/" >&2
+              echo "Run prepare_dataset_workflow.yaml once, then resubmit this training workflow." >&2
+              exit 9
+            fi
+            DATA_ROOT="$RESOLVED_DATA_ROOT"
+            echo "Using RoboTwin LeRobot dataset root: $DATA_ROOT"
+
+            echo "Downloading DreamZero code from ${CODE_S3_URI}/"
+            osmo data download --resume "${CODE_S3_URI}/" /workspace/code/dreamzero
+            CODE_ROOT="/workspace/code/dreamzero"
+            if [ ! -f "$CODE_ROOT/pyproject.toml" ]; then
+              found_pyproject="$(find /workspace/code -maxdepth 4 -name pyproject.toml -print -quit)"
+              if [ -n "$found_pyproject" ]; then
+                CODE_ROOT="$(dirname "$found_pyproject")"
+              fi
+            fi
+            if [ ! -f "$CODE_ROOT/pyproject.toml" ]; then
+              echo "ERROR: did not find DreamZero pyproject.toml after code download." >&2
+              exit 3
+            fi
+            if [ ! -f "$CODE_ROOT/scripts/train/robotwin_bimanual_training.sh" ]; then
+              echo "ERROR: DreamZero code does not contain scripts/train/robotwin_bimanual_training.sh." >&2
+              exit 6
+            fi
+
+            cd "$CODE_ROOT"
+            echo "Installing DreamZero package from $CODE_ROOT"
+            if command -v uv >/dev/null 2>&1; then
+              uv pip install --system -e . --no-deps || uv pip install -e . --no-deps || python -m pip install -e . --no-deps
+            else
+              python -m pip install -e . --no-deps
+            fi
+
+            WAN_CKPT_DIR="/workspace/checkpoints/Wan2.1-I2V-14B-480P"
+            TOKENIZER_DIR="/workspace/checkpoints/umt5-xxl-tokenizer"
+            PRETRAINED_DIR="/workspace/checkpoints/DreamZero-DROID"
+
+            download_or_restore_model "Wan2.1-I2V-14B-480P" "Wan-AI/Wan2.1-I2V-14B-480P" "model" "$WAN_CKPT_DIR"
+            download_or_restore_tokenizer "umt5-xxl-tokenizer" "google/umt5-xxl" "$TOKENIZER_DIR"
+            download_or_restore_model "DreamZero-DROID" "GEAR-Dreams/DreamZero-DROID" "model" "$PRETRAINED_DIR"
+
+            export NUM_GPUS=8
+            export MAX_STEPS=50000
+            export BATCH_SIZE=1
+            export SAVE_STEPS=500
+            export LEARNING_RATE=1e-5
+            export REPORT_TO=wandb
+            export WANDB_PROJECT=dreamzero_robotwin
+            export WANDB_RUN_NAME="$RUN_NAME"
+            export WANDB_RUN_ID="$RUN_NAME"
+            export DATALOADER_NUM_WORKERS=4
+            export ROBOTWIN_DATA_ROOT="$DATA_ROOT"
+            export OUTPUT_DIR="/workspace/outputs/robotwin_franka_bimanual_stack_blocks_two_droid_ma_sg_dzrel_50k"
+            export WAN_CKPT_DIR
+            export TOKENIZER_DIR
+            export PRETRAINED_DIR
+
+            require_wandb
+
+            echo "Launching DreamZero RoboTwin Franka bimanual shared-global training"
+            echo "DATA_ROOT=$DATA_ROOT"
+            echo "OUTPUT_DIR=$OUTPUT_DIR"
+            bash scripts/train/robotwin_bimanual_training.sh

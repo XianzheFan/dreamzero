@@ -1,0 +1,78 @@
+workflow:
+  timeout:
+    queue_timeout: 30m
+    exec_timeout: 10m
+  name: probe-robotwin-stack-metadata-xianzhef-20260601
+  resources:
+    default:
+      cpu: 2
+      gpu: 0
+      memory: 8Gi
+      storage: 20Gi
+  tasks:
+    - name: inspect-stack-metadata
+      image: nvcr.io/nvidian/gr00t_isaac:v1.5
+      command: ["bash"]
+      args: ["/tmp/inspect_stack_metadata.sh"]
+      files:
+        - path: /tmp/inspect_stack_metadata.sh
+          contents: |
+            #!/usr/bin/env bash
+            set -euo pipefail
+
+            ROBOTWIN=/mnt/amlfs-04/home/xianzhef/osmo_cache/RoboTwin
+            ROBOTWIN_PY=/mnt/amlfs-04/home/xianzhef/osmo_cache/robotwin_env/bin/python3.10
+            test -d "$ROBOTWIN"
+            cd "$ROBOTWIN"
+
+            echo "=== stack env file ==="
+            nl -ba envs/stack_blocks_two.py | sed -n '1,260p'
+
+            echo "=== instruction generator callsite ==="
+            nl -ba script/eval_policy.py | sed -n '260,300p'
+
+            echo "=== eval policy imports ==="
+            nl -ba script/eval_policy.py | sed -n '1,95p'
+
+            echo "=== task instruction candidates ==="
+            for f in \
+              description/task_instruction/stack_blocks_two.json \
+              description/stack_blocks_two.json \
+              description/task_instruction/beat_block_hammer.json \
+              task_config/stack_blocks_two.yml \
+              task_config/stack_blocks_two.yaml; do
+              if [ -f "$f" ]; then
+                echo "--- $f"
+                sed -n '1,240p' "$f"
+              fi
+            done
+
+            echo "=== code_gen task info ==="
+            nl -ba code_gen/task_info.py | sed -n '150,190p'
+
+            echo "=== direct get_info references under envs ==="
+            grep -RIn "def get_info\\|self.info\\|info =" envs 2>/dev/null | sed -n '1,220p' || true
+
+            echo "=== first stack demo metadata ==="
+            if [ -x "$ROBOTWIN_PY" ]; then
+              "$ROBOTWIN_PY" - <<'PY'
+            import pickle
+            from pathlib import Path
+
+            p = Path("/mnt/amlfs-04/home/xianzhef/osmo_cache/RoboTwin/data/stack_blocks_two/demo_full_franka/_traj_data/episode0.pkl")
+            print("pkl_exists", p.exists(), p)
+            if p.exists():
+                with p.open("rb") as f:
+                    data = pickle.load(f)
+                print("pkl_type", type(data))
+                if isinstance(data, dict):
+                    print("pkl_keys", sorted(map(str, data.keys()))[:100])
+                    for key in ["info", "model_data", "object_data", "meta", "task_info", "episode_info"]:
+                        if key in data:
+                            print(f"pkl_{key}", repr(data[key])[:4000])
+                else:
+                    print("pkl_repr", repr(data)[:4000])
+            PY
+            else
+              echo "RoboTwin Python not executable at $ROBOTWIN_PY"
+            fi

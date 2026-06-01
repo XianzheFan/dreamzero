@@ -1,0 +1,456 @@
+workflow:
+  timeout:
+    queue_timeout: 2h
+    exec_timeout: 3d
+  name: robotwin-stack-blocks-two-dataset-l40-xianzhef-20260531-231103
+  resources:
+    default:
+      cpu: 15
+      gpu: 1
+      memory: 120Gi
+      storage: 750Gi
+      nodesExcluded:
+        - osmogroot-dgxc-k8s-forge-az05-prd1-w-8183
+  tasks:
+    - name: prepare-stack-blocks-two
+      image: nvcr.io/nvidian/gr00t_isaac:v1.5
+      credentials:
+        gear-aws-cred:
+          AWS_ACCESS_KEY_ID: aws_access_key_id
+          AWS_SECRET_ACCESS_KEY: aws_secret_access_key
+          AWS_DEFAULT_REGION: aws_default_region
+          AWS_ENDPOINT_URL: aws_endpoint_url
+        gear-data-credentials:
+          GEAR_DATA_CREDENTIALS: data_credentials
+      command: ["bash"]
+      environment:
+        ACCEPT_EULA: "Y"
+        NO_NUCLEUS: "Y"
+        NVIDIA_DRIVER_CAPABILITIES: "all"
+      args: ["/tmp/prepare_stack_blocks_two.sh"]
+      files:
+        - path: /tmp/prepare_stack_blocks_two.sh
+          contents: |
+            #!/usr/bin/env bash
+            set -euo pipefail
+
+            exec > >(tee /tmp/prepare_stack_blocks_two.log) 2>&1
+
+            RUN_NAME="robotwin-stack-blocks-two-dataset-l40-xianzhef-20260531-231103"
+            CODE_S3_URI="s3://GearHome/users/xianzhef/oci-migration/dreamzero"
+            ROBOTWIN_S3_URI="s3://GearHome/users/xianzhef/oci-migration/RoboTwin"
+            ROBOTWIN_ENV_S3_URI="s3://GearHome/users/xianzhef/oci-migration/miniconda3/envs/RoboTwin"
+            RAW_DATA_S3_URI="s3://GearHome/users/xianzhef/oci-migration/RoboTwin/data/stack_blocks_two/demo_full_franka"
+            CONVERTED_DATA_S3_URI="s3://GearHome/users/xianzhef/oci-migration/data/robotwin_lerobot_v2/stack_blocks_two-rt"
+            LOG_S3_URI="s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/${RUN_NAME}/logs"
+            OSMO_CACHE_ROOT="${OSMO_CACHE_ROOT:-/mnt/amlfs-04/home/xianzhef/osmo_cache}"
+            ROBOTWIN_ENV_DIR="${ROBOTWIN_ENV_DIR:-${OSMO_CACHE_ROOT}/robotwin_env}"
+            ROBOTWIN_REPO_CACHE="${ROBOTWIN_REPO_CACHE:-${OSMO_CACHE_ROOT}/RoboTwin}"
+
+            for uri in "$CODE_S3_URI" "$ROBOTWIN_S3_URI" "$ROBOTWIN_ENV_S3_URI" "$RAW_DATA_S3_URI" "$CONVERTED_DATA_S3_URI" "$LOG_S3_URI"; do
+              case "$uri" in
+                s3://GearHome/users/xianzhef/*) ;;
+                *)
+                  echo "Refusing non-xianzhef S3 URI: $uri" >&2
+                  exit 64
+                  ;;
+              esac
+            done
+
+            upload_logs() {
+              status=$?
+              set +e
+              echo "Dataset workflow exit status: $status"
+              osmo data upload "${LOG_S3_URI}/" /tmp/prepare_stack_blocks_two.log
+              exit "$status"
+            }
+            trap upload_logs EXIT
+
+            export PYTHONUNBUFFERED=1
+            export CUDA_VISIBLE_DEVICES=0
+            export MUJOCO_GL=egl
+            export GIT_LFS_SKIP_SMUDGE=1
+
+            mkdir -p \
+              /workspace/code/dreamzero \
+              /workspace/deps \
+              /workspace/data/robotwin_lerobot_v2/stack_blocks_two-rt
+
+            setup_persistent_robotwin_cache() {
+              mkdir -p "$OSMO_CACHE_ROOT" "$ROBOTWIN_ENV_DIR" "$ROBOTWIN_REPO_CACHE"
+              if [ ! -e /workspace/robotwin ]; then
+                ln -s "$ROBOTWIN_REPO_CACHE" /workspace/robotwin
+              elif [ -d /workspace/robotwin ] && [ ! -L /workspace/robotwin ] && [ -z "$(find /workspace/robotwin -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
+                rmdir /workspace/robotwin
+                ln -s "$ROBOTWIN_REPO_CACHE" /workspace/robotwin
+              fi
+              echo "Using persistent OSMO cache root: $OSMO_CACHE_ROOT"
+              df -h "$OSMO_CACHE_ROOT" || true
+              echo "RoboTwin env cache: $ROBOTWIN_ENV_DIR"
+              echo "RoboTwin repo/assets cache: $ROBOTWIN_REPO_CACHE"
+              echo "RoboTwin workspace path: $(readlink -f /workspace/robotwin 2>/dev/null || echo /workspace/robotwin)"
+            }
+
+            setup_persistent_robotwin_cache
+
+            count_hdf5_episodes() {
+              if [ ! -d "$1" ]; then
+                echo 0
+                return
+              fi
+              find "$1" -maxdepth 1 -name 'episode*.hdf5' -print 2>/dev/null | wc -l | tr -d ' '
+            }
+
+            has_expected_hdf5_episodes() {
+              episode_count="$(count_hdf5_episodes "$1")"
+              expected_count="${ROBOTWIN_EXPECTED_EPISODES:-100}"
+              echo "Found ${episode_count}/${expected_count} hdf5 episodes under $1"
+              [ "$episode_count" -ge "$expected_count" ]
+            }
+
+            has_lerobot_meta() {
+              [ -d "$1/meta" ] && [ -f "$1/meta/info.json" ] && [ -f "$1/meta/modality.json" ]
+            }
+
+            install_converter_deps() {
+              python - <<'PY'
+            import importlib.util
+            import subprocess
+            import sys
+
+            packages = {
+                "av": "av",
+                "cv2": "opencv-python-headless",
+                "h5py": "h5py",
+                "numpy": "numpy",
+                "pandas": "pandas",
+                "pyarrow": "pyarrow",
+                "tqdm": "tqdm",
+            }
+            missing = [pkg for mod, pkg in packages.items() if importlib.util.find_spec(mod) is None]
+            if missing:
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", *missing])
+            PY
+            }
+
+            configure_nvidia_graphics() {
+              mkdir -p /tmp/nvidia-vulkan /tmp/nvidia-egl
+              cat >/tmp/nvidia-vulkan/nvidia_icd.json <<'EOF'
+            {
+              "file_format_version": "1.0.0",
+              "ICD": {
+                "library_path": "libGLX_nvidia.so.0",
+                "api_version": "1.2.140"
+              }
+            }
+            EOF
+              cat >/tmp/nvidia-egl/10_nvidia.json <<'EOF'
+            {
+              "file_format_version": "1.0.0",
+              "ICD": {
+                "library_path": "libEGL_nvidia.so.0"
+              }
+            }
+            EOF
+              export VK_ICD_FILENAMES=/tmp/nvidia-vulkan/nvidia_icd.json
+              export __EGL_VENDOR_LIBRARY_FILENAMES=/tmp/nvidia-egl/10_nvidia.json
+              export __GLX_VENDOR_LIBRARY_NAME=nvidia
+            }
+
+            ensure_ffmpeg() {
+              if command -v ffmpeg >/dev/null 2>&1; then
+                ffmpeg -version | head -1
+                return
+              fi
+              echo "Installing ffmpeg for RoboTwin HDF5/video merge."
+              (
+                unset PYTHONHOME PYTHONPATH
+                export DEBIAN_FRONTEND=noninteractive
+                apt-get update
+                apt-get install -y --no-install-recommends ffmpeg
+              )
+              ffmpeg -version | head -1
+            }
+
+            prepare_robotwin_runtime() {
+              ROBOTWIN_PYTHON="${ROBOTWIN_ENV_DIR}/bin/python3.10"
+              if [ ! -e "$ROBOTWIN_PYTHON" ]; then
+                ROBOTWIN_PYTHON="${ROBOTWIN_ENV_DIR}/bin/python"
+              fi
+              if [ ! -e "$ROBOTWIN_PYTHON" ]; then
+                echo "Downloading RoboTwin conda env from ${ROBOTWIN_ENV_S3_URI}/ into ${ROBOTWIN_ENV_DIR}"
+                set +e
+                osmo data download --resume "${ROBOTWIN_ENV_S3_URI}/" "$ROBOTWIN_ENV_DIR"
+                env_download_status=$?
+                set -e
+                if [ "$env_download_status" -ne 0 ]; then
+                  echo "ERROR: failed to download RoboTwin conda env." >&2
+                  exit 10
+                fi
+              fi
+
+              if [ -e "${ROBOTWIN_ENV_DIR}/bin/python3.10" ]; then
+                ROBOTWIN_PYTHON="${ROBOTWIN_ENV_DIR}/bin/python3.10"
+              elif [ -e "${ROBOTWIN_ENV_DIR}/bin/python" ]; then
+                ROBOTWIN_PYTHON="${ROBOTWIN_ENV_DIR}/bin/python"
+              else
+                found_robotwin_python="$(find "$ROBOTWIN_ENV_DIR" -path '*/bin/python' -print -quit 2>/dev/null || true)"
+                if [ -n "$found_robotwin_python" ]; then
+                  ROBOTWIN_PYTHON="$found_robotwin_python"
+                fi
+              fi
+
+              if [ ! -e "$ROBOTWIN_PYTHON" ]; then
+                echo "ERROR: could not locate RoboTwin Python under $ROBOTWIN_ENV_DIR." >&2
+                find "$ROBOTWIN_ENV_DIR" -maxdepth 5 -path '*/bin/python*' -print | head -50
+                exit 11
+              fi
+
+              chmod u+x "$ROBOTWIN_PYTHON" 2>/dev/null || true
+
+              ROBOTWIN_BIN_DIR="$(dirname "$ROBOTWIN_PYTHON")"
+              ROBOTWIN_PREFIX="$(dirname "$ROBOTWIN_BIN_DIR")"
+              export CONDA_PREFIX="$ROBOTWIN_PREFIX"
+              export PYTHONHOME="$ROBOTWIN_PREFIX"
+              export PATH="${ROBOTWIN_BIN_DIR}:${PATH}"
+              export LD_LIBRARY_PATH="${ROBOTWIN_PREFIX}/lib:${LD_LIBRARY_PATH:-}"
+              export PYTHONPATH="/workspace/robotwin:${PYTHONPATH:-}"
+
+              stdlib_repair_marker="${ROBOTWIN_PREFIX}/.robotwin_python310_stdlib_repaired"
+              if [ -f "$stdlib_repair_marker" ]; then
+                echo "Python 3.10 stdlib repair already marked complete."
+              elif "$ROBOTWIN_PYTHON" - <<'PY'; then
+            import site
+            print("Python 3.10 stdlib already usable:", site.__file__)
+            PY
+                touch "$stdlib_repair_marker"
+              elif [ -d "${ROBOTWIN_PREFIX}/lib/python3.1" ] && [ -d "${ROBOTWIN_PREFIX}/lib/python3.10" ]; then
+                echo "Repairing missing Python 3.10 stdlib files from python3.1 mirror."
+                cp -an "${ROBOTWIN_PREFIX}/lib/python3.1/." "${ROBOTWIN_PREFIX}/lib/python3.10/"
+                touch "$stdlib_repair_marker"
+              fi
+
+              echo "Using RoboTwin Python: $ROBOTWIN_PYTHON"
+              "$ROBOTWIN_PYTHON" -c 'import site; print("RoboTwin Python site:", site.__file__)'
+              "$ROBOTWIN_PYTHON" - <<'PY'
+            import mplib
+            import open3d
+            import sapien.core
+            import transforms3d
+            print("RoboTwin Python imports OK")
+            PY
+              export ROBOTWIN_PYTHON
+            }
+
+            ensure_cuda_toolkit_for_torch() {
+              torch_cuda="$("$ROBOTWIN_PYTHON" - <<'PY'
+            import torch
+            print(torch.version.cuda or "")
+            PY
+            )"
+              case "$torch_cuda" in
+                12.4*) desired_cuda_home="/usr/local/cuda-12.4" ;;
+                *)
+                  echo "WARNING: unexpected RoboTwin torch CUDA version '$torch_cuda'; using existing CUDA_HOME if available."
+                  desired_cuda_home="${CUDA_HOME:-/usr/local/cuda}"
+                  ;;
+              esac
+
+              if [ ! -x "${desired_cuda_home}/bin/nvcc" ] && [ "$desired_cuda_home" = "/usr/local/cuda-12.4" ]; then
+                echo "Installing CUDA toolkit 12.4 to match RoboTwin torch CUDA ${torch_cuda}."
+                (
+                  unset PYTHONHOME PYTHONPATH
+                  export DEBIAN_FRONTEND=noninteractive
+                  . /etc/os-release
+                  cuda_repo_os="ubuntu$(printf '%s' "$VERSION_ID" | tr -d .)"
+                  cuda_keyring_url="https://developer.download.nvidia.com/compute/cuda/repos/${cuda_repo_os}/x86_64/cuda-keyring_1.1-1_all.deb"
+                  echo "Using CUDA apt repository ${cuda_repo_os}: ${cuda_keyring_url}"
+                  apt-get update
+                  apt-get install -y --no-install-recommends curl wget ca-certificates gnupg
+                  curl -fsSL "$cuda_keyring_url" -o /tmp/cuda-keyring_1.1-1_all.deb
+                  dpkg -i /tmp/cuda-keyring_1.1-1_all.deb
+                  apt-get update
+                  if [ "$cuda_repo_os" != "ubuntu2204" ]; then
+                    echo "Adding ubuntu2204 CUDA repo because CUDA 12.4 packages are not published for ${cuda_repo_os}."
+                    echo "deb [signed-by=/usr/share/keyrings/cuda-archive-keyring.gpg] https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/ /" > /etc/apt/sources.list.d/cuda-ubuntu2204-x86_64.list
+                    apt-get update
+                  fi
+                  apt-cache policy cuda-nvcc-12-4 cuda-cudart-dev-12-4 || true
+                  apt-get install -y --no-install-recommends cuda-nvcc-12-4 cuda-cudart-dev-12-4
+                )
+              fi
+
+              if [ ! -x "${desired_cuda_home}/bin/nvcc" ]; then
+                echo "ERROR: expected nvcc at ${desired_cuda_home}/bin/nvcc but it is missing." >&2
+                find /usr/local -maxdepth 3 -name nvcc -print 2>/dev/null || true
+                exit 15
+              fi
+
+              export CUDA_HOME="$desired_cuda_home"
+              export CUDA_PATH="$desired_cuda_home"
+              export CUDACXX="${desired_cuda_home}/bin/nvcc"
+              export PATH="${desired_cuda_home}/bin:${PATH}"
+              export LD_LIBRARY_PATH="${desired_cuda_home}/lib64:${LD_LIBRARY_PATH:-}"
+              export TORCH_CUDA_ARCH_LIST="8.9"
+              export MAX_JOBS="${MAX_JOBS:-8}"
+              echo "Using CUDA_HOME=${CUDA_HOME}"
+              nvcc --version
+            }
+
+            install_curobo_runtime() {
+              if "$ROBOTWIN_PYTHON" - <<'PY'; then
+            import importlib.util
+            raise SystemExit(0 if importlib.util.find_spec("curobo") else 1)
+            PY
+                echo "cuRobo already importable in RoboTwin runtime."
+                return
+              fi
+
+              echo "cuRobo missing; installing from NVlabs/curobo into RoboTwin runtime."
+              ensure_cuda_toolkit_for_torch
+              CUROBO_CACHE_DIR="${CUROBO_CACHE_DIR:-${OSMO_CACHE_ROOT}/deps/curobo}"
+              mkdir -p "$(dirname "$CUROBO_CACHE_DIR")"
+              if [ ! -d "${CUROBO_CACHE_DIR}/.git" ]; then
+                rm -rf "$CUROBO_CACHE_DIR"
+                git clone --branch "${CUROBO_REF:-v0.7.8}" --depth 1 https://github.com/NVlabs/curobo.git "$CUROBO_CACHE_DIR"
+              fi
+              cd "$CUROBO_CACHE_DIR"
+              git rev-parse --is-inside-work-tree
+              export SETUPTOOLS_SCM_PRETEND_VERSION_FOR_NVIDIA_CUROBO="${CUROBO_VERSION:-0.7.8}"
+              "$ROBOTWIN_PYTHON" -m pip install tomli wheel ninja
+              "$ROBOTWIN_PYTHON" -m pip install --no-deps -e . --no-build-isolation
+              "$ROBOTWIN_PYTHON" - <<'PY'
+            from curobo.types.math import Pose as CuroboPose
+            print("cuRobo import OK:", CuroboPose)
+            PY
+            }
+
+            link_legacy_robotwin_paths() {
+              legacy_root="/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef"
+              mkdir -p "$legacy_root"
+              if [ ! -e "${legacy_root}/RoboTwin" ]; then
+                ln -s /workspace/robotwin "${legacy_root}/RoboTwin"
+              fi
+              echo "Legacy RoboTwin path points to $(readlink -f "${legacy_root}/RoboTwin")"
+            }
+
+            ensure_warp_runtime() {
+              "$ROBOTWIN_PYTHON" - <<'PY'
+            import subprocess
+            import sys
+
+            try:
+                import warp
+            except Exception:
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "--no-cache-dir", "warp-lang==1.12.1"])
+            PY
+              "$ROBOTWIN_PYTHON" - <<'PY'
+            from pathlib import Path
+            import site
+            import textwrap
+
+            site_packages = next(Path(p) for p in site.getsitepackages() if p.endswith("site-packages"))
+            (site_packages / "robotwin_warp_compat.py").write_text(textwrap.dedent("""
+                try:
+                    import types
+                    import warp as _robotwin_warp
+                    if not hasattr(_robotwin_warp, "torch"):
+                        _robotwin_warp.torch = types.SimpleNamespace()
+                    for _name in (
+                        "from_torch",
+                        "to_torch",
+                        "device_from_torch",
+                        "device_to_torch",
+                        "dtype_from_torch",
+                        "dtype_to_torch",
+                    ):
+                        if not hasattr(_robotwin_warp.torch, _name) and hasattr(_robotwin_warp, _name):
+                            setattr(_robotwin_warp.torch, _name, getattr(_robotwin_warp, _name))
+                except Exception as exc:
+                    print("WARNING: could not install warp torch compatibility shim:", exc)
+            """).lstrip())
+            (site_packages / "robotwin_warp_compat.pth").write_text("import robotwin_warp_compat\n")
+            print("Installed Warp torch compatibility preload in", site_packages)
+            PY
+              "$ROBOTWIN_PYTHON" - <<'PY'
+            import warp
+            missing = [name for name in ("from_torch", "to_torch") if not hasattr(warp.torch, name)]
+            if missing:
+                raise RuntimeError(f"Warp torch compatibility shim is missing: {missing}")
+            print("Warp runtime OK:", getattr(warp, "__version__", "unknown"), warp.torch)
+            PY
+            }
+
+            DATA_ROOT="/workspace/data/robotwin_lerobot_v2/stack_blocks_two-rt"
+            RAW_DATA_ROOT="/workspace/robotwin/data/stack_blocks_two/demo_full_franka"
+            RAW_EPISODE_DIR="${RAW_DATA_ROOT}/data"
+
+            echo "Checking existing converted dataset at ${CONVERTED_DATA_S3_URI}/"
+            set +e
+            osmo data download --resume "${CONVERTED_DATA_S3_URI}/" "$DATA_ROOT"
+            converted_download_status=$?
+            set -e
+            if [ "$converted_download_status" -eq 0 ] && has_lerobot_meta "$DATA_ROOT"; then
+              echo "Converted stack_blocks_two LeRobot v2 dataset already exists at ${CONVERTED_DATA_S3_URI}/"
+              exit 0
+            fi
+
+            echo "Downloading DreamZero converter code from ${CODE_S3_URI}/"
+            osmo data download --resume "${CODE_S3_URI}/" /workspace/code/dreamzero
+            CODE_ROOT="/workspace/code/dreamzero"
+            if [ ! -f "$CODE_ROOT/scripts/data/robotwin_to_lerobot_v2.py" ]; then
+              found_converter="$(find /workspace/code -path '*/scripts/data/robotwin_to_lerobot_v2.py' -print -quit)"
+              if [ -n "$found_converter" ]; then
+                CODE_ROOT="$(dirname "$(dirname "$(dirname "$found_converter")")")"
+              fi
+            fi
+            if [ ! -f "$CODE_ROOT/scripts/data/robotwin_to_lerobot_v2.py" ]; then
+              echo "ERROR: did not find robotwin_to_lerobot_v2.py." >&2
+              exit 12
+            fi
+            install_converter_deps
+
+            echo "Checking existing raw stack_blocks_two demos at ${RAW_DATA_S3_URI}/"
+            mkdir -p "$RAW_DATA_ROOT"
+            set +e
+            osmo data download --resume "${RAW_DATA_S3_URI}/" "$RAW_DATA_ROOT"
+            raw_download_status=$?
+            set -e
+            if [ "$raw_download_status" -eq 0 ] && has_expected_hdf5_episodes "$RAW_EPISODE_DIR"; then
+              echo "Raw stack_blocks_two demos already exist at ${RAW_DATA_S3_URI}/"
+            else
+              echo "Raw stack_blocks_two hdf5 episodes missing; collecting stack_blocks_two demo_full_franka once."
+              configure_nvidia_graphics
+              prepare_robotwin_runtime
+              install_curobo_runtime
+              ensure_ffmpeg
+              echo "Downloading RoboTwin repo/assets from ${ROBOTWIN_S3_URI}/ into ${ROBOTWIN_REPO_CACHE}"
+              osmo data download --resume "${ROBOTWIN_S3_URI}/" /workspace/robotwin
+              link_legacy_robotwin_paths
+              ensure_warp_runtime
+              cd /workspace/robotwin
+              "$ROBOTWIN_PYTHON" script/collect_data.py stack_blocks_two demo_full_franka
+              if ! has_expected_hdf5_episodes "$RAW_EPISODE_DIR"; then
+                echo "ERROR: collection finished but expected hdf5 episodes were not found under $RAW_EPISODE_DIR" >&2
+                exit 13
+              fi
+              echo "Uploading raw stack_blocks_two demos to ${RAW_DATA_S3_URI}/"
+              osmo data upload "${RAW_DATA_S3_URI}/" "$RAW_DATA_ROOT"
+            fi
+
+            cd "$CODE_ROOT"
+            echo "Converting raw demos to LeRobot v2 at $DATA_ROOT"
+            python scripts/data/robotwin_to_lerobot_v2.py \
+              --episode-dir "$RAW_EPISODE_DIR" \
+              --out "$DATA_ROOT" \
+              --task "stack the two blocks" \
+              --num-episodes "${ROBOTWIN_NUM_EPISODES:--1}"
+
+            if ! has_lerobot_meta "$DATA_ROOT"; then
+              echo "ERROR: conversion finished but LeRobot metadata is missing at $DATA_ROOT" >&2
+              exit 14
+            fi
+
+            echo "Uploading converted LeRobot v2 dataset to ${CONVERTED_DATA_S3_URI}/"
+            osmo data upload "${CONVERTED_DATA_S3_URI}/" "$DATA_ROOT"
+            echo "Prepared persistent RoboTwin stack_blocks_two dataset at ${CONVERTED_DATA_S3_URI}/"
