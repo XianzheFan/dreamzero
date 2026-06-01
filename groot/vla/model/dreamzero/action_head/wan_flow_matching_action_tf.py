@@ -136,6 +136,18 @@ class WANPolicyHeadConfig(PretrainedConfig):
         default=1.0,
         metadata={"help": "Extra multiplier for gripper action dimensions."},
     )
+    gripper_close_action_loss_weight: float = field(
+        default=1.0,
+        metadata={
+            "help": "Additional multiplier for gripper targets below the close threshold."
+        },
+    )
+    gripper_close_threshold: float = field(
+        default=0.0,
+        metadata={
+            "help": "Normalized gripper target threshold below which the command is treated as close."
+        },
+    )
     gripper_action_dims: list[int] = field(
         default_factory=lambda: [7],
         metadata={"help": "Per-agent action dimensions treated as grippers."},
@@ -437,27 +449,59 @@ class WANPolicyHead(ActionHead):
         else:
             print("LoRA injection not needed (train_architecture != 'lora')")
 
-    def _apply_action_loss_weights(self, action_loss: torch.Tensor) -> torch.Tensor:
+    def _apply_action_loss_weights(
+        self,
+        action_loss: torch.Tensor,
+        actions: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         """Apply optional action/gripper/prefix weights before reduction."""
         action_weight = float(getattr(self.config, "action_loss_weight", 1.0) or 1.0)
         gripper_weight = float(
             getattr(self.config, "gripper_action_loss_weight", 1.0) or 1.0
         )
+        gripper_close_weight = float(
+            getattr(self.config, "gripper_close_action_loss_weight", 1.0) or 1.0
+        )
+        gripper_close_threshold = float(
+            getattr(self.config, "gripper_close_threshold", 0.0) or 0.0
+        )
         prefix_weight = float(
             getattr(self.config, "action_prefix_loss_weight", 1.0) or 1.0
         )
         prefix_len = int(getattr(self.config, "action_prefix_loss_len", 0) or 0)
+        gripper_dims = [int(dim) for dim in getattr(self.config, "gripper_action_dims", [7])]
 
         weighted = action_loss
         if gripper_weight != 1.0 and weighted.shape[-1] > 0:
             dim_weights = torch.ones(
                 weighted.shape[-1], device=weighted.device, dtype=weighted.dtype
             )
-            for dim in getattr(self.config, "gripper_action_dims", [7]):
-                dim = int(dim)
+            for dim in gripper_dims:
                 if -weighted.shape[-1] <= dim < weighted.shape[-1]:
                     dim_weights[dim % weighted.shape[-1]] = gripper_weight
             weighted = weighted * dim_weights.view(*([1] * (weighted.ndim - 1)), -1)
+
+        if (
+            gripper_close_weight != 1.0
+            and actions is not None
+            and weighted.shape == actions.shape
+            and weighted.shape[-1] > 0
+        ):
+            close_weights = torch.ones_like(weighted)
+            for dim in gripper_dims:
+                if -weighted.shape[-1] <= dim < weighted.shape[-1]:
+                    dim_idx = dim % weighted.shape[-1]
+                    close_mask = actions[..., dim_idx] < gripper_close_threshold
+                    close_weights[..., dim_idx] = torch.where(
+                        close_mask,
+                        torch.as_tensor(
+                            gripper_close_weight,
+                            device=weighted.device,
+                            dtype=weighted.dtype,
+                        ),
+                        close_weights[..., dim_idx],
+                    )
+            weighted = weighted * close_weights
 
         time_dim = weighted.ndim - 2
         if prefix_weight != 1.0 and prefix_len > 0 and time_dim >= 0:
@@ -1128,7 +1172,8 @@ class WANPolicyHead(ActionHead):
                     * action_loss_per_sample
                 )
                 action_loss_per_sample = self._apply_action_loss_weights(
-                    action_loss_per_sample
+                    action_loss_per_sample,
+                    actions=actions,
                 )
                 train_w_action = (
                     self.scheduler.training_weight(timestep_action.flatten(0, 1))
@@ -1596,7 +1641,10 @@ class WANPolicyHead(ActionHead):
                     -1, *([1] * (action_loss_per_sample.ndim - 1))
                 ).float()
                 action_loss_per_sample = has_real_view * action_loss_per_sample
-                action_loss_per_sample = self._apply_action_loss_weights(action_loss_per_sample)
+                action_loss_per_sample = self._apply_action_loss_weights(
+                    action_loss_per_sample,
+                    actions=actions,
+                )
                 weight_action = action_loss_per_sample.mean(dim=2) * self.scheduler.training_weight(
                     timestep_action.flatten(0, 1),
                 ).unflatten(0, (noise_action.shape[0], noise_action.shape[1])).to(self._device)
