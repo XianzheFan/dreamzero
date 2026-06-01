@@ -683,10 +683,19 @@ class LeRobotSingleDataset(Dataset):
                 state_data = full_state_data[:, state_start:state_end]
                 action_data = full_action_data[:, action_start:action_end]
                 
-                # Calculate usable length based on action delta indices
+                # Calculate usable length based on action delta indices.
+                # If the dataset provides meta/step_filter.jsonl, use the
+                # same kept anchor indices here so relative-action
+                # normalization is computed over the actual training samples.
                 usable_length = len(traj_data) - max(action_delta_indices)
-                
-                for i in range(usable_length):
+                allowed_indices = self.step_filter.get(traj_id)
+                if allowed_indices is None:
+                    anchor_indices = range(usable_length)
+                else:
+                    anchor_indices = allowed_indices[allowed_indices < usable_length]
+
+                for i in anchor_indices:
+                    i = int(i)
                     # Get reference state (last state before action chunk)
                     ref_state_idx = state_delta_indices[-1] + i
                     if ref_state_idx >= len(state_data):
@@ -801,10 +810,17 @@ class LeRobotSingleDataset(Dataset):
                 state_data = full_state_data[:, state_start:state_end]
                 action_data = full_action_data[:, action_start:action_end]
                 
-                # Calculate usable length based on action delta indices
+                # Calculate usable length based on action delta indices.
+                # Match training sampling by honoring meta/step_filter.jsonl.
                 usable_length = len(traj_data) - max(action_delta_indices)
-                
-                for i in range(usable_length):
+                allowed_indices = self.step_filter.get(traj_id)
+                if allowed_indices is None:
+                    anchor_indices = range(usable_length)
+                else:
+                    anchor_indices = allowed_indices[allowed_indices < usable_length]
+
+                for i in anchor_indices:
+                    i = int(i)
                     # Get reference state (last state before action chunk)
                     ref_state_idx = state_delta_indices[-1] + i
                     if ref_state_idx >= len(state_data):

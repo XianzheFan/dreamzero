@@ -30,6 +30,8 @@ modality names so the bimanual DreamZero transform can be reused)::
         videos/chunk-000/observation.images.agent0/episode_000000.mp4
         videos/chunk-000/observation.images.agent1/episode_000000.mp4
         meta/{info,modality,episodes,tasks,stats,embodiment}.{json,jsonl}
+        meta/step_filter.jsonl
+        meta/relative_stats_dreamzero.json
 
 State / action layout (16 dims total, matches ``robofactory``)::
 
@@ -41,6 +43,12 @@ Actions are stored as absolute next-step qpos targets. DreamZero's
 ``target_qpos - current_qpos`` on the fly and normalizes those relative
 joint offsets, matching the DROID-style pretraining convention. Grippers
 remain absolute 0/1 targets.
+
+Idle anchors are excluded through ``meta/step_filter.jsonl`` instead of
+deleting frames. This keeps videos/parquets simple while matching the
+DreamZero loader's existing step-filter contract. The relative action
+statistics are computed from the same kept anchors, so normalization and
+training samples stay aligned.
 
 Usage::
 
@@ -92,6 +100,11 @@ ARM_STATE_DIM = 8   # 7 joints + 1 gripper finger
 ARM_ACTION_DIM = 8
 STATE_DIM = 2 * ARM_STATE_DIM  # 16
 ACTION_DIM = 2 * ARM_ACTION_DIM  # 16
+JOINT_INDICES = np.array([0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14])
+RELATIVE_ACTION_SLICES = {
+    "panda0_joint_pos": slice(0, 7),
+    "panda1_joint_pos": slice(8, 15),
+}
 
 
 def _decode_jpeg_stream(rgb_dataset: h5py.Dataset, T: int) -> np.ndarray:
@@ -171,17 +184,117 @@ def _read_state_and_action(traj: h5py.File) -> tuple[np.ndarray, np.ndarray]:
     return state[:-1], action                      # T-1 rows each
 
 
+def _next_step_joint_motion_scores(
+    state: np.ndarray,
+    action: np.ndarray,
+) -> np.ndarray:
+    """Score each anchor by its next-step joint displacement."""
+    scores = np.zeros(len(state), dtype=np.float32)
+    joint_delta = action[:, JOINT_INDICES] - state[:, JOINT_INDICES]
+    scores[: len(joint_delta)] = np.linalg.norm(joint_delta, axis=1)
+    return scores
+
+
+def _step_filter_and_relative_samples(
+    state: np.ndarray,
+    action: np.ndarray,
+    action_horizon: int,
+    idle_threshold: float,
+) -> tuple[list[int], dict[str, np.ndarray], dict[str, float]]:
+    """Return excluded anchor indices and relative joint samples to normalize.
+
+    ``step_filter.jsonl`` stores indices to remove. A row is treated as idle
+    when its next-step joint target stays within ``idle_threshold`` L2
+    distance from the anchor state. Relative stats are pooled over the same
+    kept anchors and the full action horizon.
+    """
+    if action_horizon <= 0:
+        raise ValueError(f"action_horizon must be positive, got {action_horizon}")
+
+    scores = _next_step_joint_motion_scores(state, action)
+    filtered = np.flatnonzero(scores <= idle_threshold).astype(np.int64)
+
+    # Keep at least one valid anchor so tiny smoke datasets remain usable.
+    if len(filtered) == len(state) and len(state) > 0:
+        filtered = filtered[filtered != int(np.argmax(scores))]
+
+    filtered_set = set(int(i) for i in filtered.tolist())
+    usable_length = max(0, len(action) - action_horizon + 1)
+    rel_samples: dict[str, list[np.ndarray]] = {
+        key: [] for key in RELATIVE_ACTION_SLICES
+    }
+
+    kept_full_horizon = 0
+    for anchor_idx in range(usable_length):
+        if anchor_idx in filtered_set:
+            continue
+        kept_full_horizon += 1
+        for key, slc in RELATIVE_ACTION_SLICES.items():
+            rel = (
+                action[anchor_idx : anchor_idx + action_horizon, slc]
+                - state[anchor_idx, slc]
+            )
+            rel_samples[key].append(rel.astype(np.float32, copy=False))
+
+    rel_arrays = {
+        key: (
+            np.concatenate(chunks, axis=0)
+            if chunks
+            else np.empty((0, slc.stop - slc.start), dtype=np.float32)
+        )
+        for key, chunks in rel_samples.items()
+        for slc in [RELATIVE_ACTION_SLICES[key]]
+    }
+    summary = {
+        "num_rows": float(len(state)),
+        "filtered_rows": float(len(filtered)),
+        "kept_rows": float(len(state) - len(filtered)),
+        "kept_full_horizon_anchors": float(kept_full_horizon),
+        "idle_threshold": float(idle_threshold),
+        "motion_score_p50": float(np.quantile(scores, 0.50)) if len(scores) else 0.0,
+        "motion_score_p95": float(np.quantile(scores, 0.95)) if len(scores) else 0.0,
+    }
+    return filtered.tolist(), rel_arrays, summary
+
+
+def _per_dim_stats(arr: np.ndarray) -> dict[str, list[float]]:
+    return {
+        "mean": arr.mean(axis=0).tolist(),
+        "std": (arr.std(axis=0) + 1e-8).tolist(),
+        "min": arr.min(axis=0).tolist(),
+        "max": arr.max(axis=0).tolist(),
+        "q01": np.quantile(arr, 0.01, axis=0).tolist(),
+        "q99": np.quantile(arr, 0.99, axis=0).tolist(),
+    }
+
+
 def convert_episode(
     traj_path: Path,
     episode_index: int,
     task_index: int,
     out_root: Path,
     cumulative_index: int,
-) -> tuple[int, np.ndarray, np.ndarray, tuple[int, int]]:
+    action_horizon: int,
+    idle_threshold: float,
+) -> tuple[
+    int,
+    np.ndarray,
+    np.ndarray,
+    tuple[int, int],
+    list[int],
+    dict[str, np.ndarray],
+    dict[str, float],
+]:
     """Write one .parquet + N .mp4 files for one episode."""
     with h5py.File(traj_path, "r") as traj:
         state, action = _read_state_and_action(traj)
         T = state.shape[0]
+        step_filter, relative_samples, filter_summary = _step_filter_and_relative_samples(
+            state=state,
+            action=action,
+            action_horizon=action_horizon,
+            idle_threshold=idle_threshold,
+        )
 
         chunk_idx = episode_index // CHUNK_SIZE
         chunk_dir = f"chunk-{chunk_idx:03d}"
@@ -216,7 +329,7 @@ def convert_episode(
             encode_video(rgb, video_dir / f"episode_{episode_index:06d}.mp4", FPS)
 
     assert sample_hw is not None
-    return T, action, state, sample_hw
+    return T, action, state, sample_hw, step_filter, relative_samples, filter_summary
 
 
 def write_meta(
@@ -228,6 +341,10 @@ def write_meta(
     sample_video_hw: tuple[int, int],
     actions: list[np.ndarray],
     states: list[np.ndarray],
+    step_filters: list[list[int]],
+    relative_samples: dict[str, list[np.ndarray]],
+    idle_filter_summaries: list[dict[str, float]],
+    action_horizon: int,
 ) -> None:
     meta = out_root / "meta"
     meta.mkdir(parents=True, exist_ok=True)
@@ -350,6 +467,14 @@ def write_meta(
     with (meta / "tasks.jsonl").open("w") as f:
         f.write(json.dumps({"task_index": 0, "task": task_text}) + "\n")
 
+    with (meta / "step_filter.jsonl").open("w") as f:
+        for ep_idx, step_indices in enumerate(step_filters):
+            f.write(json.dumps({
+                "episode_index": ep_idx,
+                "step_indices": step_indices,
+                "reason": "idle_next_step_joint_motion",
+            }) + "\n")
+
     (meta / "embodiment.json").write_text(json.dumps({
         "robot_type": "bi_panda_robotwin",
         # Reuse the existing robofactory embodiment tag so we don't need
@@ -360,33 +485,50 @@ def write_meta(
     all_actions = np.concatenate(actions, axis=0)
     all_states = np.concatenate(states, axis=0)
 
-    def per_dim_stats(arr: np.ndarray) -> dict[str, list[float]]:
-        return {
-            "mean": arr.mean(axis=0).tolist(),
-            "std": (arr.std(axis=0) + 1e-8).tolist(),
-            "min": arr.min(axis=0).tolist(),
-            "max": arr.max(axis=0).tolist(),
-            "q01": np.quantile(arr, 0.01, axis=0).tolist(),
-            "q99": np.quantile(arr, 0.99, axis=0).tolist(),
-        }
-
     stats = {
-        "observation.state": per_dim_stats(all_states.astype(np.float32)),
-        "action": per_dim_stats(all_actions.astype(np.float32)),
-        "timestamp": per_dim_stats(np.array([[0.0]], dtype=np.float32)),
+        "observation.state": _per_dim_stats(all_states.astype(np.float32)),
+        "action": _per_dim_stats(all_actions.astype(np.float32)),
+        "timestamp": _per_dim_stats(np.array([[0.0]], dtype=np.float32)),
     }
     (meta / "stats.json").write_text(json.dumps(stats, indent=2))
 
-    # If the user reuses an output directory that was previously converted
-    # with a different action convention, force DreamZero to recalculate
-    # relative stats from the new absolute action rows on the next train.
-    for stale_name in (
-        "relative_stats_dreamzero.json",
-        "relative_horizon_stats_dreamzero.json",
-    ):
-        stale_path = meta / stale_name
-        if stale_path.exists():
-            stale_path.unlink()
+    relative_stats = {}
+    for key, chunks in relative_samples.items():
+        if not chunks:
+            continue
+        arr = np.concatenate(chunks, axis=0).astype(np.float32)
+        relative_stats[key] = _per_dim_stats(arr)
+    if not relative_stats:
+        raise RuntimeError("idle filter removed all full-horizon relative action samples")
+    (meta / "relative_stats_dreamzero.json").write_text(
+        json.dumps(relative_stats, indent=2)
+    )
+    horizon_stats = meta / "relative_horizon_stats_dreamzero.json"
+    if horizon_stats.exists():
+        horizon_stats.unlink()
+
+    filter_summary = {
+        "action_horizon": action_horizon,
+        "num_episodes": num_episodes,
+        "total_rows": int(sum(item["num_rows"] for item in idle_filter_summaries)),
+        "filtered_rows": int(sum(item["filtered_rows"] for item in idle_filter_summaries)),
+        "kept_rows": int(sum(item["kept_rows"] for item in idle_filter_summaries)),
+        "kept_full_horizon_anchors": int(
+            sum(item["kept_full_horizon_anchors"] for item in idle_filter_summaries)
+        ),
+        "idle_threshold": idle_filter_summaries[0]["idle_threshold"]
+        if idle_filter_summaries
+        else None,
+        "motion_score_p50_mean": float(
+            np.mean([item["motion_score_p50"] for item in idle_filter_summaries])
+        ) if idle_filter_summaries else 0.0,
+        "motion_score_p95_mean": float(
+            np.mean([item["motion_score_p95"] for item in idle_filter_summaries])
+        ) if idle_filter_summaries else 0.0,
+    }
+    (meta / "idle_filter_summary.json").write_text(
+        json.dumps(filter_summary, indent=2)
+    )
 
 
 def _list_episodes(episode_dir: Path) -> list[Path]:
@@ -407,6 +549,10 @@ def main() -> None:
                         help="Natural-language task description")
     parser.add_argument("--num-episodes", type=int, default=-1,
                         help="Number of episodes to convert (-1 = all)")
+    parser.add_argument("--action-horizon", type=int, default=24,
+                        help="Action horizon used for idle filtering and relative stats")
+    parser.add_argument("--idle-filter-threshold", type=float, default=1e-3,
+                        help="Filter anchors whose future joint-motion L2 max is <= this")
     args = parser.parse_args()
 
     args.out.mkdir(parents=True, exist_ok=True)
@@ -417,16 +563,23 @@ def main() -> None:
     episode_lengths: list[int] = []
     actions_buf: list[np.ndarray] = []
     states_buf: list[np.ndarray] = []
+    step_filters: list[list[int]] = []
+    relative_samples: dict[str, list[np.ndarray]] = {
+        key: [] for key in RELATIVE_ACTION_SLICES
+    }
+    idle_filter_summaries: list[dict[str, float]] = []
     cumulative = 0
     sample_hw: tuple[int, int] | None = None
 
     for ep_idx, fp in enumerate(tqdm(episode_files, desc="episodes")):
-        T, action, state, hw = convert_episode(
+        T, action, state, hw, step_filter, rel_samples, filter_summary = convert_episode(
             traj_path=fp,
             episode_index=ep_idx,
             task_index=0,
             out_root=args.out,
             cumulative_index=cumulative,
+            action_horizon=args.action_horizon,
+            idle_threshold=args.idle_filter_threshold,
         )
         if sample_hw is None:
             sample_hw = hw
@@ -434,6 +587,11 @@ def main() -> None:
         episode_lengths.append(T)
         actions_buf.append(action)
         states_buf.append(state)
+        step_filters.append(step_filter)
+        idle_filter_summaries.append(filter_summary)
+        for key, arr in rel_samples.items():
+            if len(arr):
+                relative_samples[key].append(arr)
 
     assert sample_hw is not None
     write_meta(
@@ -445,8 +603,17 @@ def main() -> None:
         sample_video_hw=sample_hw,
         actions=actions_buf,
         states=states_buf,
+        step_filters=step_filters,
+        relative_samples=relative_samples,
+        idle_filter_summaries=idle_filter_summaries,
+        action_horizon=args.action_horizon,
     )
-    print(f"Done. {len(episode_lengths)} episodes / {cumulative} frames -> {args.out}")
+    filtered = sum(len(indices) for indices in step_filters)
+    kept = cumulative - filtered
+    print(
+        f"Done. {len(episode_lengths)} episodes / {cumulative} frames "
+        f"({kept} kept anchors, {filtered} idle-filtered) -> {args.out}"
+    )
 
 
 if __name__ == "__main__":

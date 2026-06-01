@@ -27,7 +27,7 @@ relative_action_keys:
   - panda0_joint_pos
   - panda1_joint_pos
 max_chunk_size: 5
-dataset_shard_sampling_rate: 0.1
+dataset_shard_sampling_rate: 1.0
 mixture_dataset_cls: groot.vla.data.dataset.lerobot_sharded.ShardedLeRobotMixtureDataset.from_mixture_spec
 single_dataset_cls: groot.vla.data.dataset.lerobot_sharded.ShardedLeRobotSubLangSingleActionChunkDatasetDROID
 
