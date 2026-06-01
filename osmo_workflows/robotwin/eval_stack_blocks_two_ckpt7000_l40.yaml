@@ -1,0 +1,515 @@
+workflow:
+  timeout:
+    queue_timeout: 2h
+    exec_timeout: 8h
+  name: dreamzero-rt-stack-blocks-two-eval-ckpt7000-l40-xianzhef-20260601
+  resources:
+    default:
+      cpu: 31
+      gpu: 2
+      memory: 240Gi
+      storage: 720Gi
+  tasks:
+    - name: eval-stack
+      image: nvcr.io/nvidian/gr00t_isaac:v1.5
+      command: ["bash"]
+      credentials:
+        gear-aws-cred:
+          AWS_ACCESS_KEY_ID: aws_access_key_id
+          AWS_SECRET_ACCESS_KEY: aws_secret_access_key
+          AWS_DEFAULT_REGION: aws_default_region
+          AWS_ENDPOINT_URL: aws_endpoint_url
+        gear-data-credentials:
+          GEAR_DATA_CREDENTIALS: data_credentials
+      environment:
+        ACCEPT_EULA: "Y"
+        NO_NUCLEUS: "Y"
+        NVIDIA_DRIVER_CAPABILITIES: "all"
+      args: ["/tmp/eval_stack_blocks_two.sh"]
+      files:
+        - path: /tmp/eval_stack_blocks_two.sh
+          contents: |
+            #!/usr/bin/env bash
+            set -euo pipefail
+
+            exec > >(tee /tmp/eval_stack_blocks_two.log) 2>&1
+
+            RUN_NAME="dreamzero-rt-stack-blocks-two-eval-ckpt7000-l40-xianzhef-20260601"
+            CODE_S3_URI="s3://GearHome/users/xianzhef/oci-migration/dreamzero"
+            MODEL_CACHE_S3_URI="s3://GearHome/users/xianzhef/oci-migration/checkpoints"
+            EVAL_CKPT_S3_URI="s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/dreamzero-rt-stack-blocks-two-train-shared-global-xianzhef-20260531-231103/eval_checkpoints"
+            RUN_S3_ROOT="s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/${RUN_NAME}"
+            OUT_S3_URI="${RUN_S3_ROOT}/stack_blocks_two_checkpoint-7000"
+            OSMO_CACHE_ROOT="${OSMO_CACHE_ROOT:-/mnt/amlfs-04/home/xianzhef/osmo_cache}"
+            DREAMZERO_CACHE_ROOT="${DREAMZERO_CACHE_ROOT:-${OSMO_CACHE_ROOT}/dreamzero}"
+            DREAMZERO_VENV="${DREAMZERO_CACHE_ROOT}/venvs/server_py312_system"
+            AMLFS_MODEL_CACHE_DIR="${DREAMZERO_CACHE_ROOT}/checkpoints"
+            EVAL_CKPT_ROOT="${DREAMZERO_CACHE_ROOT}/eval_ckpts/robotwin_stack_blocks_two_ckpt7000"
+            ROBOTWIN_REPO_CACHE="${ROBOTWIN_REPO_CACHE:-${OSMO_CACHE_ROOT}/RoboTwin}"
+            ROBOTWIN_ENV_DIR="${ROBOTWIN_ENV_DIR:-${OSMO_CACHE_ROOT}/robotwin_env}"
+            CKPT_SETTING="checkpoint-7000"
+            PORT=5001
+            TASK_NAME="stack_blocks_two"
+            TASK_CONFIG="demo_full_franka"
+            SEED=0
+            NUM_EPISODES=5
+
+            for uri in "$CODE_S3_URI" "$MODEL_CACHE_S3_URI" "$EVAL_CKPT_S3_URI" "$RUN_S3_ROOT" "$OUT_S3_URI"; do
+              case "$uri" in
+                s3://GearHome/users/xianzhef/*) ;;
+                *) echo "Refusing non-xianzhef S3 URI: $uri" >&2; exit 64 ;;
+              esac
+            done
+
+            for path in "$OSMO_CACHE_ROOT" "$AMLFS_MODEL_CACHE_DIR" "$EVAL_CKPT_ROOT" "$ROBOTWIN_REPO_CACHE" "$ROBOTWIN_ENV_DIR"; do
+              case "$path" in
+                /mnt/amlfs-04/home/xianzhef/*) ;;
+                *) echo "Refusing non-xianzhef AMLFS path: $path" >&2; exit 64 ;;
+              esac
+            done
+
+            upload_artifacts() {
+              local status="${1:-$?}"
+              set +e
+              mkdir -p /workspace/robotwin_eval_outputs
+              cp -f /tmp/eval_stack_blocks_two.log /workspace/robotwin_eval_outputs/eval_stack_blocks_two.log
+              if [ -f /tmp/server.log ]; then cp -f /tmp/server.log /workspace/robotwin_eval_outputs/server.log; fi
+              if [ -f /tmp/client.log ]; then cp -f /tmp/client.log /workspace/robotwin_eval_outputs/client.log; fi
+              if [ -d /workspace/robotwin/eval_result ]; then
+                cp -a /workspace/robotwin/eval_result /workspace/robotwin_eval_outputs/eval_result
+              fi
+              echo "Uploading eval artifacts to ${OUT_S3_URI}/"
+              osmo data upload "${OUT_S3_URI}/" /workspace/robotwin_eval_outputs
+              exit "$status"
+            }
+
+            cleanup() {
+              if [ -n "${SERVER_PID:-}" ] && kill -0 "$SERVER_PID" 2>/dev/null; then
+                echo "Stopping policy server pid=${SERVER_PID}"
+                kill "$SERVER_PID" 2>/dev/null || true
+                wait "$SERVER_PID" 2>/dev/null || true
+              fi
+            }
+
+            on_exit() {
+              status=$?
+              cleanup
+              upload_artifacts "$status"
+            }
+            trap on_exit EXIT
+
+            export PYTHONUNBUFFERED=1
+            export HYDRA_FULL_ERROR=1
+            export GIT_LFS_SKIP_SMUDGE=1
+            export ATTENTION_BACKEND=flex
+            export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+            export CUDA_MODULE_LOADING=LAZY
+            export HF_HOME="${DREAMZERO_CACHE_ROOT}/hf"
+            export HF_HUB_CACHE="${HF_HOME}/hub"
+            export TRANSFORMERS_CACHE="${HF_HOME}/transformers"
+            export NO_ALBUMENTATIONS_UPDATE=1
+            export PIP_ROOT_USER_ACTION=ignore
+
+            mkdir -p \
+              /workspace/code \
+              /workspace/code/dreamzero \
+              /workspace/checkpoints \
+              /workspace/eval_ckpts \
+              /workspace/robotwin_eval_outputs \
+              "$HF_HOME" \
+              "$(dirname "$DREAMZERO_VENV")" \
+              "$AMLFS_MODEL_CACHE_DIR" \
+              "$EVAL_CKPT_ROOT"
+
+            echo "Using persistent OSMO cache root: $OSMO_CACHE_ROOT"
+            df -h "$OSMO_CACHE_ROOT" || true
+            nvidia-smi || true
+
+            dir_has_files() {
+              [ -d "$1" ] && [ -n "$(find "$1" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]
+            }
+
+            hf_download() {
+              repo="$1"
+              repo_type="$2"
+              dest="$3"
+              mkdir -p "$dest"
+              if command -v hf >/dev/null 2>&1; then
+                hf download "$repo" --repo-type "$repo_type" --local-dir "$dest"
+              else
+                huggingface-cli download "$repo" --repo-type "$repo_type" --local-dir "$dest"
+              fi
+            }
+
+            model_dir_is_usable() {
+              cache_name="$1"
+              dest="$2"
+              case "$cache_name" in
+                Wan2.1-I2V-14B-480P)
+                  [ -f "$dest/Wan2.1_VAE.pth" ] &&
+                    [ -f "$dest/models_t5_umt5-xxl-enc-bf16.pth" ] &&
+                    [ -f "$dest/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth" ]
+                  ;;
+                DreamZero-DROID)
+                  [ -f "$dest/model.safetensors" ] || [ -f "$dest/model.safetensors.index.json" ]
+                  ;;
+                umt5-xxl-tokenizer)
+                  [ -f "$dest/tokenizer_config.json" ] && { [ -f "$dest/tokenizer.json" ] || [ -f "$dest/spiece.model" ]; }
+                  ;;
+                *)
+                  dir_has_files "$dest"
+                  ;;
+              esac
+            }
+
+            resolve_model_root() {
+              cache_name="$1"
+              dest="$2"
+              if model_dir_is_usable "$cache_name" "$dest"; then
+                printf '%s\n' "$dest"
+                return 0
+              fi
+              case "$cache_name" in
+                Wan2.1-I2V-14B-480P)
+                  root="$(find "$dest" -maxdepth 4 -name Wan2.1_VAE.pth -print -quit 2>/dev/null || true)"
+                  ;;
+                DreamZero-DROID)
+                  root="$(find "$dest" -maxdepth 4 \( -name model.safetensors -o -name model.safetensors.index.json \) -print -quit 2>/dev/null || true)"
+                  ;;
+                umt5-xxl-tokenizer)
+                  root="$(find "$dest" -maxdepth 4 -name tokenizer_config.json -print -quit 2>/dev/null || true)"
+                  ;;
+                *)
+                  root=""
+                  ;;
+              esac
+              if [ -n "${root:-}" ]; then
+                dirname "$root"
+                return 0
+              fi
+              return 1
+            }
+
+            promote_model_root() {
+              resolved="$1"
+              dest="$2"
+              if [ "$resolved" = "$dest" ]; then
+                return 0
+              fi
+              echo "Promoting nested model cache from ${resolved} into ${dest}."
+              case "$resolved" in
+                "$dest"/*)
+                  find "$resolved" -mindepth 1 -maxdepth 1 -exec mv -n -t "$dest" {} + || true
+                  cp -an "${resolved}/." "$dest/" || true
+                  ;;
+                *)
+                  cp -an "${resolved}/." "$dest/"
+                  ;;
+              esac
+            }
+
+            download_or_restore_model() {
+              cache_name="$1"
+              repo="$2"
+              repo_type="$3"
+              dest="$4"
+              mkdir -p "$dest"
+
+              if model_dir_is_usable "$cache_name" "$dest"; then
+                echo "Model/tokenizer already present locally: $dest"
+                date -u +"%Y-%m-%dT%H:%M:%SZ" > "$dest/.cache_complete"
+                return 0
+              fi
+
+              echo "Trying xianzhef S3 model cache: ${MODEL_CACHE_S3_URI}/${cache_name}/"
+              set +e
+              osmo data download --resume "${MODEL_CACHE_S3_URI}/${cache_name}/" "$dest"
+              cache_status=$?
+              set -e
+              resolved_cache_root="$(resolve_model_root "$cache_name" "$dest" || true)"
+              if [ "$cache_status" -eq 0 ] && [ -n "$resolved_cache_root" ]; then
+                promote_model_root "$resolved_cache_root" "$dest"
+                if model_dir_is_usable "$cache_name" "$dest"; then
+                  echo "Restored ${cache_name} from xianzhef S3 cache."
+                  date -u +"%Y-%m-%dT%H:%M:%SZ" > "$dest/.cache_complete"
+                  return 0
+                fi
+              fi
+
+              if ! command -v huggingface-cli >/dev/null 2>&1 && ! command -v hf >/dev/null 2>&1; then
+                "$SERVER_PYTHON" -m pip install -q "huggingface_hub[cli]"
+              fi
+              echo "No usable S3 cache for ${cache_name}; downloading from Hugging Face repo ${repo}."
+              hf_download "$repo" "$repo_type" "$dest"
+              resolved_download_root="$(resolve_model_root "$cache_name" "$dest" || true)"
+              if [ -n "$resolved_download_root" ]; then
+                promote_model_root "$resolved_download_root" "$dest"
+              fi
+              if ! model_dir_is_usable "$cache_name" "$dest"; then
+                echo "ERROR: downloaded ${cache_name}, but required files are missing." >&2
+                find "$dest" -maxdepth 3 -type f | head -100 >&2
+                exit 8
+              fi
+              date -u +"%Y-%m-%dT%H:%M:%SZ" > "$dest/.cache_complete"
+            }
+
+            echo "Downloading DreamZero code from ${CODE_S3_URI}/"
+            osmo data download --resume "${CODE_S3_URI}/" /workspace/code/dreamzero
+            CODE_ROOT="/workspace/code/dreamzero"
+            if [ ! -f "$CODE_ROOT/pyproject.toml" ]; then
+              found_pyproject="$(find /workspace/code -maxdepth 4 -name pyproject.toml -print -quit)"
+              if [ -n "$found_pyproject" ]; then
+                CODE_ROOT="$(dirname "$found_pyproject")"
+              fi
+            fi
+            test -f "$CODE_ROOT/pyproject.toml"
+
+            echo "Preparing DreamZero server Python 3.12 environment at ${DREAMZERO_VENV}"
+            cd "$CODE_ROOT"
+            if [ ! -x "${DREAMZERO_VENV}/bin/python" ]; then
+              uv venv --python /usr/bin/python3.12 --system-site-packages "$DREAMZERO_VENV"
+            fi
+            SERVER_PYTHON="${DREAMZERO_VENV}/bin/python"
+            export PATH="${DREAMZERO_VENV}/bin:${PATH}"
+            "$SERVER_PYTHON" --version
+            "$SERVER_PYTHON" -m pip install -q --upgrade "pip<25.3" "setuptools>=64,<80" wheel
+            if [ ! -f "${DREAMZERO_VENV}/.dreamzero_eval_deps_v1" ]; then
+              "$SERVER_PYTHON" -m pip install -q \
+                "websockets>=12" \
+                msgpack \
+                msgpack-numpy \
+                hydra-core \
+                omegaconf \
+                safetensors \
+                "einops==0.8.1" \
+                "transformers==4.51.3" \
+                "diffusers==0.30.2" \
+                "peft==0.5.0" \
+                accelerate \
+                dm-tree \
+                "albumentations==1.4.18" \
+                torchvision \
+                "av==15.0.0" \
+                pillow \
+                ftfy \
+                sentencepiece \
+                termcolor \
+                tiktoken \
+                timm \
+                loguru
+              date -u +"%Y-%m-%dT%H:%M:%SZ" > "${DREAMZERO_VENV}/.dreamzero_eval_deps_v1"
+            else
+              echo "DreamZero eval dependency cache already present: ${DREAMZERO_VENV}"
+            fi
+            "$SERVER_PYTHON" -m pip install -q -e . --no-deps
+
+            WAN_CKPT_DIR="${AMLFS_MODEL_CACHE_DIR}/Wan2.1-I2V-14B-480P"
+            TOKENIZER_DIR="${AMLFS_MODEL_CACHE_DIR}/umt5-xxl-tokenizer"
+            PRETRAINED_DIR="${AMLFS_MODEL_CACHE_DIR}/DreamZero-DROID"
+            download_or_restore_model "Wan2.1-I2V-14B-480P" "Wan-AI/Wan2.1-I2V-14B-480P" "model" "$WAN_CKPT_DIR"
+            download_or_restore_model "umt5-xxl-tokenizer" "google/umt5-xxl" "model" "$TOKENIZER_DIR"
+            download_or_restore_model "DreamZero-DROID" "GEAR-Dreams/DreamZero-DROID" "model" "$PRETRAINED_DIR"
+            ln -sfn "$WAN_CKPT_DIR" /workspace/checkpoints/Wan2.1-I2V-14B-480P
+            ln -sfn "$TOKENIZER_DIR" /workspace/checkpoints/umt5-xxl-tokenizer
+            ln -sfn "$PRETRAINED_DIR" /workspace/checkpoints/DreamZero-DROID
+
+            echo "Restoring eval checkpoint ${CKPT_SETTING}"
+            if [ ! -f "${EVAL_CKPT_ROOT}/${CKPT_SETTING}/model.safetensors" ]; then
+              rm -rf /workspace/eval_ckpts/import
+              mkdir -p /workspace/eval_ckpts/import
+              osmo data download --resume "${EVAL_CKPT_S3_URI}/" /workspace/eval_ckpts/import
+              found_model="$(find /workspace/eval_ckpts/import -path "*/${CKPT_SETTING}/model.safetensors" -print -quit)"
+              if [ -z "$found_model" ]; then
+                echo "ERROR: did not find ${CKPT_SETTING}/model.safetensors after checkpoint download." >&2
+                find /workspace/eval_ckpts/import -maxdepth 5 -type f | head -100 >&2
+                exit 9
+              fi
+              found_ckpt="$(dirname "$found_model")"
+              mkdir -p "${EVAL_CKPT_ROOT}/${CKPT_SETTING}"
+              cp -an "${found_ckpt}/." "${EVAL_CKPT_ROOT}/${CKPT_SETTING}/"
+            fi
+            test -f "${EVAL_CKPT_ROOT}/${CKPT_SETTING}/model.safetensors"
+            test -f "${EVAL_CKPT_ROOT}/${CKPT_SETTING}/experiment_cfg/conf.yaml"
+            date -u +"%Y-%m-%dT%H:%M:%SZ" > "${EVAL_CKPT_ROOT}/${CKPT_SETTING}/.cache_complete"
+            du -sh "${EVAL_CKPT_ROOT}/${CKPT_SETTING}"
+
+            echo "Preparing RoboTwin workspace overlay"
+            test -d "$ROBOTWIN_REPO_CACHE"
+            test -d "$ROBOTWIN_ENV_DIR"
+            rm -rf /workspace/robotwin
+            mkdir -p /workspace/robotwin
+            for p in "${ROBOTWIN_REPO_CACHE}"/*; do
+              base="$(basename "$p")"
+              if [ "$base" = "script" ]; then
+                cp -a "$p" /workspace/robotwin/script
+              else
+                ln -sfn "$p" "/workspace/robotwin/$base"
+              fi
+            done
+            python - <<'PY'
+            from pathlib import Path
+
+            p = Path("/workspace/robotwin/script/eval_policy.py")
+            s = p.read_text()
+            old_test_num = "    test_num = 100\n"
+            new_test_num = '    test_num = int(os.environ.get("ROBOTWIN_EVAL_EPISODES", "100"))\n'
+            if old_test_num not in s:
+                raise SystemExit("did not find hard-coded test_num line")
+            s = s.replace(old_test_num, new_test_num, 1)
+            old_episode_info = '            episode_info_list = [TASK_ENV.info.get("info", {})]\n'
+            new_episode_info = (
+                "            if task_name == \"stack_blocks_two\" and hasattr(TASK_ENV, \"block1\") and hasattr(TASK_ENV, \"block2\"):\n"
+                "                def _stack_arm_tag(actor):\n"
+                "                    return \"left\" if actor.get_pose().p[0] < 0 else \"right\"\n"
+                "                episode_info_list = [{\"{A}\": \"red block\", \"{B}\": \"green block\", \"{a}\": _stack_arm_tag(TASK_ENV.block1), \"{b}\": _stack_arm_tag(TASK_ENV.block2)}]\n"
+                "            else:\n"
+                "                episode_info_list = [TASK_ENV.info.get(\"info\", {})]\n"
+            )
+            if old_episode_info not in s:
+                raise SystemExit("did not find episode info block")
+            s = s.replace(old_episode_info, new_episode_info, 1)
+            old_instruction = '            else "use the robot arm to pick up the hammer and hit the block"\n'
+            new_instruction = '            else (_ for _ in ()).throw(RuntimeError("No valid instruction generated for %s with episode_info=%r" % (args["task_name"], episode_info_list[0])))\n'
+            if old_instruction not in s:
+                raise SystemExit("did not find hammer instruction fallback")
+            s = s.replace(old_instruction, new_instruction, 1)
+            old_set_instruction = "        TASK_ENV.set_instruction(instruction=instruction)  # set language instruction\n"
+            new_set_instruction = (
+                "        print(f\"Episode {now_id}: episode_info={episode_info_list[0]}\", flush=True)\n"
+                "        print(f\"Episode {now_id}: instruction={instruction}\", flush=True)\n"
+                "        TASK_ENV.set_instruction(instruction=instruction)  # set language instruction\n"
+            )
+            if old_set_instruction not in s:
+                raise SystemExit("did not find set_instruction line")
+            s = s.replace(old_set_instruction, new_set_instruction, 1)
+            p.write_text(s)
+            PY
+
+            configure_nvidia_graphics() {
+              mkdir -p /tmp/nvidia-vulkan /tmp/nvidia-egl
+              cat >/tmp/nvidia-vulkan/nvidia_icd.json <<'EOF'
+            {
+              "file_format_version": "1.0.0",
+              "ICD": {
+                "library_path": "libGLX_nvidia.so.0",
+                "api_version": "1.2.140"
+              }
+            }
+            EOF
+              cat >/tmp/nvidia-egl/10_nvidia.json <<'EOF'
+            {
+              "file_format_version": "1.0.0",
+              "ICD": {
+                "library_path": "libEGL_nvidia.so.0"
+              }
+            }
+            EOF
+              export VK_ICD_FILENAMES=/tmp/nvidia-vulkan/nvidia_icd.json
+              export __EGL_VENDOR_LIBRARY_FILENAMES=/tmp/nvidia-egl/10_nvidia.json
+              export __GLX_VENDOR_LIBRARY_NAME=nvidia
+            }
+
+            prepare_robotwin_runtime() {
+              ROBOTWIN_PYTHON="${ROBOTWIN_ENV_DIR}/bin/python3.10"
+              if [ ! -e "$ROBOTWIN_PYTHON" ]; then
+                ROBOTWIN_PYTHON="$(find "$ROBOTWIN_ENV_DIR" -path '*/bin/python' -print -quit 2>/dev/null || true)"
+              fi
+              if [ ! -e "$ROBOTWIN_PYTHON" ]; then
+                echo "ERROR: could not locate RoboTwin Python under $ROBOTWIN_ENV_DIR" >&2
+                exit 11
+              fi
+              chmod u+x "$ROBOTWIN_PYTHON" 2>/dev/null || true
+              ROBOTWIN_BIN_DIR="$(dirname "$ROBOTWIN_PYTHON")"
+              ROBOTWIN_PREFIX="$(dirname "$ROBOTWIN_BIN_DIR")"
+              export CONDA_PREFIX="$ROBOTWIN_PREFIX"
+              export PYTHONHOME="$ROBOTWIN_PREFIX"
+              export PATH="${ROBOTWIN_BIN_DIR}:${PATH}"
+              export LD_LIBRARY_PATH="${ROBOTWIN_PREFIX}/lib:/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}"
+              export PYTHONPATH="/workspace/robotwin:${PYTHONPATH:-}"
+              export ROBOTWIN_PYTHON
+              "$ROBOTWIN_PYTHON" - <<'PY'
+            import importlib.util
+            required = ["sapien", "mplib", "open3d", "torch", "websockets", "msgpack_numpy"]
+            missing = [name for name in required if importlib.util.find_spec(name) is None]
+            print("RoboTwin import check missing:", missing)
+            if missing:
+                raise SystemExit(missing)
+            PY
+            }
+
+            configure_nvidia_graphics
+
+            cd "$CODE_ROOT"
+            echo "Launching DreamZero bimanual policy server for ${CKPT_SETTING}"
+            CUDA_VISIBLE_DEVICES=0 "$SERVER_PYTHON" -m eval_utils.bimanual_policy_server \
+              --ckpt-dir "$EVAL_CKPT_ROOT" \
+              --ckpt-setting "$CKPT_SETTING" \
+              --host 127.0.0.1 \
+              --port "$PORT" \
+              --image-h 240 \
+              --image-w 320 \
+              --num-frames 33 \
+              --action-horizon 24 \
+              --return-action-debug \
+              > /tmp/server.log 2>&1 &
+            SERVER_PID=$!
+
+            echo "Waiting for policy server pid=${SERVER_PID}"
+            deadline=$((SECONDS + 3000))
+            while true; do
+              if grep -q "Bimanual policy server listening" /tmp/server.log 2>/dev/null; then
+                echo "Policy server is ready"
+                break
+              fi
+              if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+                echo "FATAL: server exited before listening. Last 120 server log lines:"
+                tail -n 120 /tmp/server.log || true
+                exit 1
+              fi
+              if [ "$SECONDS" -ge "$deadline" ]; then
+                echo "FATAL: server did not become ready before timeout. Last 120 server log lines:"
+                tail -n 120 /tmp/server.log || true
+                exit 1
+              fi
+              tail -n 12 /tmp/server.log || true
+              sleep 30
+            done
+
+            prepare_robotwin_runtime
+            cd /workspace/robotwin
+            export DREAMZERO_HOST=127.0.0.1
+            export DREAMZERO_PORT="$PORT"
+            export ROBOTWIN_EVAL_EPISODES="$NUM_EPISODES"
+            export MUJOCO_GL=egl
+            echo "Running RoboTwin closed-loop eval: task=${TASK_NAME}, config=${TASK_CONFIG}, episodes=${NUM_EPISODES}, seed=${SEED}"
+            set +e
+            CUDA_VISIBLE_DEVICES=1 "$ROBOTWIN_PYTHON" -u /workspace/robotwin/script/eval_policy.py \
+              --config /workspace/robotwin/policy/DreamZero/deploy_policy.yml \
+              --overrides \
+              --task_name "$TASK_NAME" \
+              --task_config "$TASK_CONFIG" \
+              --ckpt_setting "$CKPT_SETTING" \
+              --seed "$SEED" \
+              --policy_name DreamZero \
+              --server_host "$DREAMZERO_HOST" \
+              --server_port "$DREAMZERO_PORT" \
+              --need_plan False \
+              --expert_check False \
+              --instruction_type unseen \
+              > /tmp/client.log 2>&1
+            client_status=$?
+            set -e
+
+            echo "Client exit status: ${client_status}"
+            echo "Last 240 client log lines:"
+            tail -n 240 /tmp/client.log || true
+            if [ "$client_status" -ne 0 ]; then
+              exit "$client_status"
+            fi
+
+            cp -f /tmp/server.log /workspace/robotwin_eval_outputs/server.log
+            cp -f /tmp/client.log /workspace/robotwin_eval_outputs/client.log
+            find /workspace/robotwin/eval_result -type f | sort | sed -n '1,120p' | tee /workspace/robotwin_eval_outputs/result_files.txt
+            find /workspace/robotwin/eval_result -name '_result.txt' -print -exec sed -n '1,120p' {} \; | tee /workspace/robotwin_eval_outputs/summary.txt
+
+            echo "RoboTwin stack_blocks_two checkpoint-7000 eval complete"
