@@ -195,6 +195,9 @@ class LeRobotSingleDataset(Dataset):
         self._trajectory_ids, self._trajectory_lengths = self._get_trajectories()
         self._data_path_pattern = self._get_data_path_pattern()
         self._chunk_size = self._get_chunk_size()
+        # Relative-action stats are calculated before full metadata is built,
+        # and that calculation honors the same step filter used for training.
+        self._step_filter = self._get_step_filter()
         
         # Set default relative_action_keys if not provided
         if self.relative_action and self._relative_action_keys_input is None:
@@ -212,7 +215,6 @@ class LeRobotSingleDataset(Dataset):
         print("relative_action_per_horizon", self.relative_action_per_horizon)
         self._lerobot_relative_horizon_stats_meta = self._get_lerobot_relative_horizon_stats_meta() if self.relative_action_per_horizon else {}
         self._metadata = self._get_metadata()
-        self._step_filter = self._get_step_filter()
         self._all_steps = self._get_all_steps()
         self._modality_keys = self._get_modality_keys()
         self._delta_indices = self._get_delta_indices()
