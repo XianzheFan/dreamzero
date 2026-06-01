@@ -120,6 +120,40 @@ def env_action_dict(abs16: np.ndarray) -> dict:
     }
 
 
+def apply_gripper_override(
+    action16: np.ndarray,
+    step: int,
+    mode: str,
+    close_after_step: int,
+    open_value: float,
+    close_value: float,
+) -> np.ndarray:
+    """Optionally override RoboFactory gripper commands.
+
+    RoboFactory's motion-planner convention is +1=open, -1=close. The
+    policy output is left untouched by default; explicit overrides are
+    diagnostics for separating arm trajectory quality from gripper
+    command failures.
+    """
+    out = np.asarray(action16, dtype=np.float32).copy()
+    if mode == "none":
+        return out
+    if mode == "open":
+        target = open_value
+    elif mode == "close":
+        target = close_value
+    elif mode == "close-after-step":
+        if step < close_after_step:
+            return out
+        target = close_value
+    else:
+        raise ValueError(f"unknown gripper override mode: {mode}")
+
+    out[7] = target
+    out[15] = target
+    return out
+
+
 def _bool_from(info_val) -> bool:
     if info_val is None:
         return False
@@ -138,6 +172,10 @@ def run_episode(
     replan_every: int,
     max_steps: int,
     action_representation: str,
+    gripper_override: str,
+    gripper_close_after_step: int,
+    gripper_open_value: float,
+    gripper_close_value: float,
     dump: dict | None = None,
 ):
     raw_obs, _ = env.reset(seed=seed)
@@ -195,6 +233,14 @@ def run_episode(
         cur = qpos.copy()
         for da in actions[:replan_every]:
             abs16 = integrate_action(da, cur, action_representation)
+            abs16 = apply_gripper_override(
+                abs16,
+                steps,
+                gripper_override,
+                gripper_close_after_step,
+                gripper_open_value,
+                gripper_close_value,
+            )
             raw_obs, reward, term, trunc, info = env.step(env_action_dict(abs16))
             cur = abs16
             steps += 1
@@ -227,6 +273,20 @@ def main():
     ap.add_argument("--ckpt-dir", default=None)
     ap.add_argument("--ckpt-setting", default=None)
     ap.add_argument(
+        "--gripper-override",
+        choices=("none", "open", "close", "close-after-step"),
+        default="none",
+        help="Diagnostic RoboFactory gripper override. RoboFactory uses +1=open, -1=close.",
+    )
+    ap.add_argument(
+        "--gripper-close-after-step",
+        type=int,
+        default=40,
+        help="First env step to force close when --gripper-override=close-after-step.",
+    )
+    ap.add_argument("--gripper-open-value", type=float, default=1.0)
+    ap.add_argument("--gripper-close-value", type=float, default=-1.0)
+    ap.add_argument(
         "--video-dir",
         default=None,
         help="If set, wrap env with RecordEpisode and write one mp4 per seed.",
@@ -255,6 +315,9 @@ def main():
     print(f"Seeds:         {args.seed_start}..{args.seed_start + args.num_episodes - 1}")
     print(f"Max steps:     {args.max_steps}")
     print(f"Replan every:  {args.replan_every}")
+    print(f"Gripper mode:  {args.gripper_override}")
+    if args.gripper_override == "close-after-step":
+        print(f"Close after:   {args.gripper_close_after_step}")
 
     # Build env FIRST (sapien init takes ~30-60s); only then open the
     # ws connection. The sync ws client doesn't service pings while
@@ -330,6 +393,10 @@ def main():
                         "max_steps": args.max_steps,
                         "replan_every": args.replan_every,
                         "prompt": args.prompt,
+                        "gripper_override": args.gripper_override,
+                        "gripper_close_after_step": args.gripper_close_after_step,
+                        "gripper_open_value": args.gripper_open_value,
+                        "gripper_close_value": args.gripper_close_value,
                     },
                     "n_completed": len(results),
                     "n_target": args.num_episodes,
@@ -377,7 +444,12 @@ def main():
         try:
             success, steps = run_episode(
                 env, ws, seed, args.prompt, args.replan_every, args.max_steps,
-                action_representation=action_representation, dump=dump,
+                action_representation=action_representation,
+                gripper_override=args.gripper_override,
+                gripper_close_after_step=args.gripper_close_after_step,
+                gripper_open_value=args.gripper_open_value,
+                gripper_close_value=args.gripper_close_value,
+                dump=dump,
             )
         except Exception as e:
             print(f"seed={seed} ERROR: {type(e).__name__}: {e}", flush=True)
