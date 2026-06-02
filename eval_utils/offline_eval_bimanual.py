@@ -281,6 +281,66 @@ def summarize(flat: np.ndarray, thresholds, label: str) -> None:
         print(f"    |err| < {thr:<6}: {rate:5.1f}%")
 
 
+def summarize_gripper_sign(pred_gt_pairs: list[tuple[np.ndarray, np.ndarray]]) -> None:
+    if not pred_gt_pairs:
+        print("  Gripper sign: no valid entries")
+        return
+    pred = np.concatenate([p.reshape(-1) for p, _ in pred_gt_pairs], axis=0)
+    gt = np.concatenate([g.reshape(-1) for _, g in pred_gt_pairs], axis=0)
+    if pred.size == 0:
+        print("  Gripper sign: no valid entries")
+        return
+
+    def _metrics(threshold: float) -> tuple[float, float, float, float]:
+        pred_close = pred < threshold
+        gt_close = gt < 0.0
+        acc = (pred_close == gt_close).mean()
+        close_recall = (
+            (pred_close & gt_close).sum() / max(int(gt_close.sum()), 1)
+        )
+        open_recall = (
+            ((~pred_close) & (~gt_close)).sum() / max(int((~gt_close).sum()), 1)
+        )
+        close_precision = (
+            (pred_close & gt_close).sum() / max(int(pred_close.sum()), 1)
+        )
+        return acc, close_recall, open_recall, close_precision
+
+    acc, close_recall, open_recall, close_precision = _metrics(0.0)
+    gt_close_frac = (gt < 0.0).mean()
+    pred_close_frac = (pred < 0.0).mean()
+    print("  Gripper sign (close = value < threshold):")
+    print(
+        f"    threshold 0.000: acc={acc * 100:5.1f}% "
+        f"close_recall={close_recall * 100:5.1f}% "
+        f"open_recall={open_recall * 100:5.1f}% "
+        f"close_precision={close_precision * 100:5.1f}%"
+    )
+    print(
+        f"    gt_close_frac={gt_close_frac * 100:5.1f}% "
+        f"pred_close_frac@0={pred_close_frac * 100:5.1f}% "
+        f"pred_min/mean/max={pred.min():+.3f}/{pred.mean():+.3f}/{pred.max():+.3f}"
+    )
+
+    candidates = np.unique(
+        np.concatenate(
+            [
+                np.linspace(-1.0, 1.0, 81, dtype=np.float32),
+                pred.astype(np.float32),
+            ],
+            axis=0,
+        )
+    )
+    best = max(((*_metrics(float(thr)), float(thr)) for thr in candidates), key=lambda x: x[0])
+    best_acc, best_close_recall, best_open_recall, best_close_precision, best_thr = best
+    print(
+        f"    best threshold {best_thr:+.3f}: acc={best_acc * 100:5.1f}% "
+        f"close_recall={best_close_recall * 100:5.1f}% "
+        f"open_recall={best_open_recall * 100:5.1f}% "
+        f"close_precision={best_close_precision * 100:5.1f}%"
+    )
+
+
 def main():
     args = parse_args()
     logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
@@ -297,6 +357,7 @@ def main():
     )
 
     all_abs_err: list[np.ndarray] = []
+    all_gripper_pred_gt: list[tuple[np.ndarray, np.ndarray]] = []
     inference_secs: list[float] = []
 
     print(f"\n=== Running offline eval on {args.num_batches} batches ===\n")
@@ -369,6 +430,15 @@ def main():
             # Store the full-shaped err for per-dim breakdown; mask aggregated
             # to the same shape as err.
             all_abs_err.append((err.numpy(), valid.numpy()))
+            gripper_pred = pred[..., PER_ARM_GRIPPER_DIMS]
+            gripper_gt = gt[..., PER_ARM_GRIPPER_DIMS]
+            gripper_valid = gt_mask[..., PER_ARM_GRIPPER_DIMS].bool()
+            all_gripper_pred_gt.append(
+                (
+                    gripper_pred.masked_select(gripper_valid).numpy(),
+                    gripper_gt.masked_select(gripper_valid).numpy(),
+                )
+            )
             print(
                 f"[batch {i}] pred {tuple(pred.shape)} gt {tuple(gt.shape)} "
                 f"valid {valid_count}/{total_count} "
@@ -398,6 +468,7 @@ def main():
 
     summarize(joints_flat, JOINT_THRESHOLDS, "Joints (per-arm dims 0..6)")
     summarize(grippers_flat, GRIPPER_THRESHOLDS, "Gripper (per-arm dim 7)")
+    summarize_gripper_sign(all_gripper_pred_gt)
 
 
 if __name__ == "__main__":
