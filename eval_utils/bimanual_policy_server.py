@@ -569,6 +569,7 @@ class BimanualPolicy:
         sess["infer_idx"] = sess.get("infer_idx", 0) + 1
 
         flat_action = self._denorm_action(outputs, qpos)
+        self._log_action_summary(sess, sid, flat_action)
         reply = {"action_chunk": flat_action.astype(np.float32)}
         if self.return_action_debug:
             reply.update(
@@ -814,6 +815,44 @@ class BimanualPolicy:
             open_value = float(q99[0])
             out[:, dim] = np.where(out[:, dim] >= threshold, open_value, close_value)
 
+    def _log_action_summary(self, sess: dict, sid: str, action: np.ndarray) -> None:
+        """Emit compact gripper diagnostics for closed-loop eval logs."""
+        infer_idx = int(sess.get("infer_idx", 0))
+        prompt = str(sess.get("prompt", ""))
+        close_threshold = (
+            float(self.gripper_binarize_threshold)
+            if self.gripper_binarize_threshold is not None
+            else 0.0
+        )
+
+        def _gripper_summary(values: np.ndarray) -> str:
+            values = np.asarray(values, dtype=np.float32).reshape(-1)
+            first = np.array2string(
+                values[: min(8, values.shape[0])],
+                precision=3,
+                separator=",",
+            )
+            close_count = int(np.sum(values < close_threshold))
+            return (
+                f"min={float(values.min()):.3f} max={float(values.max()):.3f} "
+                f"mean={float(values.mean()):.3f} "
+                f"close_lt_{close_threshold:.3f}={close_count}/{values.shape[0]} "
+                f"first={first}"
+            )
+
+        logging.info(
+            "Action summary session=%s infer_idx=%d prompt=%r "
+            "representation=%s gripper_binarize_threshold=%s "
+            "left_gripper[%s] right_gripper[%s]",
+            sid[:12],
+            infer_idx,
+            prompt,
+            self.action_representation,
+            self.gripper_binarize_threshold,
+            _gripper_summary(action[:, 7]),
+            _gripper_summary(action[:, 15]),
+        )
+
     def _denorm_action(self, outputs, qpos: np.ndarray) -> np.ndarray:
         """Take model output ``action_pred [B=1, P=2, T_a, D_per_arm=8]``
         (normalized to [-1, 1] via q99) and denormalize back to
@@ -874,7 +913,9 @@ class BimanualPolicy:
         _denorm(p1[:, :7],  "action.panda1_joint_pos",    8, 15)
         _denorm(p1[:, 7:8], "action.panda1_gripper_pos", 15, 16)
         self._add_reference_state_for_relative_keys(out, qpos)
+        self._last_action_debug["action_physical_pre_binarize"] = out.copy()
         self._binarize_gripper_targets(out)
+        self._last_action_debug["action_physical_final"] = out.copy()
         return out
 
 

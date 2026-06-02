@@ -227,6 +227,11 @@ def run_episode(
                 dump["action_norm_clipped"].append(
                     np.asarray(reply["action_norm_clipped"], dtype=np.float32).copy()
                 )
+            for key in ("action_physical_pre_binarize", "action_physical_final"):
+                if key in reply:
+                    dump[key].append(
+                        np.asarray(reply[key], dtype=np.float32).copy()
+                    )
 
         cur = qpos.copy()
         for da in actions[:replan_every]:
@@ -425,6 +430,9 @@ def main():
             payload["action_norm_raw"] = np.stack(dump["action_norm_raw"])
         if dump.get("action_norm_clipped"):
             payload["action_norm_clipped"] = np.stack(dump["action_norm_clipped"])
+        for key in ("action_physical_pre_binarize", "action_physical_final"):
+            if dump.get(key):
+                payload[key] = np.stack(dump[key])
         np.savez_compressed(path, **payload)
 
     for i in range(args.num_episodes):
@@ -438,6 +446,8 @@ def main():
                 "exec_action": [],
                 "action_norm_raw": [],
                 "action_norm_clipped": [],
+                "action_physical_pre_binarize": [],
+                "action_physical_final": [],
             }
             if args.dump_actions
             else None
