@@ -44,8 +44,9 @@ workflow:
             ROBOTWIN_TARGET_EPISODES="${ROBOTWIN_TARGET_EPISODES:-{{target_episodes}}}"
             ROBOTWIN_NUM_EPISODES="${ROBOTWIN_NUM_EPISODES:-${ROBOTWIN_TARGET_EPISODES}}"
             ROBOTWIN_EXPECTED_EPISODES="${ROBOTWIN_EXPECTED_EPISODES:-${ROBOTWIN_TARGET_EPISODES}}"
+            ROBOTWIN_COLLECT_EXTRA_SEEDS="${ROBOTWIN_COLLECT_EXTRA_SEEDS:-50}"
             ROBOTWIN_MAX_COLLECT_ATTEMPTS="${ROBOTWIN_MAX_COLLECT_ATTEMPTS:-80}"
-            export ROBOTWIN_TARGET_EPISODES ROBOTWIN_NUM_EPISODES ROBOTWIN_EXPECTED_EPISODES ROBOTWIN_MAX_COLLECT_ATTEMPTS
+            export ROBOTWIN_TARGET_EPISODES ROBOTWIN_NUM_EPISODES ROBOTWIN_EXPECTED_EPISODES ROBOTWIN_COLLECT_EXTRA_SEEDS ROBOTWIN_MAX_COLLECT_ATTEMPTS
             RAW_DATA_S3_URI="{{raw_data_s3_uri}}"
             RAW_BOOTSTRAP_DATA_S3_URI="{{raw_bootstrap_data_s3_uri}}"
             CONVERTED_DATA_S3_URI="{{converted_data_s3_uri}}"
@@ -206,6 +207,47 @@ workflow:
                 if isinstance(db, dict) and db.pop(f"episode_{failed_idx}", None) is not None:
                     scene_info.write_text(json.dumps(db, ensure_ascii=False, indent=4))
                     print(f"Removed scene_info entry episode_{failed_idx}.")
+            PY
+            }
+
+            patch_robotwin_collect_data_skip_failed_replays() {
+              "$ROBOTWIN_PYTHON" - <<'PY'
+            from pathlib import Path
+
+            p = Path("script/collect_data.py")
+            s = p.read_text()
+            marker = "RoboTwin OSMO skip failed replay episode"
+            if marker not in s:
+                old = '            assert TASK_ENV.check_success(), "Collect Error"\n'
+                new = '''            if not TASK_ENV.check_success():
+                print(f"RoboTwin OSMO skip failed replay episode {episode_idx}: Collect Error")
+                for rel_path in (
+                    os.path.join("data", f"episode{episode_idx}.hdf5"),
+                    os.path.join("video", f"episode{episode_idx}.mp4"),
+                    os.path.join("_traj_data", f"episode{episode_idx}.pkl"),
+                    os.path.join("data", f"episode{episode_idx}.pkl"),
+                ):
+                    abs_path = os.path.join(args["save_path"], rel_path)
+                    if os.path.exists(abs_path):
+                        os.remove(abs_path)
+                        print(f"Removed failed replay artifact: {abs_path}")
+                info_file_path = os.path.join(args["save_path"], "scene_info.json")
+                if os.path.exists(info_file_path):
+                    with open(info_file_path, "r", encoding="utf-8") as file:
+                        info_db = json.load(file)
+                    if info_db.pop(f"episode_{episode_idx}", None) is not None:
+                        with open(info_file_path, "w", encoding="utf-8") as file:
+                            json.dump(info_db, file, ensure_ascii=False, indent=4)
+                continue
+                '''
+                if old not in s:
+                    raise SystemExit("did not find collect_data.py replay success assert")
+                s = s.replace(old, new, 1)
+                compile(s, str(p), "exec")
+                p.write_text(s)
+                print("Patched RoboTwin collect_data.py to skip failed replay episodes.")
+            else:
+                print("RoboTwin collect_data.py failed replay skip patch already present.")
             PY
             }
 
@@ -722,15 +764,21 @@ workflow:
 
             task_config_name = "demo_full_franka"
             target = int(os.environ["ROBOTWIN_TARGET_EPISODES"])
+            extra = int(os.environ.get("ROBOTWIN_COLLECT_EXTRA_SEEDS", "0"))
+            collect_target = target + max(extra, 0)
             config = Path("task_config") / f"{task_config_name}.yml"
             if not config.is_file():
                 raise SystemExit(f"missing RoboTwin task config: {config}")
             data = yaml.safe_load(config.read_text())
             old = data.get("episode_num")
-            data["episode_num"] = target
+            data["episode_num"] = collect_target
             config.write_text(yaml.safe_dump(data, sort_keys=False))
-            print(f"Patched {config}: episode_num {old} -> {target}")
+            print(
+                f"Patched {config}: episode_num {old} -> {collect_target} "
+                f"(target={target}, extra_seed_pool={extra})"
+            )
             PY
+              patch_robotwin_collect_data_skip_failed_replays
               drop_last_partial_episode_if_needed
               collect_robotwin_until_expected
               if ! has_expected_hdf5_episodes "$RAW_EPISODE_DIR"; then

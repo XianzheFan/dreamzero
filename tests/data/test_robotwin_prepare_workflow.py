@@ -46,6 +46,8 @@ def test_stack_prepare_workflow_defaults_to_larger_post_training_dataset():
     assert 'DATA_ROOT="/workspace/data/robotwin_lerobot_v2/${DATA_VARIANT}"' in script
     assert "RAW_BOOTSTRAP_DATA_S3_URI" in script
     assert 'ROBOTWIN_REPO_CACHE="${ROBOTWIN_REPO_CACHE:-${OSMO_CACHE_ROOT}/RoboTwin_${DATA_VARIANT}}"' in script
+    assert 'ROBOTWIN_COLLECT_EXTRA_SEEDS="${ROBOTWIN_COLLECT_EXTRA_SEEDS:-50}"' in script
+    assert "ROBOTWIN_COLLECT_EXTRA_SEEDS" in script
     assert 'ROBOTWIN_MAX_COLLECT_ATTEMPTS="${ROBOTWIN_MAX_COLLECT_ATTEMPTS:-80}"' in script
     assert "Bootstrapping raw demos from ${RAW_BOOTSTRAP_DATA_S3_URI}/" in script
     assert "has_expected_lerobot_episodes" in script
@@ -55,7 +57,11 @@ def test_stack_prepare_workflow_defaults_to_larger_post_training_dataset():
     assert "repair_robotwin_failed_episode" in script
     assert "Cleaning RoboTwin failed/partial episode" in script
     assert "RoboTwin collect_data.py failed with status" in script
-    assert 'data["episode_num"] = target' in script
+    assert "patch_robotwin_collect_data_skip_failed_replays" in script
+    assert "RoboTwin OSMO skip failed replay episode" in script
+    assert "Removed failed replay artifact" in script
+    assert 'data["episode_num"] = collect_target' in script
+    assert "collect_target = target + max(extra, 0)" in script
     assert 'script/collect_data.py stack_blocks_two "${TASK_CONFIG_NAME}"' in script
     assert '--num-episodes "${ROBOTWIN_NUM_EPISODES:--1}"' in script
     assert 'rm -rf "$DATA_ROOT"' in script
