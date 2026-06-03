@@ -6,6 +6,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW_PATH = REPO_ROOT / "osmo_workflows/robotwin/eval_stack_blocks_two_ckpt7000_l40.yaml"
+CODE_CACHE_URI = "swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_007668a"
 
 
 def _python_heredocs(script: str) -> list[str]:
@@ -58,6 +59,9 @@ def test_stack_eval_workflow_gripper_hold_patch_is_valid():
     assert env["EVAL_CKPT_ROOT"] == "{{eval_ckpt_root}}"
 
     script = workflow["workflow"]["tasks"][0]["files"][0]["contents"]
+    assert f'CODE_S3_URI="{CODE_CACHE_URI}"' in script
+    assert "swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/*" in script
+    assert "Refusing non-xianzhef data URI" in script
     assert "DREAMZERO_GRIPPER_CLOSE_HOLD_STEPS" in script
     assert "DREAMZERO_GRIPPER_CLOSE_HOLD_MIN_INFER" in script
     assert "DREAMZERO_GRIPPER_FORCE_OPEN_UNTIL_INFER" in script

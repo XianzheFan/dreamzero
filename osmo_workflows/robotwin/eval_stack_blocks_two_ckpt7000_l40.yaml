@@ -38,7 +38,7 @@ workflow:
 
             RUN_NAME="{{workflow_name}}"
             SOURCE_TRAIN_RUN_NAME="{{source_train_run_name}}"
-            CODE_S3_URI="s3://GearHome/users/xianzhef/oci-migration/dreamzero_gripperfix_20260601"
+            CODE_S3_URI="swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_007668a"
             MODEL_CACHE_S3_URI="s3://GearHome/users/xianzhef/oci-migration/checkpoints"
             EVAL_CKPT_S3_URI="${EVAL_CKPT_S3_URI:-s3://GearHome/users/xianzhef/oci-migration/dreamzero_s3cache/bootstrap_checkpoints/${SOURCE_TRAIN_RUN_NAME}}"
             EVAL_CKPT_FALLBACK_S3_URI="${EVAL_CKPT_FALLBACK_S3_URI:-s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/${SOURCE_TRAIN_RUN_NAME}/checkpoints}"
@@ -74,7 +74,8 @@ workflow:
             for uri in "$CODE_S3_URI" "$MODEL_CACHE_S3_URI" "$EVAL_CKPT_S3_URI" "$EVAL_CKPT_FALLBACK_S3_URI" "$RUN_S3_ROOT" "$OUT_S3_URI" "$ROBOTWIN_S3_URI"; do
               case "$uri" in
                 s3://GearHome/users/xianzhef/*) ;;
-                *) echo "Refusing non-xianzhef S3 URI: $uri" >&2; exit 64 ;;
+                swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/*) ;;
+                *) echo "Refusing non-xianzhef data URI: $uri" >&2; exit 64 ;;
               esac
             done
 

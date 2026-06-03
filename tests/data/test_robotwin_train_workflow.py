@@ -7,6 +7,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW_PATH = REPO_ROOT / "osmo_workflows/robotwin/train_stack_blocks_two_shared_global.yaml"
 TRAIN_SCRIPT_PATH = REPO_ROOT / "scripts/train/robotwin_bimanual_training.sh"
 SLURM_SCRIPT_PATH = REPO_ROOT / "scripts/train/robotwin_bimanual_slurm.sh"
+CODE_CACHE_URI = "swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_007668a"
 
 
 def _task_by_name(workflow, name):
@@ -35,6 +36,7 @@ def test_stack_train_workflow_uploads_eval_checkpoints_to_run_and_s3cache():
         workflow = yaml.safe_load(f)
 
     defaults = workflow["default-values"]
+    assert defaults["code_s3_uri"] == CODE_CACHE_URI
     assert defaults["data_variant"] == "stack_blocks_two-rt-500"
     assert defaults["expected_data_episodes"] == "500"
     assert defaults["converted_data_s3_uri"].endswith(
@@ -51,6 +53,9 @@ def test_stack_train_workflow_uploads_eval_checkpoints_to_run_and_s3cache():
     assert "resource" not in train_task
     assert "inputs" not in train_task
     assert 'DATA_VARIANT="${DATA_VARIANT:-{{data_variant}}}"' in script
+    assert 'CODE_S3_URI="${CODE_S3_URI:-{{code_s3_uri}}}"' in script
+    assert "swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/*" in script
+    assert "Refusing non-xianzhef data URI" in script
     assert 'EXPECTED_DATA_EPISODES="${EXPECTED_DATA_EPISODES:-{{expected_data_episodes}}}"' in script
     assert 'CONVERTED_DATA_S3_URI="${CONVERTED_DATA_S3_URI:-{{converted_data_s3_uri}}}"' in script
     assert 'DATA_ROOT="${DATA_PARENT}/${DATA_VARIANT}"' in script

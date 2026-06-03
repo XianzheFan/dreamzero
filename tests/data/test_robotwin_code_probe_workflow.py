@@ -5,6 +5,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW_PATH = REPO_ROOT / "osmo_workflows/robotwin/probe_dreamzero_gripperfix_code.yaml"
+CODE_CACHE_URI = "swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_007668a"
 
 
 def test_robotwin_code_probe_checks_s3_gripperfix_markers_and_patch_points():
@@ -13,9 +14,11 @@ def test_robotwin_code_probe_checks_s3_gripperfix_markers_and_patch_points():
 
     defaults = workflow["default-values"]
     assert defaults["workflow_name"] == "dreamzero-code-probe-gripperfix-xianzhef-20260603"
-    assert defaults["code_s3_uri"].endswith("/dreamzero_gripperfix_20260601")
+    assert defaults["code_s3_uri"] == CODE_CACHE_URI
 
     script = workflow["workflow"]["tasks"][0]["files"][0]["contents"]
+    assert "swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/*" in script
+    assert "Refusing non-xianzhef data URI" in script
     assert "dreamzero_gripperfix_upload_latest" in script
     assert "gripper_clean_action_loss_weight" in script
     assert "gripper_binary_action_loss_weight" in script

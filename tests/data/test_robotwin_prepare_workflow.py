@@ -6,6 +6,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW_PATH = REPO_ROOT / "osmo_workflows/robotwin/prepare_stack_blocks_two_dataset.yaml"
 README_PATH = REPO_ROOT / "osmo_workflows/robotwin/README.md"
+CODE_CACHE_URI = "swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_007668a"
 
 
 def _python_heredocs(script: str) -> list[str]:
@@ -31,6 +32,7 @@ def test_stack_prepare_workflow_defaults_to_larger_post_training_dataset():
 
     defaults = workflow["default-values"]
     assert defaults["workflow_name"] == "robotwin-stack-blocks-two-dataset500-l40-xianzhef-20260603"
+    assert defaults["code_s3_uri"] == CODE_CACHE_URI
     assert defaults["target_episodes"] == "500"
     assert defaults["data_variant"] == "stack_blocks_two-rt-500"
     assert defaults["raw_data_s3_uri"].endswith(
@@ -45,6 +47,9 @@ def test_stack_prepare_workflow_defaults_to_larger_post_training_dataset():
     assert "export ROBOTWIN_TARGET_EPISODES ROBOTWIN_NUM_EPISODES ROBOTWIN_EXPECTED_EPISODES" in script
     assert 'DATA_ROOT="/workspace/data/robotwin_lerobot_v2/${DATA_VARIANT}"' in script
     assert "RAW_BOOTSTRAP_DATA_S3_URI" in script
+    assert 'CODE_S3_URI="{{code_s3_uri}}"' in script
+    assert "swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/*" in script
+    assert "Refusing non-xianzhef data URI" in script
     assert 'ROBOTWIN_REPO_CACHE="${ROBOTWIN_REPO_CACHE:-${OSMO_CACHE_ROOT}/RoboTwin_${DATA_VARIANT}}"' in script
     assert 'ROBOTWIN_COLLECT_EXTRA_SEEDS="${ROBOTWIN_COLLECT_EXTRA_SEEDS:-50}"' in script
     assert "ROBOTWIN_COLLECT_EXTRA_SEEDS" in script
