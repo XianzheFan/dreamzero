@@ -119,6 +119,34 @@ workflow:
               [ "$episode_count" -ge "$expected_count" ]
             }
 
+            normalize_robotwin_raw_layout() {
+              root="$1"
+              nested="${root}/demo_full_franka"
+              if [ ! -d "$nested" ]; then
+                return
+              fi
+              if [ ! -d "${nested}/data" ] && [ ! -d "${nested}/video" ]; then
+                return
+              fi
+              if [ -d "${root}/data" ] && [ -n "$(find "${root}/data" -maxdepth 1 -name 'episode*.hdf5' -print -quit 2>/dev/null)" ]; then
+                echo "Nested RoboTwin raw data found at ${nested}, but direct data already has episodes; leaving nested copy untouched."
+                return
+              fi
+
+              echo "Flattening nested RoboTwin raw data from ${nested} into ${root}."
+              for name in data video instructions _traj_data scene_info.json seed.txt; do
+                if [ -e "${nested}/${name}" ] && [ ! -e "${root}/${name}" ]; then
+                  mv "${nested}/${name}" "${root}/${name}"
+                elif [ -e "${nested}/${name}" ] && [ -d "${root}/${name}" ] && [ -d "${nested}/${name}" ] && [ -z "$(find "${root}/${name}" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
+                  rmdir "${root}/${name}"
+                  mv "${nested}/${name}" "${root}/${name}"
+                elif [ -e "${nested}/${name}" ]; then
+                  echo "Keeping existing ${root}/${name}; nested ${nested}/${name} remains."
+                fi
+              done
+              rmdir "$nested" 2>/dev/null || true
+            }
+
             last_hdf5_episode_idx() {
               "$ROBOTWIN_PYTHON" - "$1" <<'PY'
             import re
@@ -702,6 +730,7 @@ workflow:
             osmo data download --resume "${RAW_DATA_S3_URI}/" "$RAW_DATA_ROOT"
             raw_download_status=$?
             set -e
+            normalize_robotwin_raw_layout "$RAW_DATA_ROOT"
             if ! has_expected_hdf5_episodes "$RAW_EPISODE_DIR" && \
                [ -n "${RAW_BOOTSTRAP_DATA_S3_URI:-}" ] && \
                [ "$RAW_BOOTSTRAP_DATA_S3_URI" != "$RAW_DATA_S3_URI" ]; then
@@ -710,6 +739,7 @@ workflow:
               osmo data download --resume "${RAW_BOOTSTRAP_DATA_S3_URI}/" "$RAW_DATA_ROOT"
               bootstrap_download_status=$?
               set -e
+              normalize_robotwin_raw_layout "$RAW_DATA_ROOT"
               echo "Raw bootstrap download status: ${bootstrap_download_status}"
             fi
             if has_expected_hdf5_episodes "$RAW_EPISODE_DIR"; then

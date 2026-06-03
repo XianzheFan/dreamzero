@@ -50,6 +50,10 @@ def test_stack_prepare_workflow_defaults_to_larger_post_training_dataset():
     assert "ROBOTWIN_COLLECT_EXTRA_SEEDS" in script
     assert 'ROBOTWIN_MAX_COLLECT_ATTEMPTS="${ROBOTWIN_MAX_COLLECT_ATTEMPTS:-80}"' in script
     assert "Bootstrapping raw demos from ${RAW_BOOTSTRAP_DATA_S3_URI}/" in script
+    assert "normalize_robotwin_raw_layout" in script
+    assert 'nested="${root}/demo_full_franka"' in script
+    assert "Flattening nested RoboTwin raw data" in script
+    assert script.count('normalize_robotwin_raw_layout "$RAW_DATA_ROOT"') == 2
     assert "has_expected_lerobot_episodes" in script
     assert "drop_last_partial_episode_if_needed" in script
     assert "collect_robotwin_until_expected" in script
