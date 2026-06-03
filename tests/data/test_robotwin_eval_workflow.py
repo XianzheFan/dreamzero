@@ -114,8 +114,10 @@ def test_stack_eval_workflow_gripper_hold_patch_is_valid():
     assert "Repeat all camera streams from the current observation" in shared_global_block
     assert "current_global, current_agent0, current_agent1 = history[-1]" in shared_global_block
     assert "Patched eval server to prefer robotwin metadata with robofactory fallback." in shared_global_block
+    assert "Patched eval server relative action key matching for state./action. prefixes." in shared_global_block
     assert "def _metadata_tag(self)" in shared_global_block
     assert 'if \\"robotwin\\" in self._metadata' in shared_global_block
+    assert 'candidates.add(f"state.{subkey}")' in shared_global_block
 
     block = _python_heredoc_with(script, "_apply_gripper_close_hold")
     for marker in (

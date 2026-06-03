@@ -829,8 +829,11 @@ class BimanualPolicy:
             candidates = {subkey}
             if subkey.startswith("action."):
                 candidates.add(subkey[len("action."):])
+            elif subkey.startswith("state."):
+                candidates.add(subkey[len("state."):])
             else:
                 candidates.add(f"action.{subkey}")
+                candidates.add(f"state.{subkey}")
             return bool(candidates & self._relative_action_keys)
         return "gripper" not in subkey.lower()
 

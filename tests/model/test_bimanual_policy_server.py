@@ -147,6 +147,47 @@ def test_relative_action_keys_accept_action_prefix():
     )
 
 
+def test_relative_action_keys_accept_state_prefix():
+    policy = _make_policy(_metadata_with_action_stats())
+    policy._relative_action_keys = {
+        "state.panda0_joint_pos",
+        "state.panda1_joint_pos",
+    }
+    pred = np.zeros((1, 2, 2, 8), dtype=np.float32)
+    pred[0, 0, :, :7] = 1.0
+    pred[0, 1, :, :7] = -1.0
+    qpos = np.arange(16, dtype=np.float32)
+
+    out = policy._denorm_action({"action_pred": pred}, qpos)
+
+    np.testing.assert_allclose(
+        out[:, :7],
+        np.repeat((qpos[:7] + 0.1)[None], out.shape[0], axis=0),
+    )
+    np.testing.assert_allclose(
+        out[:, 8:15],
+        np.repeat(qpos[8:15][None], out.shape[0], axis=0),
+    )
+    np.testing.assert_allclose(out[:, [7, 15]], np.full((2, 2), 0.5))
+
+
+def test_denorm_action_does_not_add_reference_when_relative_is_disabled():
+    policy = _make_policy(_metadata_with_action_stats())
+    policy._relative_action = False
+    policy._relative_action_per_horizon = False
+    policy._relative_action_keys = {"state.panda0_joint_pos", "state.panda1_joint_pos"}
+    pred = np.zeros((1, 2, 2, 8), dtype=np.float32)
+    pred[0, 0, :, :7] = 1.0
+    pred[0, 1, :, :7] = -1.0
+    qpos = np.arange(16, dtype=np.float32)
+
+    out = policy._denorm_action({"action_pred": pred}, qpos)
+
+    np.testing.assert_allclose(out[:, :7], np.full((2, 7), 0.1))
+    np.testing.assert_allclose(out[:, 8:15], np.zeros((2, 7)))
+    np.testing.assert_allclose(out[:, [7, 15]], np.full((2, 2), 0.5))
+
+
 def test_denorm_action_uses_prefixed_negative_gripper_stats():
     metadata = _metadata_with_action_stats()
     action_stats = metadata["robofactory"]["statistics"]["action"]

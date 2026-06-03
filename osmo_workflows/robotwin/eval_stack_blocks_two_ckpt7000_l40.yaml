@@ -444,6 +444,36 @@ workflow:
                 server.write_text(s)
                 print("Patched eval server to prefer robotwin metadata with robofactory fallback.")
 
+            s = server.read_text()
+            if 'candidates.add(f"state.{subkey}")' not in s:
+                old_relative_key_block = (
+                    '        if self._relative_action_keys:\n'
+                    '            candidates = {subkey}\n'
+                    '            if subkey.startswith("action."):\n'
+                    '                candidates.add(subkey[len("action."):])\n'
+                    '            else:\n'
+                    '                candidates.add(f"action.{subkey}")\n'
+                    '            return bool(candidates & self._relative_action_keys)\n'
+                )
+                new_relative_key_block = (
+                    '        if self._relative_action_keys:\n'
+                    '            candidates = {subkey}\n'
+                    '            if subkey.startswith("action."):\n'
+                    '                candidates.add(subkey[len("action."):])\n'
+                    '            elif subkey.startswith("state."):\n'
+                    '                candidates.add(subkey[len("state."):])\n'
+                    '            else:\n'
+                    '                candidates.add(f"action.{subkey}")\n'
+                    '                candidates.add(f"state.{subkey}")\n'
+                    '            return bool(candidates & self._relative_action_keys)\n'
+                )
+                if old_relative_key_block not in s:
+                    raise SystemExit("did not find relative action key prefix block to patch")
+                s = s.replace(old_relative_key_block, new_relative_key_block, 1)
+                compile(s, str(server), "exec")
+                server.write_text(s)
+                print("Patched eval server relative action key matching for state./action. prefixes.")
+
             test_file = code_root / "tests/model/test_bimanual_policy_server.py"
             if test_file.is_file():
                 t = test_file.read_text()
