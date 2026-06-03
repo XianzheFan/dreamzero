@@ -434,14 +434,13 @@ class BimanualPolicy:
         # (matches the LeRobot v2 camera naming written by
         # ``scripts/data/robofactory_to_lerobot_v2.py``).
         if self._uses_shared_global():
-            # Shared-global checkpoints train ``video_global`` as the
-            # current scene observation repeated across the conditioning
-            # window. Keep inference identical for all three camera
-            # streams instead of feeding a rolling past window into the
-            # clean conditioning path.
+            # Shared-global checkpoints train only ``video_global`` with
+            # ``global_condition_mode=current_repeat``. Per-agent wrist
+            # streams still use the full sampled video window, so keep the
+            # rolling history for those streams.
             global_video = np.repeat(head[None], self.num_frames, axis=0)
-            agent0_video = np.repeat(lft[None], self.num_frames, axis=0)
-            agent1_video = np.repeat(rgt[None], self.num_frames, axis=0)
+            agent0_video = np.stack([l for (_, l, _) in history], axis=0)
+            agent1_video = np.stack([r for (_, _, r) in history], axis=0)
         else:
             global_video = np.stack([h for (h, _, _) in history], axis=0)
             agent0_video = np.stack([l for (_, l, _) in history], axis=0)
