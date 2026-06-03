@@ -6,7 +6,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW_PATH = REPO_ROOT / "osmo_workflows/robotwin/prepare_stack_blocks_two_dataset.yaml"
 README_PATH = REPO_ROOT / "osmo_workflows/robotwin/README.md"
-CODE_CACHE_URI = "swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_rawinspect_20260603"
+CODE_CACHE_URI = "swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_gripperconv_20260604"
 
 
 def _python_heredocs(script: str) -> list[str]:
