@@ -6,6 +6,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW_PATH = REPO_ROOT / "osmo_workflows/robotwin/train_stack_blocks_two_shared_global.yaml"
 TRAIN_SCRIPT_PATH = REPO_ROOT / "scripts/train/robotwin_bimanual_training.sh"
+SLURM_SCRIPT_PATH = REPO_ROOT / "scripts/train/robotwin_bimanual_slurm.sh"
 
 
 def _task_by_name(workflow, name):
@@ -141,3 +142,36 @@ def test_stack_train_workflow_embedded_python_blocks_compile():
     assert len(heredocs) >= 8
     for block in heredocs:
         compile(block, f"{WORKFLOW_PATH}:embedded-python", "exec")
+
+
+def test_robotwin_slurm_wrapper_preserves_gripper_training_knobs():
+    script = SLURM_SCRIPT_PATH.read_text()
+
+    for marker in (
+        "GRIPPER_ACTION_DIMS=${GRIPPER_ACTION_DIMS:-7}",
+        "GRIPPER_BINARY_ACTION_LOSS_WEIGHT=${GRIPPER_BINARY_ACTION_LOSS_WEIGHT:-4.0}",
+        "GRIPPER_BINARY_CLOSE_ACTION_LOSS_WEIGHT=${GRIPPER_BINARY_CLOSE_ACTION_LOSS_WEIGHT:-6.0}",
+        "GRIPPER_BINARY_LOGIT_SCALE=${GRIPPER_BINARY_LOGIT_SCALE:-4.0}",
+        "GRIPPER_BINARY_MAX_SIGMA=${GRIPPER_BINARY_MAX_SIGMA:-0.75}",
+        "dims=[$GRIPPER_ACTION_DIMS]",
+    ):
+        assert marker in script
+
+    for marker in (
+        "GRIPPER_ACTION_DIMS=${GRIPPER_ACTION_DIMS} \\",
+        "GRIPPER_BINARY_ACTION_LOSS_WEIGHT=${GRIPPER_BINARY_ACTION_LOSS_WEIGHT} \\",
+        "GRIPPER_BINARY_CLOSE_ACTION_LOSS_WEIGHT=${GRIPPER_BINARY_CLOSE_ACTION_LOSS_WEIGHT} \\",
+        "GRIPPER_BINARY_LOGIT_SCALE=${GRIPPER_BINARY_LOGIT_SCALE} \\",
+        "GRIPPER_BINARY_MAX_SIGMA=${GRIPPER_BINARY_MAX_SIGMA} \\",
+    ):
+        assert marker in script
+
+    export_line = next(line for line in script.splitlines() if line.strip().startswith("--export=ALL"))
+    for marker in (
+        "GRIPPER_ACTION_DIMS=${GRIPPER_ACTION_DIMS}",
+        "GRIPPER_BINARY_ACTION_LOSS_WEIGHT=${GRIPPER_BINARY_ACTION_LOSS_WEIGHT}",
+        "GRIPPER_BINARY_CLOSE_ACTION_LOSS_WEIGHT=${GRIPPER_BINARY_CLOSE_ACTION_LOSS_WEIGHT}",
+        "GRIPPER_BINARY_LOGIT_SCALE=${GRIPPER_BINARY_LOGIT_SCALE}",
+        "GRIPPER_BINARY_MAX_SIGMA=${GRIPPER_BINARY_MAX_SIGMA}",
+    ):
+        assert marker in export_line
