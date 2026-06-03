@@ -322,36 +322,48 @@ class BimanualPolicy:
         logging.info("VLA loaded onto %s in %s", device, self._dtype)
 
         try:
-            transforms = instantiate(self._cfg.transforms)
-            self._transform = transforms["robofactory"]
+            # Instantiate only the embodiment used by this server. The resolved
+            # training config stores transforms for every cotrain embodiment;
+            # instantiating the whole mapping can fail on an unrelated transform
+            # and silently break RoboFactory eval.
+            transforms_cfg = self._cfg.get("transforms", {})
+            transform_cfg = transforms_cfg.get("robofactory", None)
+            if transform_cfg is None:
+                transform_cfg = self._cfg.get("transform_robofactory", None)
+            if transform_cfg is None:
+                raise KeyError(
+                    "No robofactory transform found in cfg.transforms or "
+                    "cfg.transform_robofactory"
+                )
+            self._transform = instantiate(transform_cfg)
+
             # The transform pipeline needs normalization stats + modality
             # metadata before it can be applied. Mirrors sim_policy.py:365.
             from groot.vla.data.schema.lerobot import DatasetMetadata
 
-            if "robofactory" in self._metadata:
-                metadata = DatasetMetadata.model_validate(self._metadata["robofactory"])
-                # If the action head specifies a target video resolution, propagate it.
-                ah_cfg = getattr(getattr(self._model, "action_head", None), "config", None)
-                if ah_cfg is not None:
-                    target_h = getattr(ah_cfg, "target_video_height", None)
-                    target_w = getattr(ah_cfg, "target_video_width", None)
-                    if target_h is not None and target_w is not None and metadata.modalities.video:
-                        for key in metadata.modalities.video.keys():
-                            metadata.modalities.video[key].resolution = (int(target_w), int(target_h))
-                self._transform.set_metadata(metadata)
-                logging.info("Bimanual transform ready (metadata bound)")
-            else:
-                logging.warning(
-                    "metadata.json lacks 'robofactory' key — transform will fail "
-                    "on first infer(). Found keys: %s",
-                    list(self._metadata.keys()),
+            if "robofactory" not in self._metadata:
+                raise KeyError(
+                    "metadata.json lacks 'robofactory' key; found keys: "
+                    f"{list(self._metadata.keys())}"
                 )
-        except Exception:
+            metadata = DatasetMetadata.model_validate(self._metadata["robofactory"])
+            # If the action head specifies a target video resolution, propagate it.
+            ah_cfg = getattr(getattr(self._model, "action_head", None), "config", None)
+            if ah_cfg is not None:
+                target_h = getattr(ah_cfg, "target_video_height", None)
+                target_w = getattr(ah_cfg, "target_video_width", None)
+                if target_h is not None and target_w is not None and metadata.modalities.video:
+                    for key in metadata.modalities.video.keys():
+                        metadata.modalities.video[key].resolution = (int(target_w), int(target_h))
+            self._transform.set_metadata(metadata)
+            logging.info("Bimanual transform ready (metadata bound)")
+        except Exception as exc:
             self._transform = None
-            logging.exception(
-                "transforms.robofactory failed to instantiate — server will "
-                "still start, but infer() will raise."
-            )
+            logging.exception("transforms.robofactory failed to instantiate")
+            raise RuntimeError(
+                "Failed to instantiate/bind the robofactory transform; "
+                "closed-loop eval cannot produce valid actions."
+            ) from exc
 
     # ----- session bookkeeping ------------------------------------------
     def _session(self, session_id: str) -> dict:
