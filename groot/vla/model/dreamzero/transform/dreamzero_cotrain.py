@@ -35,10 +35,82 @@ def whitespace_clean(text):
     return text
 
 
+def _has_tokenizer_files(path: str) -> bool:
+    if not os.path.isdir(path):
+        return False
+    return any(
+        os.path.isfile(os.path.join(path, filename))
+        for filename in (
+            "tokenizer_config.json",
+            "tokenizer.json",
+            "spiece.model",
+            "config.json",
+        )
+    )
+
+
+def _dedupe_paths(paths: List[str]) -> List[str]:
+    seen = set()
+    out = []
+    for path in paths:
+        if not path:
+            continue
+        norm = os.path.normpath(path)
+        if norm in seen:
+            continue
+        seen.add(norm)
+        out.append(path)
+    return out
+
+
+def _resolve_local_tokenizer_path(name: str) -> str:
+    """Resolve stale absolute tokenizer paths saved in checkpoint configs.
+
+    Some OSMO restore paths are normalized as ``/workspace/checkpoints/umt5-xxl``
+    while older training configs point at ``.../umt5-xxl/umt5-xxl``. Prefer the
+    real local tokenizer directory when it exists, before falling back to a HF id.
+    """
+    expanded = os.path.expandvars(os.path.expanduser(name))
+    stripped = expanded.rstrip(os.sep)
+    basename = os.path.basename(stripped)
+    parent = os.path.dirname(stripped)
+    parent_basename = os.path.basename(parent.rstrip(os.sep)) if parent else ""
+
+    candidates = [expanded]
+    if parent and basename == parent_basename:
+        candidates.append(parent)
+    for env_name in ("DREAMZERO_TOKENIZER_PATH", "TOKENIZER_DIR"):
+        env_path = os.environ.get(env_name, "")
+        if env_path:
+            candidates.append(os.path.expandvars(os.path.expanduser(env_path)))
+    for label in (basename, parent_basename):
+        if label:
+            candidates.extend([
+                os.path.join("/workspace/checkpoints", label),
+                os.path.join("/workspace/model_import", label),
+            ])
+
+    for candidate in _dedupe_paths(candidates):
+        if _has_tokenizer_files(candidate):
+            return candidate
+        real_candidate = os.path.realpath(candidate)
+        if real_candidate != candidate and _has_tokenizer_files(real_candidate):
+            return real_candidate
+
+    if os.path.isabs(expanded):
+        searched = ", ".join(_dedupe_paths(candidates))
+        raise FileNotFoundError(
+            f"Tokenizer path {name!r} does not exist or lacks tokenizer files; "
+            f"searched: {searched}"
+        )
+    return name
+
+
 class HuggingfaceTokenizer:
 
     def __init__(self, name, seq_len=None, clean=None, **kwargs):
         assert clean in (None, 'whitespace')
+        name = _resolve_local_tokenizer_path(name) if isinstance(name, str) else name
         self.name = name
         self.seq_len = seq_len
         self.clean = clean
@@ -631,4 +703,3 @@ class DreamTransform(InvertibleModalityTransform):
 
     def __call__(self, data: dict) -> dict:
         return self.apply(data)
-
