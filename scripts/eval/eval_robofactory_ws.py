@@ -175,10 +175,15 @@ def run_episode(
     gripper_open_value: float,
     gripper_close_value: float,
     gripper_chunk_lookahead: int,
+    gripper_exec_mode: str,
     dump: dict | None = None,
 ):
     raw_obs, _ = env.reset(seed=seed)
     session_id = uuid.uuid4().hex
+    # Absolute env step -> (left_cmd, right_cmd, source_infer_step, source_chunk_idx).
+    # Queue mode preserves the model's own future gripper predictions until
+    # their intended env timestep instead of discarding them at each replan.
+    gripper_schedule: dict[int, tuple[float, float, int, int]] = {}
     ws.send(
         msgpack.packb(
             {"endpoint": "reset", "session_id": session_id, "prompt": prompt},
@@ -211,13 +216,29 @@ def run_episode(
         reply = msgpack.unpackb(reply_raw, raw=False)
         actions = np.asarray(reply["action_chunk"], dtype=np.float32)
         assert actions.ndim == 2 and actions.shape[1] == 16
+        infer_step = int(steps)
+
+        if gripper_exec_mode == "queue":
+            for stale_step in [s for s in gripper_schedule if s < infer_step]:
+                del gripper_schedule[stale_step]
+            for chunk_idx in range(actions.shape[0]):
+                env_step = infer_step + chunk_idx
+                gripper_schedule.setdefault(
+                    env_step,
+                    (
+                        float(actions[chunk_idx, 7]),
+                        float(actions[chunk_idx, 15]),
+                        infer_step,
+                        chunk_idx,
+                    ),
+                )
 
         if dump is not None:
             # Record the full denormalized predicted chunk, optional
             # normalized raw/clipped chunks, the request step, and the qpos
             # the model conditioned on. This is read-only bookkeeping; the
             # replan/open-loop logic below is untouched.
-            dump["infer_step"].append(int(steps))
+            dump["infer_step"].append(infer_step)
             dump["pred_chunk"].append(actions.copy())
             dump["obs_qpos"].append(qpos.copy())
             if "action_norm_raw" in reply:
@@ -236,12 +257,20 @@ def run_episode(
 
         cur = qpos.copy()
         for chunk_idx, da in enumerate(actions[:replan_every]):
+            exec_step = int(steps)
             gripper_chunk_idx = min(
                 chunk_idx + gripper_chunk_lookahead,
                 actions.shape[0] - 1,
             )
+            gripper_source_infer_step = infer_step
             abs16 = integrate_action(da, cur, action_representation)
-            if gripper_chunk_lookahead > 0:
+            if gripper_exec_mode == "queue":
+                queued = gripper_schedule.get(exec_step)
+                if queued is not None:
+                    left_g, right_g, gripper_source_infer_step, gripper_chunk_idx = queued
+                    abs16[7] = left_g
+                    abs16[15] = right_g
+            elif gripper_chunk_lookahead > 0:
                 # Use the model's own future gripper prediction while keeping
                 # short-horizon receding control for the arm joints.
                 abs16[7] = actions[gripper_chunk_idx, 7]
@@ -261,6 +290,9 @@ def run_episode(
                 dump["exec_action"].append(abs16.copy())
                 dump["exec_chunk_index"].append(int(chunk_idx))
                 dump["exec_gripper_chunk_index"].append(int(gripper_chunk_idx))
+                dump["exec_gripper_source_infer_step"].append(
+                    int(gripper_source_infer_step)
+                )
             if _bool_from(info.get("success", False)):
                 return True, steps
             if _bool_from(term) or _bool_from(trunc):
@@ -316,6 +348,18 @@ def main():
         ),
     )
     ap.add_argument(
+        "--gripper-exec-mode",
+        choices=("chunk", "queue"),
+        default="chunk",
+        help=(
+            "How to execute model gripper predictions. 'chunk' preserves the "
+            "original receding-horizon behavior (optionally with "
+            "--gripper-chunk-lookahead). 'queue' keeps each model-predicted "
+            "future gripper command and executes it at its corresponding env "
+            "step; arm joints still use the latest chunk."
+        ),
+    )
+    ap.add_argument(
         "--video-dir",
         default=None,
         help="If set, wrap env with RecordEpisode and write one mp4 per seed.",
@@ -345,6 +389,7 @@ def main():
     print(f"Max steps:     {args.max_steps}")
     print(f"Replan every:  {args.replan_every}")
     print(f"Gripper mode:  {args.gripper_override}")
+    print(f"Grip exec:     {args.gripper_exec_mode}")
     print(f"Grip lookahead:{args.gripper_chunk_lookahead}")
     if args.gripper_override == "close-after-step":
         print(f"Close after:   {args.gripper_close_after_step}")
@@ -430,6 +475,7 @@ def main():
                         "gripper_open_value": args.gripper_open_value,
                         "gripper_close_value": args.gripper_close_value,
                         "gripper_chunk_lookahead": args.gripper_chunk_lookahead,
+                        "gripper_exec_mode": args.gripper_exec_mode,
                     },
                     "n_completed": len(results),
                     "n_target": args.num_episodes,
@@ -456,6 +502,9 @@ def main():
             "exec_gripper_chunk_index": np.asarray(
                 dump["exec_gripper_chunk_index"], dtype=np.int32
             ),
+            "exec_gripper_source_infer_step": np.asarray(
+                dump["exec_gripper_source_infer_step"], dtype=np.int32
+            ),
         }
         if dump.get("action_norm_raw"):
             payload["action_norm_raw"] = np.stack(dump["action_norm_raw"])
@@ -477,6 +526,7 @@ def main():
                 "exec_action": [],
                 "exec_chunk_index": [],
                 "exec_gripper_chunk_index": [],
+                "exec_gripper_source_infer_step": [],
                 "action_norm_raw": [],
                 "action_norm_clipped": [],
                 "action_physical_pre_binarize": [],
@@ -494,6 +544,7 @@ def main():
                 gripper_open_value=args.gripper_open_value,
                 gripper_close_value=args.gripper_close_value,
                 gripper_chunk_lookahead=args.gripper_chunk_lookahead,
+                gripper_exec_mode=args.gripper_exec_mode,
                 dump=dump,
             )
         except Exception as e:
