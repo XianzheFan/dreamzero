@@ -93,6 +93,40 @@ def test_stack_prepare_workflow_embedded_python_blocks_compile():
         compile(block, f"{WORKFLOW_PATH}:embedded-python", "exec")
 
 
+def test_stack_prepare_collect_data_patch_outputs_valid_python(tmp_path, monkeypatch):
+    with WORKFLOW_PATH.open() as f:
+        workflow = yaml.safe_load(f)
+
+    script = workflow["workflow"]["tasks"][0]["files"][0]["contents"]
+    patch_block = next(
+        block
+        for block in _python_heredocs(script)
+        if 'Path("script/collect_data.py")' in block
+        and "RoboTwin OSMO skip failed replay episode" in block
+    )
+
+    collect_data = tmp_path / "script" / "collect_data.py"
+    collect_data.parent.mkdir()
+    collect_data.write_text(
+        "import json\n"
+        "import os\n\n"
+        "def collect(args, TASK_ENV, episode_idx):\n"
+        "    for _ in range(1):\n"
+        '            assert TASK_ENV.check_success(), "Collect Error"\n'
+        '            print("after")\n'
+    )
+
+    monkeypatch.chdir(tmp_path)
+    exec(patch_block, {})
+
+    patched = collect_data.read_text()
+    assert 'assert TASK_ENV.check_success(), "Collect Error"' not in patched
+    assert "if not TASK_ENV.check_success():" in patched
+    assert "RoboTwin OSMO skip failed replay episode" in patched
+    assert "continue" in patched
+    compile(patched, str(collect_data), "exec")
+
+
 def test_stack_prepare_readme_documents_isolated_1000_episode_submission():
     readme = README_PATH.read_text()
 

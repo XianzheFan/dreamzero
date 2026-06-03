@@ -240,37 +240,41 @@ workflow:
 
             patch_robotwin_collect_data_skip_failed_replays() {
               "$ROBOTWIN_PYTHON" - <<'PY'
+            import re
+            import textwrap
             from pathlib import Path
 
             p = Path("script/collect_data.py")
             s = p.read_text()
             marker = "RoboTwin OSMO skip failed replay episode"
             if marker not in s:
-                old = '            assert TASK_ENV.check_success(), "Collect Error"\n'
-                new = '''            if not TASK_ENV.check_success():
-                print(f"RoboTwin OSMO skip failed replay episode {episode_idx}: Collect Error")
-                for rel_path in (
-                    os.path.join("data", f"episode{episode_idx}.hdf5"),
-                    os.path.join("video", f"episode{episode_idx}.mp4"),
-                    os.path.join("_traj_data", f"episode{episode_idx}.pkl"),
-                    os.path.join("data", f"episode{episode_idx}.pkl"),
-                ):
-                    abs_path = os.path.join(args["save_path"], rel_path)
-                    if os.path.exists(abs_path):
-                        os.remove(abs_path)
-                        print(f"Removed failed replay artifact: {abs_path}")
-                info_file_path = os.path.join(args["save_path"], "scene_info.json")
-                if os.path.exists(info_file_path):
-                    with open(info_file_path, "r", encoding="utf-8") as file:
-                        info_db = json.load(file)
-                    if info_db.pop(f"episode_{episode_idx}", None) is not None:
-                        with open(info_file_path, "w", encoding="utf-8") as file:
-                            json.dump(info_db, file, ensure_ascii=False, indent=4)
-                continue
-                '''
-                if old not in s:
+                match = re.search(r'^(?P<indent>[ \t]*)assert TASK_ENV\.check_success\(\), "Collect Error"\n', s, re.MULTILINE)
+                if match is None:
                     raise SystemExit("did not find collect_data.py replay success assert")
-                s = s.replace(old, new, 1)
+                block = textwrap.dedent('''\
+                    if not TASK_ENV.check_success():
+                        print(f"RoboTwin OSMO skip failed replay episode {episode_idx}: Collect Error")
+                        for rel_path in (
+                            os.path.join("data", f"episode{episode_idx}.hdf5"),
+                            os.path.join("video", f"episode{episode_idx}.mp4"),
+                            os.path.join("_traj_data", f"episode{episode_idx}.pkl"),
+                            os.path.join("data", f"episode{episode_idx}.pkl"),
+                        ):
+                            abs_path = os.path.join(args["save_path"], rel_path)
+                            if os.path.exists(abs_path):
+                                os.remove(abs_path)
+                                print(f"Removed failed replay artifact: {abs_path}")
+                        info_file_path = os.path.join(args["save_path"], "scene_info.json")
+                        if os.path.exists(info_file_path):
+                            with open(info_file_path, "r", encoding="utf-8") as file:
+                                info_db = json.load(file)
+                            if info_db.pop(f"episode_{episode_idx}", None) is not None:
+                                with open(info_file_path, "w", encoding="utf-8") as file:
+                                    json.dump(info_db, file, ensure_ascii=False, indent=4)
+                        continue
+                ''')
+                replacement = textwrap.indent(block, match.group("indent"))
+                s = s[:match.start()] + replacement + s[match.end():]
                 compile(s, str(p), "exec")
                 p.write_text(s)
                 print("Patched RoboTwin collect_data.py to skip failed replay episodes.")
