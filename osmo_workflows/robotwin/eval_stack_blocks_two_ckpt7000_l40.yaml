@@ -38,7 +38,7 @@ workflow:
 
             RUN_NAME="{{workflow_name}}"
             SOURCE_TRAIN_RUN_NAME="{{source_train_run_name}}"
-            CODE_S3_URI="swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_007668a"
+            CODE_S3_URI="swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_rawinspect_20260603"
             MODEL_CACHE_S3_URI="s3://GearHome/users/xianzhef/oci-migration/checkpoints"
             EVAL_CKPT_S3_URI="${EVAL_CKPT_S3_URI:-s3://GearHome/users/xianzhef/oci-migration/dreamzero_s3cache/bootstrap_checkpoints/${SOURCE_TRAIN_RUN_NAME}}"
             EVAL_CKPT_FALLBACK_S3_URI="${EVAL_CKPT_FALLBACK_S3_URI:-s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/${SOURCE_TRAIN_RUN_NAME}/checkpoints}"

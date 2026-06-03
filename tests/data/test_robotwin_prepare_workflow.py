@@ -6,7 +6,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW_PATH = REPO_ROOT / "osmo_workflows/robotwin/prepare_stack_blocks_two_dataset.yaml"
 README_PATH = REPO_ROOT / "osmo_workflows/robotwin/README.md"
-CODE_CACHE_URI = "swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_007668a"
+CODE_CACHE_URI = "swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_rawinspect_20260603"
 
 
 def _python_heredocs(script: str) -> list[str]:
@@ -74,6 +74,13 @@ def test_stack_prepare_workflow_defaults_to_larger_post_training_dataset():
     assert 'data["episode_num"] = collect_target' in script
     assert "collect_target = target + max(extra, 0)" in script
     assert 'script/collect_data.py stack_blocks_two "${TASK_CONFIG_NAME}"' in script
+    assert "Inspecting raw RoboTwin stack_blocks_two HDF5 demos before conversion." in script
+    assert "python scripts/data/inspect_robotwin_raw_hdf5.py" in script
+    assert '--expected-episodes "$ROBOTWIN_NUM_EPISODES"' in script
+    assert "--gripper-dims 7,15" in script
+    assert "--gripper-min 0.0" in script
+    assert "--gripper-max 1.0" in script
+    assert "--require-vector" in script
     assert '--num-episodes "${ROBOTWIN_NUM_EPISODES:--1}"' in script
     assert 'rm -rf "$DATA_ROOT"' in script
     assert "_validate_joint_action_vector" in script

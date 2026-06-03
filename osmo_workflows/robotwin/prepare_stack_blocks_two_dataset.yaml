@@ -828,6 +828,18 @@ workflow:
             fi
 
             cd "$CODE_ROOT"
+            echo "Inspecting raw RoboTwin stack_blocks_two HDF5 demos before conversion."
+            python scripts/data/inspect_robotwin_raw_hdf5.py \
+              --episode-dir "$RAW_EPISODE_DIR" \
+              --expected-episodes "$ROBOTWIN_NUM_EPISODES" \
+              --sample-episodes 5 \
+              --gripper-dims 7,15 \
+              --close-threshold 0.5 \
+              --gripper-min 0.0 \
+              --gripper-max 1.0 \
+              --require-vector \
+              --allow-static-gripper
+
             echo "Converting raw demos to LeRobot v2 at $DATA_ROOT"
             rm -rf "$DATA_ROOT"
             python scripts/data/robotwin_to_lerobot_v2.py \
@@ -847,7 +859,7 @@ workflow:
 
 default-values:
   workflow_name: robotwin-stack-blocks-two-dataset500-l40-xianzhef-20260603
-  code_s3_uri: swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_007668a
+  code_s3_uri: swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_rawinspect_20260603
   data_variant: stack_blocks_two-rt-500
   target_episodes: "500"
   raw_data_s3_uri: s3://GearHome/users/xianzhef/oci-migration/RoboTwin/data/stack_blocks_two/demo_full_franka
