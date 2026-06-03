@@ -91,6 +91,9 @@ class BimanualServerConfig:
     fps: int = 20
     return_action_debug: bool = False
     action_representation: str = "robotwin_delta"
+    gripper_convention: str = "auto"
+    gripper_close_value: float = 0.0
+    gripper_open_value: float = 1.0
 
 
 def _make_packer():
@@ -139,8 +142,9 @@ class BimanualPolicy:
         gripper_binarize_threshold: float | None = None,
         gripper_override: str = "none",
         gripper_close_after_infer: int = 0,
-        gripper_close_value: float = 0.0,
+        gripper_close_value: float | None = None,
         gripper_force_open_until_infer: int | None = None,
+        gripper_convention: str = "auto",
     ):
         self.ckpt_dir = Path(ckpt_dir)
         self.ckpt_setting = ckpt_setting
@@ -165,13 +169,19 @@ class BimanualPolicy:
                 float(gripper_threshold_env) if gripper_threshold_env else None
             )
         if gripper_binarize_threshold is not None and not (
-            0.0 <= gripper_binarize_threshold <= 1.0
+            -1.0 <= gripper_binarize_threshold <= 1.0
         ):
             raise ValueError(
-                "gripper_binarize_threshold must be in [0, 1], got "
+                "gripper_binarize_threshold must be in [-1, 1], got "
                 f"{gripper_binarize_threshold}"
             )
         self.gripper_binarize_threshold = gripper_binarize_threshold
+        self.gripper_convention = str(gripper_convention or "auto").strip().lower()
+        if self.gripper_convention not in ("auto", "robotwin", "robofactory"):
+            raise ValueError(
+                "gripper_convention must be one of auto, robotwin, robofactory; "
+                f"got {gripper_convention!r}"
+            )
         self.gripper_override = str(gripper_override or "none").strip().lower()
         if self.gripper_override not in ("none", "close-after-infer", "close-all"):
             raise ValueError(
@@ -179,10 +189,15 @@ class BimanualPolicy:
                 f"got {gripper_override!r}"
             )
         self.gripper_close_after_infer = int(gripper_close_after_infer or 0)
-        self.gripper_close_value = float(gripper_close_value)
-        if not (0.0 <= self.gripper_close_value <= 1.0):
+        self.gripper_close_value = (
+            None if gripper_close_value is None else float(gripper_close_value)
+        )
+        if self.gripper_close_value is not None and not (
+            -1.0 <= self.gripper_close_value <= 1.0
+        ):
             raise ValueError(
-                f"gripper_close_value must be in [0, 1], got {self.gripper_close_value}"
+                "gripper_close_value must be in [-1, 1], got "
+                f"{self.gripper_close_value}"
             )
         if gripper_force_open_until_infer is None:
             gripper_force_open_until_infer = int(
@@ -202,6 +217,12 @@ class BimanualPolicy:
 
         self._sessions: dict[str, dict] = {}
         self._load()
+        logging.info(
+            "Gripper convention resolved to %s (close=%s open=%s)",
+            self._resolved_gripper_convention(),
+            self._gripper_close_target(),
+            self._gripper_open_target(),
+        )
 
     def _effective_prompt(self, prompt: str | None) -> str:
         if self.prompt_override:
@@ -850,12 +871,53 @@ class BimanualPolicy:
         if self._key_is_relative("panda1_joint_pos"):
             out[:, 8:15] += qpos[8:15]
 
+    def _resolved_gripper_convention(self) -> str:
+        """Return the simulator gripper command convention for diagnostics.
+
+        RoboTwin stores absolute gripper commands as ``0.0=close`` and
+        ``1.0=open``. RoboFactory's ManiSkill controller uses ``-1.0=close``
+        and ``+1.0=open``. The model's denormalized gripper output already
+        follows the dataset statistics; this convention only controls
+        diagnostic binarization/overrides and log thresholds.
+        """
+        convention = str(getattr(self, "gripper_convention", "auto") or "auto")
+        convention = convention.strip().lower()
+        if convention in ("robotwin", "robofactory"):
+            return convention
+
+        metadata_tag = self._metadata_tag()
+        if metadata_tag == "robofactory":
+            return "robofactory"
+        return "robotwin"
+
+    def _gripper_open_target(self) -> float:
+        # Both currently supported simulator conventions use +1/open.
+        return 1.0
+
+    def _gripper_close_target(self) -> float:
+        explicit = getattr(self, "gripper_close_value", None)
+        if explicit is not None:
+            return float(explicit)
+        if self._resolved_gripper_convention() == "robofactory":
+            return -1.0
+        return 0.0
+
+    def _gripper_log_close_threshold(self) -> float:
+        return 0.5 * (self._gripper_open_target() + self._gripper_close_target())
+
+    @staticmethod
+    def _format_threshold_for_log(value: float) -> str:
+        text = f"{value:.3f}".rstrip("0").rstrip(".")
+        return text.replace("-", "neg").replace(".", "p")
+
     def _binarize_gripper_targets(self, out: np.ndarray) -> None:
         if self.gripper_binarize_threshold is None:
             return
         threshold = float(self.gripper_binarize_threshold)
-        out[:, 7] = (out[:, 7] >= threshold).astype(np.float32)
-        out[:, 15] = (out[:, 15] >= threshold).astype(np.float32)
+        close_target = self._gripper_close_target()
+        open_target = self._gripper_open_target()
+        out[:, 7] = np.where(out[:, 7] >= threshold, open_target, close_target)
+        out[:, 15] = np.where(out[:, 15] >= threshold, open_target, close_target)
 
     def _apply_gripper_override(self, sess: dict, out: np.ndarray) -> None:
         if self.gripper_override == "none":
@@ -866,8 +928,8 @@ class BimanualPolicy:
             should_close = infer_idx >= self.gripper_close_after_infer
         if not should_close:
             return
-        out[:, 7] = self.gripper_close_value
-        out[:, 15] = self.gripper_close_value
+        out[:, 7] = self._gripper_close_target()
+        out[:, 15] = self._gripper_close_target()
         self._last_action_debug["action_physical_after_override"] = out.copy()
 
     def _apply_gripper_force_open(self, sess: dict, out: np.ndarray) -> None:
@@ -876,18 +938,20 @@ class BimanualPolicy:
         infer_idx = int(sess.get("infer_idx", 0))
         if infer_idx >= self.gripper_force_open_until_infer:
             return
-        out[:, 7] = 1.0
-        out[:, 15] = 1.0
+        out[:, 7] = self._gripper_open_target()
+        out[:, 15] = self._gripper_open_target()
         self._last_action_debug["action_physical_after_force_open"] = out.copy()
 
     def _log_action_summary(self, sess: dict, sid: str, action: np.ndarray) -> None:
         """Emit compact gripper diagnostics for closed-loop eval logs."""
         infer_idx = int(sess.get("infer_idx", 0))
         prompt = str(sess.get("prompt", ""))
+        close_threshold = self._gripper_log_close_threshold()
+        close_threshold_label = self._format_threshold_for_log(close_threshold)
 
         def _gripper_summary(values: np.ndarray) -> str:
             values = np.asarray(values, dtype=np.float32).reshape(-1)
-            close_count = int(np.sum(values < 0.5))
+            close_count = int(np.sum(values < close_threshold))
             first = np.array2string(
                 values[: min(8, values.shape[0])],
                 precision=3,
@@ -895,7 +959,8 @@ class BimanualPolicy:
             )
             return (
                 f"min={float(values.min()):.3f} max={float(values.max()):.3f} "
-                f"mean={float(values.mean()):.3f} close_lt_0p5={close_count}/{values.shape[0]} "
+                f"mean={float(values.mean()):.3f} close_lt_{close_threshold_label}="
+                f"{close_count}/{values.shape[0]} "
                 f"first={first}"
             )
 
@@ -920,6 +985,7 @@ class BimanualPolicy:
         logging.info(
             "Action summary session=%s infer_idx=%d prompt=%r "
             "representation=%s gripper_binarize_threshold=%s "
+            "gripper_convention=%s gripper_close_target=%s "
             "gripper_force_open_until_infer=%s gripper_override=%s "
             "left_gripper[%s] right_gripper[%s]%s",
             sid[:12],
@@ -927,6 +993,8 @@ class BimanualPolicy:
             prompt,
             self.action_representation,
             self.gripper_binarize_threshold,
+            self._resolved_gripper_convention(),
+            self._gripper_close_target(),
             self.gripper_force_open_until_infer,
             self.gripper_override,
             _gripper_summary(action[:, 7]),
@@ -1058,6 +1126,9 @@ class BimanualWebsocketServer:
             action_dim=policy.action_dim,
             return_action_debug=policy.return_action_debug,
             action_representation=policy.action_representation,
+            gripper_convention=policy._resolved_gripper_convention(),
+            gripper_close_value=policy._gripper_close_target(),
+            gripper_open_value=policy._gripper_open_target(),
         )
         logging.getLogger("websockets.server").setLevel(logging.INFO)
 
@@ -1107,6 +1178,10 @@ class BimanualWebsocketServer:
 
 
 def main():
+    def _optional_float_env(name: str) -> float | None:
+        value = os.environ.get(name, "").strip()
+        return float(value) if value else None
+
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--ckpt-dir",
@@ -1154,10 +1229,18 @@ def main():
         "--gripper-binarize-threshold",
         type=float,
         default=None,
-        help="Optional physical gripper threshold in [0, 1]. When set, "
-             "gripper targets below the threshold become 0 (close) and "
-             "targets at/above it become 1 (open). If unset, "
-             "DREAMZERO_GRIPPER_BINARIZE_THRESHOLD is honored when present.",
+        help="Optional physical gripper threshold in [-1, 1]. When set, "
+             "targets below the threshold become the convention-specific "
+             "close command and targets at/above it become the open command. "
+             "If unset, DREAMZERO_GRIPPER_BINARIZE_THRESHOLD is honored when present.",
+    )
+    parser.add_argument(
+        "--gripper-convention",
+        default=os.environ.get("DREAMZERO_GRIPPER_CONVENTION", "auto"),
+        choices=("auto", "robotwin", "robofactory"),
+        help="Simulator gripper convention for diagnostic binarize/override. "
+             "auto selects robotwin for robotwin metadata and robofactory for "
+             "robofactory metadata.",
     )
     parser.add_argument(
         "--gripper-override",
@@ -1175,8 +1258,9 @@ def main():
     parser.add_argument(
         "--gripper-close-value",
         type=float,
-        default=float(os.environ.get("DREAMZERO_GRIPPER_CLOSE_VALUE", "0.0") or 0.0),
-        help="Physical gripper target used by diagnostic close overrides.",
+        default=_optional_float_env("DREAMZERO_GRIPPER_CLOSE_VALUE"),
+        help="Physical gripper target used by diagnostic close overrides. "
+             "Defaults to 0.0 for RoboTwin and -1.0 for RoboFactory.",
     )
     parser.add_argument(
         "--gripper-force-open-until-infer",
@@ -1210,6 +1294,7 @@ def main():
         gripper_close_after_infer=args.gripper_close_after_infer,
         gripper_close_value=args.gripper_close_value,
         gripper_force_open_until_infer=args.gripper_force_open_until_infer,
+        gripper_convention=args.gripper_convention,
     )
     server = BimanualWebsocketServer(policy, host=args.host, port=args.port)
     server.serve_forever()

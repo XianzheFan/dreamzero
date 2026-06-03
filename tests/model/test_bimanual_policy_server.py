@@ -17,6 +17,7 @@ def _make_policy(metadata):
     policy.action_dim = 16
     policy.num_frames = 3
     policy._metadata = metadata
+    policy.gripper_convention = "auto"
     policy._relative_action = True
     policy._relative_action_per_horizon = False
     policy._relative_action_keys = {"panda0_joint_pos", "panda1_joint_pos"}
@@ -233,6 +234,42 @@ def test_gripper_override_can_force_close_after_infer():
     policy._apply_gripper_override({"infer_idx": 3}, action)
     np.testing.assert_allclose(action[:, [7, 15]], np.zeros((2, 2)))
     assert "action_physical_after_override" in policy._last_action_debug
+
+
+def test_robotwin_auto_gripper_convention_uses_zero_close():
+    policy = _make_policy(_metadata_with_action_stats("robotwin"))
+    policy.gripper_close_value = None
+
+    assert policy._resolved_gripper_convention() == "robotwin"
+    assert policy._gripper_close_target() == 0.0
+    assert policy._gripper_open_target() == 1.0
+
+
+def test_robofactory_auto_gripper_convention_uses_negative_close_for_override():
+    policy = _make_policy(_metadata_with_action_stats("robofactory"))
+    policy.gripper_close_value = None
+    policy.gripper_override = "close-all"
+    action = np.ones((2, 16), dtype=np.float32)
+
+    policy._apply_gripper_override({"infer_idx": 0}, action)
+
+    assert policy._resolved_gripper_convention() == "robofactory"
+    assert policy._gripper_close_target() == -1.0
+    np.testing.assert_allclose(action[:, [7, 15]], -np.ones((2, 2)))
+
+
+def test_robofactory_auto_gripper_binarize_outputs_negative_positive_commands():
+    policy = _make_policy(_metadata_with_action_stats("robofactory"))
+    policy.gripper_close_value = None
+    policy.gripper_binarize_threshold = 0.0
+    action = np.zeros((2, 16), dtype=np.float32)
+    action[:, 7] = [-0.25, 0.25]
+    action[:, 15] = [0.25, -0.25]
+
+    policy._binarize_gripper_targets(action)
+
+    np.testing.assert_allclose(action[:, 7], [-1.0, 1.0])
+    np.testing.assert_allclose(action[:, 15], [1.0, -1.0])
 
 
 def test_gripper_force_open_until_infer_suppresses_initial_close_targets():
