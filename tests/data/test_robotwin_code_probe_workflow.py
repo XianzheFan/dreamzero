@@ -19,6 +19,8 @@ def test_robotwin_code_probe_checks_s3_gripperfix_markers_and_patch_points():
     script = workflow["workflow"]["tasks"][0]["files"][0]["contents"]
     assert "swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/*" in script
     assert "Refusing non-xianzhef data URI" in script
+    assert "DreamZero code cache commit" in script
+    assert "OSMO_CODE_COMMIT" in script
     assert "dreamzero_gripperfix_upload_latest" in script
     assert "gripper_clean_action_loss_weight" in script
     assert "gripper_binary_action_loss_weight" in script

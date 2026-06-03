@@ -329,6 +329,9 @@ workflow:
               fi
             fi
             test -f "$CODE_ROOT/pyproject.toml"
+            if [ -f "$CODE_ROOT/OSMO_CODE_COMMIT" ]; then
+              echo "DreamZero code cache commit: $(cat "$CODE_ROOT/OSMO_CODE_COMMIT")"
+            fi
 
             python - <<'PY'
             from pathlib import Path

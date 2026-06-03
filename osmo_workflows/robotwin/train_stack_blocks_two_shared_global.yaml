@@ -400,6 +400,9 @@ workflow:
               echo "ERROR: did not find DreamZero pyproject.toml after code download." >&2
               exit 3
             fi
+            if [ -f "$CODE_ROOT/OSMO_CODE_COMMIT" ]; then
+              echo "DreamZero code cache commit: $(cat "$CODE_ROOT/OSMO_CODE_COMMIT")"
+            fi
             if [ ! -f "$CODE_ROOT/scripts/train/robotwin_bimanual_training.sh" ]; then
               echo "ERROR: DreamZero code does not contain scripts/train/robotwin_bimanual_training.sh." >&2
               exit 6

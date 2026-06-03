@@ -72,6 +72,9 @@ workflow:
               exit 3
             fi
             echo "Resolved CODE_ROOT=${CODE_ROOT}"
+            if [ -f "$CODE_ROOT/OSMO_CODE_COMMIT" ]; then
+              echo "DreamZero code cache commit: $(cat "$CODE_ROOT/OSMO_CODE_COMMIT")"
+            fi
 
             require_code_marker() {
               local file="$1"

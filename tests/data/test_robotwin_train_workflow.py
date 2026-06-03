@@ -56,6 +56,8 @@ def test_stack_train_workflow_uploads_eval_checkpoints_to_run_and_s3cache():
     assert 'CODE_S3_URI="${CODE_S3_URI:-{{code_s3_uri}}}"' in script
     assert "swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/*" in script
     assert "Refusing non-xianzhef data URI" in script
+    assert "DreamZero code cache commit" in script
+    assert "OSMO_CODE_COMMIT" in script
     assert 'EXPECTED_DATA_EPISODES="${EXPECTED_DATA_EPISODES:-{{expected_data_episodes}}}"' in script
     assert 'CONVERTED_DATA_S3_URI="${CONVERTED_DATA_S3_URI:-{{converted_data_s3_uri}}}"' in script
     assert 'DATA_ROOT="${DATA_PARENT}/${DATA_VARIANT}"' in script

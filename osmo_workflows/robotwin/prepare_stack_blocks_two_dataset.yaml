@@ -654,6 +654,9 @@ workflow:
               echo "ERROR: did not find robotwin_to_lerobot_v2.py." >&2
               exit 12
             fi
+            if [ -f "$CODE_ROOT/OSMO_CODE_COMMIT" ]; then
+              echo "DreamZero code cache commit: $(cat "$CODE_ROOT/OSMO_CODE_COMMIT")"
+            fi
             python - "$CODE_ROOT" <<'PY'
             import sys
             from pathlib import Path
