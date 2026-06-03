@@ -161,6 +161,13 @@ class EmbodimentTag(Enum):
     action per arm: 7 joint deltas + 1 gripper).
     """
 
+    ROBOTWIN = "robotwin"
+    """
+    RoboTwin bimanual SAPIEN tasks (two Franka/Panda arms, 8-dim action
+    per arm: 7 joint targets + 1 gripper command). RoboTwin gripper commands
+    are simulator-normalized in [0, 1], with 1.0=open and 0.0=close.
+    """
+
     DREAM = "dream"
     """
     The datasets with DREAM actions.

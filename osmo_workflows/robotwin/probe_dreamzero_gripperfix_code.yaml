@@ -1,0 +1,140 @@
+workflow:
+  timeout:
+    queue_timeout: 1h
+    exec_timeout: 2h
+  name: "{{workflow_name}}"
+  resources:
+    default:
+      cpu: 8
+      gpu: 1
+      memory: 64Gi
+      storage: 150Gi
+  tasks:
+    - name: probe-dreamzero-gripperfix-code
+      image: nvcr.io/nvidian/gr00t_isaac:v1.5
+      credentials:
+        gear-aws-cred:
+          AWS_ACCESS_KEY_ID: aws_access_key_id
+          AWS_SECRET_ACCESS_KEY: aws_secret_access_key
+          AWS_DEFAULT_REGION: aws_default_region
+          AWS_ENDPOINT_URL: aws_endpoint_url
+      command: ["bash"]
+      args: ["/tmp/probe_dreamzero_gripperfix_code.sh"]
+      files:
+        - path: /tmp/probe_dreamzero_gripperfix_code.sh
+          contents: |
+            #!/usr/bin/env bash
+            set -euo pipefail
+
+            exec > >(tee /tmp/probe_dreamzero_gripperfix_code.log) 2>&1
+
+            RUN_NAME="{{workflow_name}}"
+            CODE_S3_URI="{{code_s3_uri}}"
+            LOG_S3_URI="s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/${RUN_NAME}/logs"
+
+            for uri in "$CODE_S3_URI" "$LOG_S3_URI"; do
+              case "$uri" in
+                s3://GearHome/users/xianzhef/*) ;;
+                *)
+                  echo "Refusing non-xianzhef S3 URI: $uri" >&2
+                  exit 64
+                  ;;
+              esac
+            done
+
+            upload_logs() {
+              status=$?
+              set +e
+              echo "DreamZero gripperfix code probe exit status: $status"
+              osmo data upload "${LOG_S3_URI}/" /tmp/probe_dreamzero_gripperfix_code.log
+              exit "$status"
+            }
+            trap upload_logs EXIT
+
+            mkdir -p /workspace/code/dreamzero
+            echo "Downloading DreamZero code from ${CODE_S3_URI}/"
+            osmo data download --resume "${CODE_S3_URI}/" /workspace/code/dreamzero
+
+            CODE_ROOT="/workspace/code/dreamzero"
+            LATEST_CODE_ROOT="${CODE_ROOT}/dreamzero_gripperfix_upload_latest"
+            if [ -f "${LATEST_CODE_ROOT}/pyproject.toml" ]; then
+              CODE_ROOT="$LATEST_CODE_ROOT"
+            elif [ ! -f "$CODE_ROOT/pyproject.toml" ]; then
+              found_pyproject="$(find /workspace/code -maxdepth 4 -name pyproject.toml -print | sort | tail -n 1)"
+              if [ -n "$found_pyproject" ]; then
+                CODE_ROOT="$(dirname "$found_pyproject")"
+              fi
+            fi
+            if [ ! -f "$CODE_ROOT/pyproject.toml" ]; then
+              echo "ERROR: did not find DreamZero pyproject.toml after code download." >&2
+              find /workspace/code -maxdepth 5 -type f -name pyproject.toml -print || true
+              exit 3
+            fi
+            echo "Resolved CODE_ROOT=${CODE_ROOT}"
+
+            require_code_marker() {
+              local file="$1"
+              shift
+              local marker
+              if [ ! -f "$CODE_ROOT/$file" ]; then
+                echo "ERROR: expected code file missing: $file" >&2
+                exit 7
+              fi
+              for marker in "$@"; do
+                if ! grep -Fq "$marker" "$CODE_ROOT/$file"; then
+                  echo "ERROR: code marker missing in $file: $marker" >&2
+                  exit 7
+                fi
+              done
+              echo "OK markers in $file: $*"
+            }
+
+            require_code_marker \
+              groot/vla/model/dreamzero/action_head/wan_flow_matching_action_tf.py \
+              "gripper_clean_action_loss_weight" \
+              "gripper_binary_action_loss_weight" \
+              "gripper_action_dims" \
+              "_reconstruct_clean_sample_from_flow_target"
+            require_code_marker \
+              groot/vla/configs/data/dreamzero/robotwin_franka_bimanual_shared_global.yaml \
+              "global_views: [0]" \
+              "global_condition_mode: current_repeat" \
+              "agent_action_dims: [[0, 8], [8, 16]]"
+            require_code_marker \
+              scripts/train/robotwin_bimanual_training.sh \
+              "GRIPPER_CLEAN_ACTION_LOSS_WEIGHT" \
+              "GRIPPER_BINARY_ACTION_LOSS_WEIGHT" \
+              "diffusion_model_cfg.num_agents=2"
+
+            python - "$CODE_ROOT" <<'PY'
+            import sys
+            from pathlib import Path
+
+            code_root = Path(sys.argv[1])
+            train_script = code_root / "scripts/train/robotwin_bimanual_training.sh"
+            text = train_script.read_text()
+
+            has_explicit_dim = (
+                "GRIPPER_ACTION_DIMS" in text
+                and "++action_head_cfg.config.gripper_action_dims=[$GRIPPER_ACTION_DIMS]" in text
+            )
+            has_patch_points = (
+                "GRIPPER_CLOSE_THRESHOLD=${GRIPPER_CLOSE_THRESHOLD:-0.0}\n" in text
+                and "    ++action_head_cfg.config.gripper_close_threshold=$GRIPPER_CLOSE_THRESHOLD \\\n" in text
+            )
+            if not (has_explicit_dim or has_patch_points):
+                raise SystemExit(
+                    "RoboTwin training script neither has explicit gripper_action_dims "
+                    "nor the fallback patch insertion points"
+                )
+            print({
+                "train_script_has_explicit_gripper_action_dims": has_explicit_dim,
+                "train_script_has_gripper_dim_patch_points": has_patch_points,
+            })
+            PY
+
+            echo "DreamZero gripperfix code probe passed."
+
+default-values:
+  workflow_name: dreamzero-code-probe-gripperfix-xianzhef-20260603
+  code_s3_uri: s3://GearHome/users/xianzhef/oci-migration/dreamzero_gripperfix_20260601

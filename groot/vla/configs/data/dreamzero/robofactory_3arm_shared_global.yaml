@@ -1,0 +1,87 @@
+# @package _global_
+
+# RoboFactory 3-arm training config -- shared-global variant.
+#
+# This is the P=3 counterpart of ``robofactory_bimanual_shared_global``:
+# the shared scene camera is encoded once under ``video_global`` and the
+# per-agent stream contains only each arm's wrist camera. This avoids
+# encoding the same global camera three times while keeping the 3-arm
+# state/action splits from ``robofactory_3arm_relative``.
+#
+# Required CLI overrides:
+#   data=dreamzero/robofactory_3arm_shared_global
+#   model/dreamzero/transform=bimanual_cotrain
+#   robofactory_data_root=/path/to/converted/lerobot_v2/<3-arm-task>-rf
+#   ++action_head_cfg.config.diffusion_model_cfg.num_agents=3
+
+defaults:
+  - dreamzero/base_48_wan_fine_aug_relative
+  - _self_
+
+max_state_dim: 64
+use_global_metadata: false
+# The converter stores absolute controller targets. Match DreamZero main:
+# convert only Franka joint targets to target-current offsets in the
+# dataset loader; leave gripper commands absolute.
+relative_action: true
+relative_action_per_horizon: false
+relative_action_keys:
+  - panda0_joint_pos
+  - panda1_joint_pos
+  - panda2_joint_pos
+max_chunk_size: 5
+dataset_shard_sampling_rate: 0.1
+mixture_dataset_cls: groot.vla.data.dataset.lerobot_sharded.ShardedLeRobotMixtureDataset.from_mixture_spec
+single_dataset_cls: groot.vla.data.dataset.lerobot_sharded.ShardedLeRobotSubLangSingleActionChunkDatasetDROID
+
+robofactory_data_root: ???
+
+train_dataset:
+  _target_: ${mixture_dataset_cls}
+  _convert_: object
+  mixture_spec:
+    - dataset_path:
+        robofactory:
+          - ${robofactory_data_root}
+      dataset_weight: 1.0
+      distribute_weights: true
+
+  dataset_class: ${single_dataset_cls}
+  all_modality_configs: ${modality_configs}
+  all_transforms: ${transforms}
+  metadata_versions: ${metadata_versions}
+  fps: ${fps}
+  dataset_kwargs:
+    video_backend: decord
+    use_global_metadata: ${use_global_metadata}
+    max_chunk_size: ${max_chunk_size}
+    relative_action: ${relative_action}
+    relative_action_keys: ${relative_action_keys}
+    relative_action_per_horizon: ${relative_action_per_horizon}
+  mixture_kwargs:
+    training: true
+    balance_dataset_weights: false
+    seed: 42
+    shard_sampling_rate: ${dataset_shard_sampling_rate}
+
+# Shared-global camera layout. The 3-arm lerobot_v2 video key order from
+# ``modality_config_robofactory_3arm.video.modality_keys`` is:
+#   0 = global_camera (shared scene view)
+#   1 = agent0_camera (arm 0 wrist)
+#   2 = agent1_camera (arm 1 wrist)
+#   3 = agent2_camera (arm 2 wrist)
+global_views: [0]
+global_condition_mode: current_repeat
+agent_video_views: [[1], [2], [3]]
+# Per-arm state width = 8 (7 panda joints + 1 gripper finger).
+agent_state_dims: [[0, 8], [8, 16], [16, 24]]
+# Per-arm action width = 8 (7 joint targets + 1 gripper command).
+agent_action_dims: [[0, 8], [8, 16], [16, 24]]
+
+# Re-route the per-embodiment modality / transform from the 2-arm default
+# to the 3-arm variant defined in base_48_wan_fine_aug_relative.yaml.
+modality_configs:
+  robofactory: ${modality_config_robofactory_3arm}
+
+transforms:
+  robofactory: ${transform_robofactory_3arm}

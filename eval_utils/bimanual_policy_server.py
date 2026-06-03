@@ -65,6 +65,7 @@ import dataclasses
 import gc
 import json
 import logging
+import os
 import sys
 import traceback
 from collections import deque
@@ -134,6 +135,12 @@ class BimanualPolicy:
         save_video_pred: bool = False,
         video_pred_dir: str | None = None,
         return_action_debug: bool = False,
+        prompt_override: str | None = None,
+        gripper_binarize_threshold: float | None = None,
+        gripper_override: str = "none",
+        gripper_close_after_infer: int = 0,
+        gripper_close_value: float = 0.0,
+        gripper_force_open_until_infer: int | None = None,
     ):
         self.ckpt_dir = Path(ckpt_dir)
         self.ckpt_setting = ckpt_setting
@@ -145,6 +152,48 @@ class BimanualPolicy:
         self.save_video_pred = save_video_pred
         self.video_pred_dir = Path(video_pred_dir) if video_pred_dir else None
         self.return_action_debug = return_action_debug
+        self.prompt_override = (
+            prompt_override
+            if prompt_override is not None
+            else os.environ.get("DREAMZERO_PROMPT_OVERRIDE", "")
+        ).strip()
+        if gripper_binarize_threshold is None:
+            gripper_threshold_env = os.environ.get(
+                "DREAMZERO_GRIPPER_BINARIZE_THRESHOLD", ""
+            ).strip()
+            gripper_binarize_threshold = (
+                float(gripper_threshold_env) if gripper_threshold_env else None
+            )
+        if gripper_binarize_threshold is not None and not (
+            0.0 <= gripper_binarize_threshold <= 1.0
+        ):
+            raise ValueError(
+                "gripper_binarize_threshold must be in [0, 1], got "
+                f"{gripper_binarize_threshold}"
+            )
+        self.gripper_binarize_threshold = gripper_binarize_threshold
+        self.gripper_override = str(gripper_override or "none").strip().lower()
+        if self.gripper_override not in ("none", "close-after-infer", "close-all"):
+            raise ValueError(
+                "gripper_override must be one of none, close-after-infer, close-all; "
+                f"got {gripper_override!r}"
+            )
+        self.gripper_close_after_infer = int(gripper_close_after_infer or 0)
+        self.gripper_close_value = float(gripper_close_value)
+        if not (0.0 <= self.gripper_close_value <= 1.0):
+            raise ValueError(
+                f"gripper_close_value must be in [0, 1], got {self.gripper_close_value}"
+            )
+        if gripper_force_open_until_infer is None:
+            gripper_force_open_until_infer = int(
+                os.environ.get("DREAMZERO_GRIPPER_FORCE_OPEN_UNTIL_INFER", "0") or 0
+            )
+        self.gripper_force_open_until_infer = int(gripper_force_open_until_infer or 0)
+        if self.gripper_force_open_until_infer < 0:
+            raise ValueError(
+                "gripper_force_open_until_infer must be >= 0, got "
+                f"{self.gripper_force_open_until_infer}"
+            )
         self._last_action_debug: dict[str, np.ndarray] = {}
         self._relative_action = False
         self._relative_action_per_horizon = False
@@ -153,6 +202,11 @@ class BimanualPolicy:
 
         self._sessions: dict[str, dict] = {}
         self._load()
+
+    def _effective_prompt(self, prompt: str | None) -> str:
+        if self.prompt_override:
+            return self.prompt_override
+        return prompt or ""
 
     def _load(self) -> None:
         import torch
@@ -295,13 +349,15 @@ class BimanualPolicy:
 
         try:
             transforms = instantiate(self._cfg.transforms)
-            self._transform = transforms["robofactory"]
+            transform_tag = "robotwin" if "robotwin" in transforms else "robofactory"
+            metadata_tag = self._metadata_tag()
+            self._transform = transforms[transform_tag]
             # The transform pipeline needs normalization stats + modality
             # metadata before it can be applied. Mirrors sim_policy.py:365.
             from groot.vla.data.schema.lerobot import DatasetMetadata
 
-            if "robofactory" in self._metadata:
-                metadata = DatasetMetadata.model_validate(self._metadata["robofactory"])
+            if metadata_tag is not None:
+                metadata = DatasetMetadata.model_validate(self._metadata[metadata_tag])
                 # If the action head specifies a target video resolution, propagate it.
                 ah_cfg = getattr(getattr(self._model, "action_head", None), "config", None)
                 if ah_cfg is not None:
@@ -311,19 +367,30 @@ class BimanualPolicy:
                         for key in metadata.modalities.video.keys():
                             metadata.modalities.video[key].resolution = (int(target_w), int(target_h))
                 self._transform.set_metadata(metadata)
-                logging.info("Bimanual transform ready (metadata bound)")
+                logging.info(
+                    "Bimanual transform ready (transform=%s metadata=%s)",
+                    transform_tag,
+                    metadata_tag,
+                )
             else:
                 logging.warning(
-                    "metadata.json lacks 'robofactory' key — transform will fail "
-                    "on first infer(). Found keys: %s",
+                    "metadata.json lacks 'robotwin' or legacy 'robofactory' key — "
+                    "transform will fail on first infer(). Found keys: %s",
                     list(self._metadata.keys()),
                 )
         except Exception:
             self._transform = None
             logging.exception(
-                "transforms.robofactory failed to instantiate — server will "
+                "bimanual transforms failed to instantiate — server will "
                 "still start, but infer() will raise."
             )
+
+    def _metadata_tag(self) -> str | None:
+        if "robotwin" in self._metadata:
+            return "robotwin"
+        if "robofactory" in self._metadata:
+            return "robofactory"
+        return None
 
     # ----- session bookkeeping ------------------------------------------
     def _session(self, session_id: str) -> dict:
@@ -337,7 +404,7 @@ class BimanualPolicy:
 
     def reset(self, info: dict) -> str:
         sid = info.get("session_id", "")
-        prompt = info.get("prompt", "")
+        prompt = self._effective_prompt(info.get("prompt", ""))
         sess = self._session(sid)
         sess["history"].clear()
         sess["prompt"] = prompt
@@ -355,6 +422,67 @@ class BimanualPolicy:
             if getattr(t, "global_views", None) is not None:
                 return True
         return False
+
+    def _iter_transform_tree(self):
+        stack = [self._transform]
+        while stack:
+            transform = stack.pop(0)
+            if transform is None:
+                continue
+            yield transform
+            stack[0:0] = list(getattr(transform, "transforms", []))
+
+    @staticmethod
+    def _transform_emits_actions(transform: object) -> bool:
+        return all(
+            callable(getattr(transform, attr, None))
+            for attr in ("_prepare_action", "_prepare_state", "_prepare_video")
+        )
+
+    def _set_eval_inference_transform_modes(self) -> list[tuple[object, bool]]:
+        """Use deterministic eval preprocessing while still emitting actions.
+
+        DreamTransform only includes action/action_mask when ``training`` is
+        true, but setting the entire composed transform to train also enables
+        random crop, color jitter, and language dropout. Closed-loop eval needs
+        deterministic video/state preprocessing; only the model-specific
+        DreamTransform should be in train mode for the placeholder action path.
+        """
+        saved_modes: list[tuple[object, bool]] = []
+        for transform in self._iter_transform_tree():
+            if not hasattr(transform, "training"):
+                continue
+            saved_modes.append((transform, bool(getattr(transform, "training"))))
+            setattr(transform, "training", self._transform_emits_actions(transform))
+        return saved_modes
+
+    @staticmethod
+    def _restore_transform_modes(saved_modes: list[tuple[object, bool]]) -> None:
+        for transform, training in saved_modes:
+            setattr(transform, "training", training)
+
+    def _build_video_windows(
+        self,
+        history: list[tuple[np.ndarray, np.ndarray, np.ndarray]],
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Return global/left/right video windows for the transform input.
+
+        Shared-global training uses ``global_condition_mode=current_repeat``:
+        frame 0 is the current observation and the action head uses frame 0
+        for per-agent I2V conditioning whenever ``video_global`` is present.
+        Repeat all camera streams from the current observation so the
+        closed-loop path conditions on the same frame index as training.
+        Legacy non-shared-global checkpoints keep the rolling history window.
+        """
+        global_history = np.stack([h for (h, _, _) in history], axis=0)
+        agent0_history = np.stack([l for (_, l, _) in history], axis=0)
+        agent1_history = np.stack([r for (_, _, r) in history], axis=0)
+        if self._uses_shared_global():
+            current_global, current_agent0, current_agent1 = history[-1]
+            global_history = np.repeat(current_global[None], self.num_frames, axis=0)
+            agent0_history = np.repeat(current_agent0[None], self.num_frames, axis=0)
+            agent1_history = np.repeat(current_agent1[None], self.num_frames, axis=0)
+        return global_history, agent0_history, agent1_history
 
     # ----- inference ----------------------------------------------------
     def infer(self, obs: dict) -> dict:
@@ -381,7 +509,7 @@ class BimanualPolicy:
         sid = obs.get("session_id", "")
         sess = self._session(sid)
         if obs.get("prompt"):
-            sess["prompt"] = obs["prompt"]
+            sess["prompt"] = self._effective_prompt(obs["prompt"])
 
         qpos = np.asarray(obs["qpos"], dtype=np.float32).reshape(-1)
         assert qpos.shape == (16,), f"need 16-dim qpos, got {qpos.shape}"
@@ -405,24 +533,12 @@ class BimanualPolicy:
         # [T, H, W, 3] uint8 per camera. head=global, lft=agent0, rgt=agent1
         # (matches the LeRobot v2 camera naming written by
         # ``scripts/data/robofactory_to_lerobot_v2.py``).
-        if self._uses_shared_global():
-            # Shared-global checkpoints train ``video_global`` as the
-            # current scene observation repeated across the conditioning
-            # window. Keep inference identical for all three camera
-            # streams instead of feeding a rolling past window into the
-            # clean conditioning path.
-            global_video = np.repeat(head[None], self.num_frames, axis=0)
-            agent0_video = np.repeat(lft[None], self.num_frames, axis=0)
-            agent1_video = np.repeat(rgt[None], self.num_frames, axis=0)
-        else:
-            global_video = np.stack([h for (h, _, _) in history], axis=0)
-            agent0_video = np.stack([l for (_, l, _) in history], axis=0)
-            agent1_video = np.stack([r for (_, _, r) in history], axis=0)
+        global_video, agent0_video, agent1_video = self._build_video_windows(history)
 
         # Per-arm state slices (T_s=1, current step only).
         T_s = 1
         T_a = self.action_horizon
-        prompt = sess.get("prompt", "") or ""
+        prompt = self._effective_prompt(sess.get("prompt", ""))
 
         # ``action.*`` keys are required by ``StateActionTransform`` /
         # ``ConcatTransform`` even at inference time -- the model
@@ -448,22 +564,15 @@ class BimanualPolicy:
         with torch.inference_mode():
             # DreamTransform.apply_single has a ``if self.training:`` gate
             # that drops ``action`` / ``action_mask`` / ``has_real_action``
-            # in eval mode -- but the multi-agent inference path needs
-            # them (at least for shape). Flip every sub-transform's
-            # ``training`` flag (the ComposedModalityTransform attribute
-            # alone does NOT propagate to children) for this call: our
-            # placeholder action zeros flow through harmlessly because
-            # the model ignores their values and starts denoising from
-            # noise. Restore after.
-            prev_training = getattr(self._transform, "training", False)
-            self._transform.train()
+            # in eval mode, but the multi-agent inference path needs those
+            # tensors for shape. Keep video/state preprocessing deterministic
+            # by only enabling training mode on the model-specific transform;
+            # leave random crop, color jitter, perturb/dropout transforms off.
+            saved_transform_modes = self._set_eval_inference_transform_modes()
             try:
                 normalized_inputs = self._transform.apply(batch)
             finally:
-                if prev_training:
-                    self._transform.train()
-                else:
-                    self._transform.eval()
+                self._restore_transform_modes(saved_transform_modes)
 
             # ``text`` and ``text_negative`` come out as raw Python strings
             # (the collator usually tokenizes; we don't use a collator).
@@ -541,6 +650,10 @@ class BimanualPolicy:
         sess["infer_idx"] = sess.get("infer_idx", 0) + 1
 
         flat_action = self._denorm_action(outputs, qpos)
+        self._apply_gripper_force_open(sess, flat_action)
+        self._apply_gripper_override(sess, flat_action)
+        self._last_action_debug["action_physical_final"] = flat_action.copy()
+        self._log_action_summary(sess, sid, flat_action)
         reply = {"action_chunk": flat_action.astype(np.float32)}
         if self.return_action_debug:
             reply.update(
@@ -713,7 +826,12 @@ class BimanualPolicy:
         if not self._uses_anchor_relative_actions():
             return False
         if self._relative_action_keys:
-            return subkey in self._relative_action_keys
+            candidates = {subkey}
+            if subkey.startswith("action."):
+                candidates.add(subkey[len("action."):])
+            else:
+                candidates.add(f"action.{subkey}")
+            return bool(candidates & self._relative_action_keys)
         return "gripper" not in subkey.lower()
 
     def _add_reference_state_for_relative_keys(
@@ -729,6 +847,90 @@ class BimanualPolicy:
         if self._key_is_relative("panda1_joint_pos"):
             out[:, 8:15] += qpos[8:15]
 
+    def _binarize_gripper_targets(self, out: np.ndarray) -> None:
+        if self.gripper_binarize_threshold is None:
+            return
+        threshold = float(self.gripper_binarize_threshold)
+        out[:, 7] = (out[:, 7] >= threshold).astype(np.float32)
+        out[:, 15] = (out[:, 15] >= threshold).astype(np.float32)
+
+    def _apply_gripper_override(self, sess: dict, out: np.ndarray) -> None:
+        if self.gripper_override == "none":
+            return
+        infer_idx = int(sess.get("infer_idx", 0))
+        should_close = self.gripper_override == "close-all"
+        if self.gripper_override == "close-after-infer":
+            should_close = infer_idx >= self.gripper_close_after_infer
+        if not should_close:
+            return
+        out[:, 7] = self.gripper_close_value
+        out[:, 15] = self.gripper_close_value
+        self._last_action_debug["action_physical_after_override"] = out.copy()
+
+    def _apply_gripper_force_open(self, sess: dict, out: np.ndarray) -> None:
+        if self.gripper_force_open_until_infer <= 0:
+            return
+        infer_idx = int(sess.get("infer_idx", 0))
+        if infer_idx >= self.gripper_force_open_until_infer:
+            return
+        out[:, 7] = 1.0
+        out[:, 15] = 1.0
+        self._last_action_debug["action_physical_after_force_open"] = out.copy()
+
+    def _log_action_summary(self, sess: dict, sid: str, action: np.ndarray) -> None:
+        """Emit compact gripper diagnostics for closed-loop eval logs."""
+        infer_idx = int(sess.get("infer_idx", 0))
+        prompt = str(sess.get("prompt", ""))
+
+        def _gripper_summary(values: np.ndarray) -> str:
+            values = np.asarray(values, dtype=np.float32).reshape(-1)
+            close_count = int(np.sum(values < 0.5))
+            first = np.array2string(
+                values[: min(8, values.shape[0])],
+                precision=3,
+                separator=",",
+            )
+            return (
+                f"min={float(values.min()):.3f} max={float(values.max()):.3f} "
+                f"mean={float(values.mean()):.3f} close_lt_0p5={close_count}/{values.shape[0]} "
+                f"first={first}"
+            )
+
+        debug = self._last_action_debug
+        extra_parts = []
+        for label, key in (
+            ("norm_raw", "action_norm_raw"),
+            ("physical_pre_binarize", "action_physical_pre_binarize"),
+            ("physical_after_force_open", "action_physical_after_force_open"),
+            ("physical_after_override", "action_physical_after_override"),
+        ):
+            value = debug.get(key)
+            if value is None:
+                continue
+            arr = np.asarray(value, dtype=np.float32)
+            if arr.ndim == 2 and arr.shape[1] >= 16:
+                extra_parts.append(
+                    f"{label}_left_gripper[{_gripper_summary(arr[:, 7])}] "
+                    f"{label}_right_gripper[{_gripper_summary(arr[:, 15])}]"
+                )
+
+        logging.info(
+            "Action summary session=%s infer_idx=%d prompt=%r "
+            "representation=%s gripper_binarize_threshold=%s "
+            "gripper_force_open_until_infer=%s gripper_override=%s "
+            "left_gripper[%s] right_gripper[%s]%s",
+            sid[:12],
+            infer_idx,
+            prompt,
+            self.action_representation,
+            self.gripper_binarize_threshold,
+            self.gripper_force_open_until_infer,
+            self.gripper_override,
+            _gripper_summary(action[:, 7]),
+            _gripper_summary(action[:, 15]),
+            (" " + " ".join(extra_parts)) if extra_parts else "",
+        )
+
     def _denorm_action(self, outputs, qpos: np.ndarray) -> np.ndarray:
         """Take model output ``action_pred [B=1, P=2, T_a, D_per_arm=8]``
         (normalized to [-1, 1] via q99) and denormalize back to
@@ -740,15 +942,17 @@ class BimanualPolicy:
         ``[panda0_joint(0:7), panda0_gripper(7:8), panda1_joint(8:15),
         panda1_gripper(15:16)]``.
         """
-        import torch
-
         data = outputs.data if hasattr(outputs, "data") else outputs
         if "action_pred" not in data:
             raise KeyError(
                 f"Expected action_pred in model output, got {list(data.keys())}"
             )
         pred = data["action_pred"]
-        if isinstance(pred, torch.Tensor):
+        try:
+            import torch
+        except ModuleNotFoundError:
+            torch = None
+        if torch is not None and isinstance(pred, torch.Tensor):
             pred = pred.detach().float().cpu().numpy()
         raw_pred = np.asarray(pred, dtype=np.float32)         # [B, P, T_a, D]
         if raw_pred.ndim != 4:
@@ -770,16 +974,52 @@ class BimanualPolicy:
         }
 
         out = np.zeros((self.action_horizon, self.action_dim), dtype=np.float32)
-        emb_meta = (
-            self._metadata.get("robofactory", {})
-            .get("statistics", {})
-            .get("action", {})
-        )
+        metadata_tag = self._metadata_tag()
+        emb_meta = {}
+        if metadata_tag is not None:
+            emb_meta = self._metadata[metadata_tag].get("statistics", {}).get("action", {})
+
+        def _stats_for_key(key: str, width: int) -> tuple[np.ndarray, np.ndarray]:
+            candidates = [key]
+            if key.startswith("action."):
+                candidates.append(key[len("action."):])
+            else:
+                candidates.append(f"action.{key}")
+
+            stats = None
+            matched_key = None
+            for candidate in candidates:
+                stats = emb_meta.get(candidate)
+                if stats is not None:
+                    matched_key = candidate
+                    break
+            if stats is None:
+                available = ", ".join(sorted(str(k) for k in emb_meta.keys()))
+                raise KeyError(
+                    f"Missing action normalization stats for {key!r}. "
+                    f"Tried {candidates}; available action stats: [{available}]"
+                )
+
+            try:
+                q01 = np.asarray(stats["q01"], dtype=np.float32).reshape(-1)
+                q99 = np.asarray(stats["q99"], dtype=np.float32).reshape(-1)
+            except KeyError as exc:
+                raise KeyError(
+                    f"Action stats for {matched_key!r} must contain q01 and q99; "
+                    f"found keys {sorted(stats.keys())}"
+                ) from exc
+
+            if q01.shape != (width,) or q99.shape != (width,):
+                raise ValueError(
+                    f"Action stats for {matched_key!r} have incompatible shape: "
+                    f"q01={q01.shape}, q99={q99.shape}, expected ({width},)"
+                )
+            if not (np.isfinite(q01).all() and np.isfinite(q99).all()):
+                raise ValueError(f"Action stats for {matched_key!r} contain non-finite values")
+            return q01, q99
 
         def _denorm(slice_pred: np.ndarray, key: str, lo: int, hi: int) -> None:
-            stats = emb_meta.get(key.replace("action.", ""), {})
-            q01 = np.asarray(stats.get("q01", np.zeros(hi - lo)), dtype=np.float32)
-            q99 = np.asarray(stats.get("q99", np.ones(hi - lo)), dtype=np.float32)
+            q01, q99 = _stats_for_key(key, hi - lo)
             span = q99 - q01
             span[span == 0] = 1.0
             T = min(slice_pred.shape[0], self.action_horizon)
@@ -792,6 +1032,9 @@ class BimanualPolicy:
         _denorm(p1[:, :7],  "action.panda1_joint_pos",    8, 15)
         _denorm(p1[:, 7:8], "action.panda1_gripper_pos", 15, 16)
         self._add_reference_state_for_relative_keys(out, qpos)
+        self._last_action_debug["action_physical_pre_binarize"] = out.copy()
+        self._binarize_gripper_targets(out)
+        self._last_action_debug["action_physical_final"] = out.copy()
         return out
 
 
@@ -898,6 +1141,48 @@ def main():
         action="store_true",
         help="Include raw and clipped normalized action chunks in infer replies.",
     )
+    parser.add_argument(
+        "--prompt-override",
+        default=None,
+        help="Optional prompt sent to the model regardless of the client prompt. "
+             "If unset, DREAMZERO_PROMPT_OVERRIDE is honored when present.",
+    )
+    parser.add_argument(
+        "--gripper-binarize-threshold",
+        type=float,
+        default=None,
+        help="Optional physical gripper threshold in [0, 1]. When set, "
+             "gripper targets below the threshold become 0 (close) and "
+             "targets at/above it become 1 (open). If unset, "
+             "DREAMZERO_GRIPPER_BINARIZE_THRESHOLD is honored when present.",
+    )
+    parser.add_argument(
+        "--gripper-override",
+        default=os.environ.get("DREAMZERO_GRIPPER_OVERRIDE", "none"),
+        choices=("none", "close-after-infer", "close-all"),
+        help="Diagnostic-only gripper override. Defaults to no override.",
+    )
+    parser.add_argument(
+        "--gripper-close-after-infer",
+        type=int,
+        default=int(os.environ.get("DREAMZERO_GRIPPER_CLOSE_AFTER_INFER", "0") or 0),
+        help="With --gripper-override=close-after-infer, force both grippers "
+             "closed starting at this infer index.",
+    )
+    parser.add_argument(
+        "--gripper-close-value",
+        type=float,
+        default=float(os.environ.get("DREAMZERO_GRIPPER_CLOSE_VALUE", "0.0") or 0.0),
+        help="Physical gripper target used by diagnostic close overrides.",
+    )
+    parser.add_argument(
+        "--gripper-force-open-until-infer",
+        type=int,
+        default=int(os.environ.get("DREAMZERO_GRIPPER_FORCE_OPEN_UNTIL_INFER", "0") or 0),
+        help="Force both gripper targets open for infer indices below this "
+             "1-based boundary. For example, 6 keeps infer 1-5 open and lets "
+             "infer 6 close if the model predicts close.",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -916,6 +1201,12 @@ def main():
         save_video_pred=args.save_video_pred,
         video_pred_dir=args.video_pred_dir,
         return_action_debug=args.return_action_debug,
+        prompt_override=args.prompt_override,
+        gripper_binarize_threshold=args.gripper_binarize_threshold,
+        gripper_override=args.gripper_override,
+        gripper_close_after_infer=args.gripper_close_after_infer,
+        gripper_close_value=args.gripper_close_value,
+        gripper_force_open_until_infer=args.gripper_force_open_until_infer,
     )
     server = BimanualWebsocketServer(policy, host=args.host, port=args.port)
     server.serve_forever()

@@ -148,8 +148,48 @@ class WANPolicyHeadConfig(PretrainedConfig):
             "help": "Normalized gripper target threshold below which the command is treated as close."
         },
     )
-    gripper_action_dims: list[int] = field(
-        default_factory=lambda: [7],
+    gripper_clean_action_loss_weight: float = field(
+        default=0.0,
+        metadata={
+            "help": "Optional direct MSE on predicted clean gripper actions reconstructed from the flow output."
+        },
+    )
+    gripper_clean_close_action_loss_weight: float = field(
+        default=1.0,
+        metadata={
+            "help": "Additional multiplier for close targets in the clean gripper action loss."
+        },
+    )
+    gripper_clean_max_sigma: float = field(
+        default=1.0,
+        metadata={
+            "help": "Only apply clean gripper action loss at action diffusion sigmas <= this value."
+        },
+    )
+    gripper_binary_action_loss_weight: float = field(
+        default=0.0,
+        metadata={
+            "help": "Optional BCE-with-logits loss on clean gripper open/close targets."
+        },
+    )
+    gripper_binary_close_action_loss_weight: float = field(
+        default=1.0,
+        metadata={"help": "Additional multiplier for close targets in binary gripper loss."},
+    )
+    gripper_binary_logit_scale: float = field(
+        default=4.0,
+        metadata={
+            "help": "Scale applied to normalized clean gripper predictions before BCE."
+        },
+    )
+    gripper_binary_max_sigma: float = field(
+        default=1.0,
+        metadata={
+            "help": "Only apply binary gripper loss at action diffusion sigmas <= this value."
+        },
+    )
+    gripper_action_dims: tuple[int, ...] = field(
+        default=(7,),
         metadata={"help": "Per-agent action dimensions treated as grippers."},
     )
     action_prefix_loss_weight: float = field(
@@ -455,20 +495,15 @@ class WANPolicyHead(ActionHead):
         actions: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Apply optional action/gripper/prefix weights before reduction."""
-        action_weight = float(getattr(self.config, "action_loss_weight", 1.0) or 1.0)
-        gripper_weight = float(
-            getattr(self.config, "gripper_action_loss_weight", 1.0) or 1.0
+        action_weight = self._config_float("action_loss_weight", 1.0)
+        gripper_weight = self._config_float("gripper_action_loss_weight", 1.0)
+        gripper_close_weight = self._config_float(
+            "gripper_close_action_loss_weight",
+            1.0,
         )
-        gripper_close_weight = float(
-            getattr(self.config, "gripper_close_action_loss_weight", 1.0) or 1.0
-        )
-        gripper_close_threshold = float(
-            getattr(self.config, "gripper_close_threshold", 0.0) or 0.0
-        )
-        prefix_weight = float(
-            getattr(self.config, "action_prefix_loss_weight", 1.0) or 1.0
-        )
-        prefix_len = int(getattr(self.config, "action_prefix_loss_len", 0) or 0)
+        gripper_close_threshold = self._config_float("gripper_close_threshold", 0.0)
+        prefix_weight = self._config_float("action_prefix_loss_weight", 1.0)
+        prefix_len = self._config_int("action_prefix_loss_len", 0)
         gripper_dims = [int(dim) for dim in getattr(self.config, "gripper_action_dims", [7])]
 
         weighted = action_loss
@@ -520,6 +555,207 @@ class WANPolicyHead(ActionHead):
         if action_weight != 1.0:
             weighted = weighted * action_weight
         return weighted
+
+    def _config_float(self, name: str, default: float) -> float:
+        value = getattr(self.config, name, default)
+        if value is None:
+            value = default
+        return float(value)
+
+    def _config_int(self, name: str, default: int) -> int:
+        value = getattr(self.config, name, default)
+        if value is None:
+            value = default
+        return int(value)
+
+    def _sigma_for_timestep(
+        self,
+        timestep: torch.Tensor,
+        like: torch.Tensor,
+    ) -> torch.Tensor:
+        timestep_ref = timestep.detach().to(self.scheduler.timesteps.device)
+        timestep_id = torch.argmin(
+            (
+                self.scheduler.timesteps.unsqueeze(1)
+                - timestep_ref.flatten().unsqueeze(0)
+            ).abs(),
+            dim=0,
+        )
+        sigma = self.scheduler.sigmas[timestep_id].to(
+            device=like.device,
+            dtype=like.dtype,
+        )
+        sigma = sigma.reshape(timestep.shape)
+        while sigma.ndim < like.ndim:
+            sigma = sigma.unsqueeze(-1)
+        return sigma
+
+    def _compute_gripper_clean_action_loss(
+        self,
+        clean_action_pred: torch.Tensor,
+        actions: torch.Tensor,
+        action_mask: torch.Tensor,
+        has_real_action: torch.Tensor,
+    ) -> torch.Tensor:
+        loss_weight = self._config_float("gripper_clean_action_loss_weight", 0.0)
+        if loss_weight == 0.0:
+            return torch.tensor(0.0, device=clean_action_pred.device)
+        if clean_action_pred.shape != actions.shape:
+            raise ValueError(
+                "clean_action_pred and actions must have the same shape: "
+                f"{tuple(clean_action_pred.shape)} != {tuple(actions.shape)}"
+            )
+
+        close_weight = self._config_float(
+            "gripper_clean_close_action_loss_weight",
+            1.0,
+        )
+        close_threshold = self._config_float("gripper_close_threshold", 0.0)
+        gripper_dims = [
+            int(dim) for dim in getattr(self.config, "gripper_action_dims", [7])
+        ]
+
+        dim_mask = torch.zeros(
+            actions.shape[-1],
+            device=actions.device,
+            dtype=torch.bool,
+        )
+        for dim in gripper_dims:
+            if -actions.shape[-1] <= dim < actions.shape[-1]:
+                dim_mask[dim % actions.shape[-1]] = True
+        if not dim_mask.any():
+            return torch.tensor(0.0, device=clean_action_pred.device)
+
+        view_shape = [1] * actions.ndim
+        view_shape[-1] = actions.shape[-1]
+        valid = dim_mask.view(*view_shape).expand_as(actions) & action_mask.bool()
+        real_action_mask = has_real_action.bool()
+        while real_action_mask.ndim < valid.ndim:
+            real_action_mask = real_action_mask.unsqueeze(-1)
+        valid = valid & real_action_mask
+
+        weights = torch.ones_like(actions, dtype=clean_action_pred.dtype)
+        if close_weight != 1.0:
+            close_weight_tensor = torch.as_tensor(
+                close_weight,
+                device=actions.device,
+                dtype=clean_action_pred.dtype,
+            )
+            for dim in gripper_dims:
+                if -actions.shape[-1] <= dim < actions.shape[-1]:
+                    dim_idx = dim % actions.shape[-1]
+                    close_mask = actions[..., dim_idx] < close_threshold
+                    weights[..., dim_idx] = torch.where(
+                        close_mask,
+                        close_weight_tensor,
+                        weights[..., dim_idx],
+                    )
+
+        clean_loss = torch.nn.functional.mse_loss(
+            clean_action_pred.float(),
+            actions.float(),
+            reduction="none",
+        )
+        valid_f = valid.to(dtype=clean_loss.dtype)
+        weighted = clean_loss * weights.float() * valid_f
+        denom = valid_f.sum().clamp_min(1.0)
+        return weighted.sum() / denom * loss_weight
+
+    def _compute_gripper_binary_action_loss(
+        self,
+        clean_action_pred: torch.Tensor,
+        actions: torch.Tensor,
+        action_mask: torch.Tensor,
+        has_real_action: torch.Tensor,
+    ) -> torch.Tensor:
+        loss_weight = self._config_float("gripper_binary_action_loss_weight", 0.0)
+        if loss_weight == 0.0:
+            return torch.tensor(0.0, device=clean_action_pred.device)
+        if clean_action_pred.shape != actions.shape:
+            raise ValueError(
+                "clean_action_pred and actions must have the same shape: "
+                f"{tuple(clean_action_pred.shape)} != {tuple(actions.shape)}"
+            )
+
+        close_weight = self._config_float(
+            "gripper_binary_close_action_loss_weight",
+            1.0,
+        )
+        close_threshold = self._config_float("gripper_close_threshold", 0.0)
+        logit_scale = self._config_float("gripper_binary_logit_scale", 4.0)
+        gripper_dims = [
+            int(dim) for dim in getattr(self.config, "gripper_action_dims", [7])
+        ]
+
+        dim_mask = torch.zeros(
+            actions.shape[-1],
+            device=actions.device,
+            dtype=torch.bool,
+        )
+        for dim in gripper_dims:
+            if -actions.shape[-1] <= dim < actions.shape[-1]:
+                dim_mask[dim % actions.shape[-1]] = True
+        if not dim_mask.any():
+            return torch.tensor(0.0, device=clean_action_pred.device)
+
+        view_shape = [1] * actions.ndim
+        view_shape[-1] = actions.shape[-1]
+        valid = dim_mask.view(*view_shape).expand_as(actions) & action_mask.bool()
+        real_action_mask = has_real_action.bool()
+        while real_action_mask.ndim < valid.ndim:
+            real_action_mask = real_action_mask.unsqueeze(-1)
+        valid = valid & real_action_mask
+
+        close_targets = actions.float() < close_threshold
+        logits = -clean_action_pred.float() * float(logit_scale)
+        binary_loss = torch.nn.functional.binary_cross_entropy_with_logits(
+            logits,
+            close_targets.to(dtype=logits.dtype),
+            reduction="none",
+        )
+
+        weights = torch.ones_like(binary_loss)
+        if close_weight != 1.0:
+            close_weight_tensor = torch.as_tensor(
+                close_weight,
+                device=actions.device,
+                dtype=binary_loss.dtype,
+            )
+            weights = torch.where(close_targets, close_weight_tensor, weights)
+
+        valid_f = valid.to(dtype=binary_loss.dtype)
+        weighted = binary_loss * weights * valid_f
+        denom = valid_f.sum().clamp_min(1.0)
+        return weighted.sum() / denom * loss_weight
+
+    def _gripper_clean_sigma_mask(self, sigma: torch.Tensor) -> torch.Tensor:
+        max_sigma = self._config_float("gripper_clean_max_sigma", 1.0)
+        if not (0.0 <= max_sigma <= 1.0):
+            raise ValueError(f"gripper_clean_max_sigma must be in [0, 1], got {max_sigma}")
+        sigma_f = sigma.float()
+        return ((1.0 - sigma_f) > 1e-4) & (sigma_f <= max_sigma)
+
+    def _gripper_binary_sigma_mask(self, sigma: torch.Tensor) -> torch.Tensor:
+        max_sigma = self._config_float("gripper_binary_max_sigma", 1.0)
+        if not (0.0 <= max_sigma <= 1.0):
+            raise ValueError(f"gripper_binary_max_sigma must be in [0, 1], got {max_sigma}")
+        sigma_f = sigma.float()
+        return ((1.0 - sigma_f) > 1e-4) & (sigma_f <= max_sigma)
+
+    def _reconstruct_clean_sample_from_flow_target(
+        self,
+        noisy_sample: torch.Tensor,
+        model_output: torch.Tensor,
+        sigma: torch.Tensor,
+    ) -> torch.Tensor:
+        """Invert this scheduler's training target back to the clean sample.
+
+        FlowMatchScheduler.add_noise uses ``z_t = (1-sigma) * x0 + sigma * noise``
+        and its training target is ``noise - x0``. Since
+        ``z_t = x0 + sigma * target``, the clean sample is
+        ``x0 = z_t - sigma * target``.
+        """
+        return noisy_sample.float() - sigma.float() * model_output.float()
 
     def set_frozen_modules_to_eval_mode(self):
         """
@@ -1182,15 +1418,90 @@ class WANPolicyHead(ActionHead):
                 )  # [B, T_a]
                 weight_action = action_loss_per_sample.mean(dim=3) * train_w_action.unsqueeze(1)
                 weighted_action_loss = weight_action.mean()
-                loss = weighted_dynamics_loss + weighted_action_loss
+                gripper_clean_action_loss = torch.tensor(0.0, device=self._device)
+                gripper_binary_action_loss = torch.tensor(0.0, device=self._device)
+                needs_gripper_clean_pred = (
+                    float(
+                        getattr(
+                            self.config,
+                            "gripper_clean_action_loss_weight",
+                            0.0,
+                        )
+                        or 0.0
+                    )
+                    != 0.0
+                    or float(
+                        getattr(
+                            self.config,
+                            "gripper_binary_action_loss_weight",
+                            0.0,
+                        )
+                        or 0.0
+                    )
+                    != 0.0
+                )
+                if needs_gripper_clean_pred:
+                    sigma_action = self._sigma_for_timestep(
+                        timestep_action_BPT,
+                        noisy_actions,
+                    )
+                    clean_action_pred = self._reconstruct_clean_sample_from_flow_target(
+                        noisy_sample=noisy_actions,
+                        model_output=action_noise_pred,
+                        sigma=sigma_action,
+                    )
+                if float(
+                    getattr(
+                        self.config,
+                        "gripper_clean_action_loss_weight",
+                        0.0,
+                    )
+                    or 0.0
+                ) != 0.0:
+                    clean_action_mask = action_mask.bool() & self._gripper_clean_sigma_mask(
+                        sigma_action
+                    )
+                    gripper_clean_action_loss = self._compute_gripper_clean_action_loss(
+                        clean_action_pred=clean_action_pred,
+                        actions=actions,
+                        action_mask=clean_action_mask,
+                        has_real_action=has_real_action,
+                    )
+                if float(
+                    getattr(
+                        self.config,
+                        "gripper_binary_action_loss_weight",
+                        0.0,
+                    )
+                    or 0.0
+                ) != 0.0:
+                    binary_action_mask = action_mask.bool() & self._gripper_binary_sigma_mask(
+                        sigma_action
+                    )
+                    gripper_binary_action_loss = self._compute_gripper_binary_action_loss(
+                        clean_action_pred=clean_action_pred,
+                        actions=actions,
+                        action_mask=binary_action_mask,
+                        has_real_action=has_real_action,
+                    )
+                loss = (
+                    weighted_dynamics_loss
+                    + weighted_action_loss
+                    + gripper_clean_action_loss
+                    + gripper_binary_action_loss
+                )
             else:
                 weighted_action_loss = torch.tensor(0.0, device=self._device)
+                gripper_clean_action_loss = torch.tensor(0.0, device=self._device)
+                gripper_binary_action_loss = torch.tensor(0.0, device=self._device)
                 loss = weighted_dynamics_loss
 
         output_dict = {
             "loss": loss,
             "dynamics_loss": weighted_dynamics_loss,
             "action_loss": weighted_action_loss,
+            "gripper_clean_action_loss": gripper_clean_action_loss,
+            "gripper_binary_action_loss": gripper_binary_action_loss,
         }
         return BatchFeature(data=output_dict)
 
@@ -1649,9 +1960,82 @@ class WANPolicyHead(ActionHead):
                     timestep_action.flatten(0, 1),
                 ).unflatten(0, (noise_action.shape[0], noise_action.shape[1])).to(self._device)
                 weighted_action_loss = weight_action.mean()
-                loss = weighted_dynamics_loss + weighted_action_loss
+                gripper_clean_action_loss = torch.tensor(0.0, device=self._device)
+                gripper_binary_action_loss = torch.tensor(0.0, device=self._device)
+                needs_gripper_clean_pred = (
+                    float(
+                        getattr(
+                            self.config,
+                            "gripper_clean_action_loss_weight",
+                            0.0,
+                        )
+                        or 0.0
+                    )
+                    != 0.0
+                    or float(
+                        getattr(
+                            self.config,
+                            "gripper_binary_action_loss_weight",
+                            0.0,
+                        )
+                        or 0.0
+                    )
+                    != 0.0
+                )
+                if needs_gripper_clean_pred:
+                    sigma_action = self._sigma_for_timestep(
+                        timestep_action,
+                        noisy_actions,
+                    )
+                    clean_action_pred = self._reconstruct_clean_sample_from_flow_target(
+                        noisy_sample=noisy_actions,
+                        model_output=action_noise_pred,
+                        sigma=sigma_action,
+                    )
+                if float(
+                    getattr(
+                        self.config,
+                        "gripper_clean_action_loss_weight",
+                        0.0,
+                    )
+                    or 0.0
+                ) != 0.0:
+                    clean_action_mask = action_mask.bool() & self._gripper_clean_sigma_mask(
+                        sigma_action
+                    )
+                    gripper_clean_action_loss = self._compute_gripper_clean_action_loss(
+                        clean_action_pred=clean_action_pred,
+                        actions=actions,
+                        action_mask=clean_action_mask,
+                        has_real_action=has_real_action,
+                    )
+                if float(
+                    getattr(
+                        self.config,
+                        "gripper_binary_action_loss_weight",
+                        0.0,
+                    )
+                    or 0.0
+                ) != 0.0:
+                    binary_action_mask = action_mask.bool() & self._gripper_binary_sigma_mask(
+                        sigma_action
+                    )
+                    gripper_binary_action_loss = self._compute_gripper_binary_action_loss(
+                        clean_action_pred=clean_action_pred,
+                        actions=actions,
+                        action_mask=binary_action_mask,
+                        has_real_action=has_real_action,
+                    )
+                loss = (
+                    weighted_dynamics_loss
+                    + weighted_action_loss
+                    + gripper_clean_action_loss
+                    + gripper_binary_action_loss
+                )
             else:
                 weighted_action_loss = torch.tensor(0.0, device=self._device)
+                gripper_clean_action_loss = torch.tensor(0.0, device=self._device)
+                gripper_binary_action_loss = torch.tensor(0.0, device=self._device)
                 loss = weighted_dynamics_loss
             # loss = dynamics_loss_per_sample.mean()
 
@@ -1660,6 +2044,8 @@ class WANPolicyHead(ActionHead):
             "loss": loss,
             "dynamics_loss": weighted_dynamics_loss,
             "action_loss": weighted_action_loss,
+            "gripper_clean_action_loss": gripper_clean_action_loss,
+            "gripper_binary_action_loss": gripper_binary_action_loss,
         }
 
         return BatchFeature(data=output_dict)

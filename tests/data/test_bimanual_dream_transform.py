@@ -220,6 +220,34 @@ def test_shared_global_current_repeat_removes_future_frames(yam_post_dream):
     np.testing.assert_array_equal(global_video[0], video[0, 0])
 
 
+def test_shared_global_three_agents_keep_wrist_streams_native_size(yam_post_dream):
+    Cls = _maybe_load_bimanual_transform()
+    video = np.concatenate(
+        [yam_post_dream["video"], np.full_like(yam_post_dream["video"][:, :1], 30)],
+        axis=1,
+    )
+    inst = _make_inst(
+        Cls,
+        views=((1,), (2,), (3,)),
+        state_dims=((0, 8), (8, 16), (16, 24)),
+        action_dims=((0, 8), (8, 16), (16, 24)),
+        global_views=(0,),
+        global_condition_mode="current_repeat",
+    )
+
+    images = inst._prepare_video({"video": video})
+    global_video = inst._prepare_global_video({"video": video})
+
+    assert images.shape == (3, 33, 3, 176, 320)
+    assert global_video.shape == (33, 176, 320, 3)
+    # The shared scene view is factored out; per-agent streams are only
+    # wrist views 1/2/3 and therefore differ from the global view 0.
+    assert int(images[0, 0, 0, 0, 0]) == 10
+    assert int(images[1, 0, 0, 0, 0]) == 20
+    assert int(images[2, 0, 0, 0, 0]) == 30
+    assert int(global_video[0, 0, 0, 0]) == 0
+
+
 def test_shared_global_full_mode_preserves_window(yam_post_dream):
     Cls = _maybe_load_bimanual_transform()
     video = yam_post_dream["video"].copy()

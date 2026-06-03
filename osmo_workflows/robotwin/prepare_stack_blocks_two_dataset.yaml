@@ -2,7 +2,7 @@ workflow:
   timeout:
     queue_timeout: 2h
     exec_timeout: 3d
-  name: robotwin-stack-blocks-two-dataset-l40-xianzhef-20260531-231103
+  name: "{{workflow_name}}"
   resources:
     default:
       cpu: 15
@@ -36,18 +36,28 @@ workflow:
 
             exec > >(tee /tmp/prepare_stack_blocks_two.log) 2>&1
 
-            RUN_NAME="robotwin-stack-blocks-two-dataset-l40-xianzhef-20260531-231103"
+            RUN_NAME="{{workflow_name}}"
             CODE_S3_URI="s3://GearHome/users/xianzhef/oci-migration/dreamzero"
             ROBOTWIN_S3_URI="s3://GearHome/users/xianzhef/oci-migration/RoboTwin"
             ROBOTWIN_ENV_S3_URI="s3://GearHome/users/xianzhef/oci-migration/miniconda3/envs/RoboTwin"
-            RAW_DATA_S3_URI="s3://GearHome/users/xianzhef/oci-migration/RoboTwin/data/stack_blocks_two/demo_full_franka"
-            CONVERTED_DATA_S3_URI="s3://GearHome/users/xianzhef/oci-migration/data/robotwin_lerobot_v2/stack_blocks_two-rt"
+            DATA_VARIANT="{{data_variant}}"
+            ROBOTWIN_TARGET_EPISODES="${ROBOTWIN_TARGET_EPISODES:-{{target_episodes}}}"
+            ROBOTWIN_NUM_EPISODES="${ROBOTWIN_NUM_EPISODES:-${ROBOTWIN_TARGET_EPISODES}}"
+            ROBOTWIN_EXPECTED_EPISODES="${ROBOTWIN_EXPECTED_EPISODES:-${ROBOTWIN_TARGET_EPISODES}}"
+            ROBOTWIN_MAX_COLLECT_ATTEMPTS="${ROBOTWIN_MAX_COLLECT_ATTEMPTS:-80}"
+            export ROBOTWIN_TARGET_EPISODES ROBOTWIN_NUM_EPISODES ROBOTWIN_EXPECTED_EPISODES ROBOTWIN_MAX_COLLECT_ATTEMPTS
+            RAW_DATA_S3_URI="{{raw_data_s3_uri}}"
+            RAW_BOOTSTRAP_DATA_S3_URI="{{raw_bootstrap_data_s3_uri}}"
+            CONVERTED_DATA_S3_URI="{{converted_data_s3_uri}}"
             LOG_S3_URI="s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/${RUN_NAME}/logs"
             OSMO_CACHE_ROOT="${OSMO_CACHE_ROOT:-/mnt/amlfs-04/home/xianzhef/osmo_cache}"
             ROBOTWIN_ENV_DIR="${ROBOTWIN_ENV_DIR:-${OSMO_CACHE_ROOT}/robotwin_env}"
-            ROBOTWIN_REPO_CACHE="${ROBOTWIN_REPO_CACHE:-${OSMO_CACHE_ROOT}/RoboTwin}"
+            ROBOTWIN_REPO_CACHE="${ROBOTWIN_REPO_CACHE:-${OSMO_CACHE_ROOT}/RoboTwin_${DATA_VARIANT}}"
 
-            for uri in "$CODE_S3_URI" "$ROBOTWIN_S3_URI" "$ROBOTWIN_ENV_S3_URI" "$RAW_DATA_S3_URI" "$CONVERTED_DATA_S3_URI" "$LOG_S3_URI"; do
+            for uri in "$CODE_S3_URI" "$ROBOTWIN_S3_URI" "$ROBOTWIN_ENV_S3_URI" "$RAW_DATA_S3_URI" "$RAW_BOOTSTRAP_DATA_S3_URI" "$CONVERTED_DATA_S3_URI" "$LOG_S3_URI"; do
+              if [ -z "$uri" ]; then
+                continue
+              fi
               case "$uri" in
                 s3://GearHome/users/xianzhef/*) ;;
                 *)
@@ -74,7 +84,7 @@ workflow:
             mkdir -p \
               /workspace/code/dreamzero \
               /workspace/deps \
-              /workspace/data/robotwin_lerobot_v2/stack_blocks_two-rt
+              "/workspace/data/robotwin_lerobot_v2/${DATA_VARIANT}"
 
             setup_persistent_robotwin_cache() {
               mkdir -p "$OSMO_CACHE_ROOT" "$ROBOTWIN_ENV_DIR" "$ROBOTWIN_REPO_CACHE"
@@ -108,8 +118,168 @@ workflow:
               [ "$episode_count" -ge "$expected_count" ]
             }
 
+            last_hdf5_episode_idx() {
+              "$ROBOTWIN_PYTHON" - "$1" <<'PY'
+            import re
+            import sys
+            from pathlib import Path
+
+            episode_dir = Path(sys.argv[1])
+            max_idx = -1
+            if episode_dir.is_dir():
+                for path in episode_dir.glob("episode*.hdf5"):
+                    match = re.fullmatch(r"episode(\d+)\.hdf5", path.name)
+                    if match:
+                        max_idx = max(max_idx, int(match.group(1)))
+            print(max_idx)
+            PY
+            }
+
+            parse_collect_error_episode() {
+              "$ROBOTWIN_PYTHON" - "$1" <<'PY'
+            import re
+            import sys
+            from pathlib import Path
+
+            text = Path(sys.argv[1]).read_text(errors="ignore")
+            matches = re.findall(r"saving:\s*episode\s*=\s*(\d+)", text)
+            print(matches[-1] if matches else "")
+            PY
+            }
+
+            repair_robotwin_failed_episode() {
+              failed_idx="$1"
+              echo "Cleaning RoboTwin failed/partial episode ${failed_idx} before retry."
+              "$ROBOTWIN_PYTHON" - "$RAW_DATA_ROOT" "$failed_idx" <<'PY'
+            import json
+            import shutil
+            import sys
+            from pathlib import Path
+
+            root = Path(sys.argv[1])
+            failed_idx = int(sys.argv[2])
+            if failed_idx < 0:
+                raise SystemExit("cannot repair negative episode index")
+
+            seed_path = root / "seed.txt"
+            if seed_path.is_file():
+                seeds = [int(item) for item in seed_path.read_text().split()]
+                if failed_idx < len(seeds):
+                    final_idx = len(seeds) - 1
+                    if final_idx >= 0:
+                        seeds[failed_idx] = seeds[final_idx]
+                        seeds.pop()
+                        seed_path.write_text(" ".join(str(seed) for seed in seeds))
+                        for traj_dir in (root / "_traj_data", root / "data"):
+                            failed_pkl = traj_dir / f"episode{failed_idx}.pkl"
+                            final_pkl = traj_dir / f"episode{final_idx}.pkl"
+                            if failed_pkl.exists():
+                                failed_pkl.unlink()
+                            if final_idx != failed_idx and final_pkl.exists():
+                                failed_pkl.parent.mkdir(parents=True, exist_ok=True)
+                                shutil.move(str(final_pkl), str(failed_pkl))
+                        print(
+                            f"Repaired seed/trajectory index {failed_idx} "
+                            f"with previous final index {final_idx}."
+                        )
+
+            for path in (
+                root / "data" / f"episode{failed_idx}.hdf5",
+                root / "data" / f"episode{failed_idx}.pkl",
+                root / "video" / f"episode{failed_idx}.mp4",
+            ):
+                if path.exists():
+                    path.unlink()
+                    print(f"Removed partial artifact: {path}")
+
+            cache_dir = root / ".cache" / f"episode{failed_idx}"
+            if cache_dir.exists():
+                shutil.rmtree(cache_dir)
+                print(f"Removed partial cache: {cache_dir}")
+
+            scene_info = root / "scene_info.json"
+            if scene_info.is_file():
+                try:
+                    db = json.loads(scene_info.read_text())
+                except json.JSONDecodeError:
+                    db = None
+                if isinstance(db, dict) and db.pop(f"episode_{failed_idx}", None) is not None:
+                    scene_info.write_text(json.dumps(db, ensure_ascii=False, indent=4))
+                    print(f"Removed scene_info entry episode_{failed_idx}.")
+            PY
+            }
+
+            drop_last_partial_episode_if_needed() {
+              episode_count="$(count_hdf5_episodes "$RAW_EPISODE_DIR")"
+              expected_count="${ROBOTWIN_EXPECTED_EPISODES:-100}"
+              if [ "$episode_count" -gt 0 ] && [ "$episode_count" -lt "$expected_count" ]; then
+                last_idx="$(last_hdf5_episode_idx "$RAW_EPISODE_DIR")"
+                if [ -n "$last_idx" ] && [ "$last_idx" -ge 0 ]; then
+                  echo "Partial raw dataset has ${episode_count}/${expected_count} episodes; dropping tail episode ${last_idx} before resume."
+                  repair_robotwin_failed_episode "$last_idx"
+                fi
+              fi
+            }
+
+            collect_robotwin_until_expected() {
+              attempt=1
+              while ! has_expected_hdf5_episodes "$RAW_EPISODE_DIR"; do
+                if [ "$attempt" -gt "$ROBOTWIN_MAX_COLLECT_ATTEMPTS" ]; then
+                  echo "ERROR: exceeded ROBOTWIN_MAX_COLLECT_ATTEMPTS=${ROBOTWIN_MAX_COLLECT_ATTEMPTS} while collecting RoboTwin data." >&2
+                  return 13
+                fi
+
+                echo "RoboTwin collection attempt ${attempt}/${ROBOTWIN_MAX_COLLECT_ATTEMPTS}."
+                collect_log="/tmp/robotwin_collect_attempt_${attempt}.log"
+                set +e
+                "$ROBOTWIN_PYTHON" script/collect_data.py stack_blocks_two "${TASK_CONFIG_NAME}" 2>&1 | tee "$collect_log"
+                collect_status=${PIPESTATUS[0]}
+                set -e
+
+                if [ "$collect_status" -eq 0 ]; then
+                  if has_expected_hdf5_episodes "$RAW_EPISODE_DIR"; then
+                    return 0
+                  fi
+                  echo "RoboTwin collect_data.py exited 0 but expected episode count is still missing; continuing."
+                  attempt=$((attempt + 1))
+                  continue
+                fi
+
+                failed_episode="$(parse_collect_error_episode "$collect_log" || true)"
+                if [ -z "$failed_episode" ]; then
+                  failed_episode="$(last_hdf5_episode_idx "$RAW_EPISODE_DIR" || true)"
+                fi
+                if [ -z "$failed_episode" ] || [ "$failed_episode" -lt 0 ]; then
+                  echo "ERROR: collect_data.py failed with status ${collect_status}, but no failed episode index could be inferred." >&2
+                  return "$collect_status"
+                fi
+
+                echo "RoboTwin collect_data.py failed with status ${collect_status}; repairing episode ${failed_episode} and retrying."
+                repair_robotwin_failed_episode "$failed_episode"
+                attempt=$((attempt + 1))
+              done
+            }
+
             has_lerobot_meta() {
               [ -d "$1/meta" ] && [ -f "$1/meta/info.json" ] && [ -f "$1/meta/modality.json" ]
+            }
+
+            count_lerobot_episodes() {
+              if [ ! -f "$1/meta/episodes.jsonl" ]; then
+                echo 0
+                return
+              fi
+              wc -l < "$1/meta/episodes.jsonl" | tr -d ' '
+            }
+
+            has_expected_lerobot_episodes() {
+              if ! has_lerobot_meta "$1"; then
+                return 1
+              fi
+              episode_count="$(count_lerobot_episodes "$1")"
+              expected_count="${ROBOTWIN_NUM_EPISODES:-${ROBOTWIN_EXPECTED_EPISODES:-100}}"
+              echo "Found ${episode_count}/${expected_count} converted LeRobot episodes under $1"
+              [ "$episode_count" -ge "$expected_count" ]
             }
 
             install_converter_deps() {
@@ -381,16 +551,17 @@ workflow:
             PY
             }
 
-            DATA_ROOT="/workspace/data/robotwin_lerobot_v2/stack_blocks_two-rt"
+            DATA_ROOT="/workspace/data/robotwin_lerobot_v2/${DATA_VARIANT}"
             RAW_DATA_ROOT="/workspace/robotwin/data/stack_blocks_two/demo_full_franka"
             RAW_EPISODE_DIR="${RAW_DATA_ROOT}/data"
+            TASK_CONFIG_NAME="demo_full_franka"
 
             echo "Checking existing converted dataset at ${CONVERTED_DATA_S3_URI}/"
             set +e
             osmo data download --resume "${CONVERTED_DATA_S3_URI}/" "$DATA_ROOT"
             converted_download_status=$?
             set -e
-            if [ "$converted_download_status" -eq 0 ] && has_lerobot_meta "$DATA_ROOT"; then
+            if [ "$converted_download_status" -eq 0 ] && has_expected_lerobot_episodes "$DATA_ROOT"; then
               echo "Converted stack_blocks_two LeRobot v2 dataset already exists at ${CONVERTED_DATA_S3_URI}/"
               exit 0
             fi
@@ -408,6 +579,79 @@ workflow:
               echo "ERROR: did not find robotwin_to_lerobot_v2.py." >&2
               exit 12
             fi
+            python - "$CODE_ROOT" <<'PY'
+            import sys
+            from pathlib import Path
+
+            code_root = Path(sys.argv[1])
+            converter = code_root / "scripts/data/robotwin_to_lerobot_v2.py"
+            text = converter.read_text()
+
+            if "_validate_joint_action_vector" not in text:
+                helper = '''
+
+            def _validate_joint_action_vector(traj: h5py.File, state: np.ndarray) -> None:
+                """Check RoboTwin's canonical joint-action vector when present.
+
+                The converter writes state/action from named component datasets so
+                the layout is explicit. RoboTwin also stores the same value as
+                /joint_action/vector; validating it catches silent left/right or
+                gripper ordering drift in upstream collection code.
+                """
+                vector_path = "/joint_action/vector"
+                if vector_path not in traj:
+                    return
+
+                vector = np.asarray(traj[vector_path][()], dtype=np.float32)
+                if vector.shape != state.shape:
+                    raise ValueError(
+                        f"{vector_path} shape {vector.shape} does not match concatenated "
+                        f"joint_action shape {state.shape}"
+                    )
+
+                if not np.allclose(vector, state, atol=1e-5, rtol=1e-5):
+                    max_abs_diff = float(np.max(np.abs(vector - state)))
+                    raise ValueError(
+                        f"{vector_path} does not match concatenated left_arm, left_gripper, "
+                        f"right_arm, right_gripper layout; max_abs_diff={max_abs_diff:.6g}"
+                    )
+            '''
+                anchor = "def _decode_jpeg_stream"
+                if anchor not in text:
+                    raise SystemExit("failed to locate converter decode function for vector validator patch")
+                text = text.replace(anchor, helper + "\n\n" + anchor, 1)
+
+                state_anchor = "    assert state.shape == (T, STATE_DIM)\n\n    # Absolute next-step qpos target."
+                state_replacement = (
+                    "    assert state.shape == (T, STATE_DIM)\n"
+                    "    _validate_joint_action_vector(traj, state)\n\n"
+                    "    # Absolute next-step qpos target."
+                )
+                if state_anchor not in text:
+                    raise SystemExit("failed to locate state assertion for vector validator patch")
+                text = text.replace(state_anchor, state_replacement, 1)
+                converter.write_text(text)
+                print("Patched RoboTwin converter with joint_action/vector layout validation.")
+
+            text = converter.read_text()
+            if '"embodiment_tag": "robotwin"' not in text:
+                if '"embodiment_tag": "robofactory"' not in text:
+                    raise SystemExit("failed to locate converter embodiment_tag for robotwin namespace patch")
+                text = text.replace('"embodiment_tag": "robofactory"', '"embodiment_tag": "robotwin"', 1)
+                converter.write_text(text)
+                print("Patched RoboTwin converter to write embodiment_tag=robotwin.")
+
+            text = converter.read_text()
+            for marker in (
+                "_validate_joint_action_vector",
+                "action = state[1:].copy()",
+                "relative_stats_dreamzero.json",
+                '"embodiment_tag": "robotwin"',
+            ):
+                if marker not in text:
+                    raise SystemExit(f"converter marker missing after patch: {marker}")
+            compile(text, str(converter), "exec")
+            PY
             install_converter_deps
 
             echo "Checking existing raw stack_blocks_two demos at ${RAW_DATA_S3_URI}/"
@@ -416,10 +660,20 @@ workflow:
             osmo data download --resume "${RAW_DATA_S3_URI}/" "$RAW_DATA_ROOT"
             raw_download_status=$?
             set -e
-            if [ "$raw_download_status" -eq 0 ] && has_expected_hdf5_episodes "$RAW_EPISODE_DIR"; then
+            if ! has_expected_hdf5_episodes "$RAW_EPISODE_DIR" && \
+               [ -n "${RAW_BOOTSTRAP_DATA_S3_URI:-}" ] && \
+               [ "$RAW_BOOTSTRAP_DATA_S3_URI" != "$RAW_DATA_S3_URI" ]; then
+              echo "Bootstrapping raw demos from ${RAW_BOOTSTRAP_DATA_S3_URI}/ before collecting more."
+              set +e
+              osmo data download --resume "${RAW_BOOTSTRAP_DATA_S3_URI}/" "$RAW_DATA_ROOT"
+              bootstrap_download_status=$?
+              set -e
+              echo "Raw bootstrap download status: ${bootstrap_download_status}"
+            fi
+            if has_expected_hdf5_episodes "$RAW_EPISODE_DIR"; then
               echo "Raw stack_blocks_two demos already exist at ${RAW_DATA_S3_URI}/"
             else
-              echo "Raw stack_blocks_two hdf5 episodes missing; collecting stack_blocks_two demo_full_franka once."
+              echo "Raw stack_blocks_two hdf5 episodes missing; collecting stack_blocks_two ${TASK_CONFIG_NAME} to ${ROBOTWIN_TARGET_EPISODES} episodes."
               configure_nvidia_graphics
               prepare_robotwin_runtime
               install_curobo_runtime
@@ -429,7 +683,56 @@ workflow:
               link_legacy_robotwin_paths
               ensure_warp_runtime
               cd /workspace/robotwin
-              "$ROBOTWIN_PYTHON" script/collect_data.py stack_blocks_two demo_full_franka
+              "$ROBOTWIN_PYTHON" - <<'PY'
+            from pathlib import Path
+
+            robot_py = Path("/workspace/robotwin/envs/robot/robot.py")
+            base_task_py = Path("/workspace/robotwin/envs/_base_task.py")
+            if not robot_py.is_file():
+                raise SystemExit(f"missing RoboTwin robot definition: {robot_py}")
+            if not base_task_py.is_file():
+                raise SystemExit(f"missing RoboTwin base task definition: {base_task_py}")
+
+            robot_s = robot_py.read_text()
+            base_task_s = base_task_py.read_text()
+            checks = {
+                "set_gripper declares gripper_val in [0,1]": "gripper_val in [0,1]" in robot_s,
+                "set_gripper clips gripper_val to [0,1]": "np.clip(gripper_val, 0, 1)" in robot_s,
+                "left normalized real gripper is clipped to [0,1]": "np.clip(normal_left_gripper_val, 0, 1)" in robot_s,
+                "right normalized real gripper is clipped to [0,1]": "np.clip(normal_right_gripper_val, 0, 1)" in robot_s,
+                "open threshold uses high gripper values": "left_gripper_val > 0.8" in robot_s and "right_gripper_val > 0.8" in robot_s,
+                "close threshold uses low gripper values": "left_gripper_val < 0.2" in robot_s and "right_gripper_val < 0.2" in robot_s,
+                "close_gripper default is 0.0": "def close_gripper(self, arm_tag: ArmTag, pos: float = 0.0)" in base_task_s,
+                "open_gripper default is 1.0": "def open_gripper(self, arm_tag: ArmTag, pos: float = 1.0)" in base_task_s,
+                "together close defaults to 0": "def together_close_gripper(self, save_freq=-1, left_pos=0, right_pos=0)" in base_task_s,
+                "together open defaults to 1": "def together_open_gripper(self, save_freq=-1, left_pos=1, right_pos=1)" in base_task_s,
+            }
+            missing = [name for name, ok in checks.items() if not ok]
+            if missing:
+                raise SystemExit(
+                    "RoboTwin gripper convention self-check failed; expected range=[0,1], "
+                    "open=1.0, close=0.0. Missing markers: " + ", ".join(missing)
+                )
+            print("RoboTwin gripper convention self-check passed: range=[0,1], open=1.0, close=0.0")
+            PY
+              "$ROBOTWIN_PYTHON" - <<'PY'
+            import os
+            from pathlib import Path
+            import yaml
+
+            task_config_name = "demo_full_franka"
+            target = int(os.environ["ROBOTWIN_TARGET_EPISODES"])
+            config = Path("task_config") / f"{task_config_name}.yml"
+            if not config.is_file():
+                raise SystemExit(f"missing RoboTwin task config: {config}")
+            data = yaml.safe_load(config.read_text())
+            old = data.get("episode_num")
+            data["episode_num"] = target
+            config.write_text(yaml.safe_dump(data, sort_keys=False))
+            print(f"Patched {config}: episode_num {old} -> {target}")
+            PY
+              drop_last_partial_episode_if_needed
+              collect_robotwin_until_expected
               if ! has_expected_hdf5_episodes "$RAW_EPISODE_DIR"; then
                 echo "ERROR: collection finished but expected hdf5 episodes were not found under $RAW_EPISODE_DIR" >&2
                 exit 13
@@ -440,17 +743,26 @@ workflow:
 
             cd "$CODE_ROOT"
             echo "Converting raw demos to LeRobot v2 at $DATA_ROOT"
+            rm -rf "$DATA_ROOT"
             python scripts/data/robotwin_to_lerobot_v2.py \
               --episode-dir "$RAW_EPISODE_DIR" \
               --out "$DATA_ROOT" \
               --task "stack the two blocks" \
               --num-episodes "${ROBOTWIN_NUM_EPISODES:--1}"
 
-            if ! has_lerobot_meta "$DATA_ROOT"; then
-              echo "ERROR: conversion finished but LeRobot metadata is missing at $DATA_ROOT" >&2
+            if ! has_expected_lerobot_episodes "$DATA_ROOT"; then
+              echo "ERROR: conversion finished but expected LeRobot episodes are missing at $DATA_ROOT" >&2
               exit 14
             fi
 
             echo "Uploading converted LeRobot v2 dataset to ${CONVERTED_DATA_S3_URI}/"
             osmo data upload "${CONVERTED_DATA_S3_URI}/" "$DATA_ROOT"
             echo "Prepared persistent RoboTwin stack_blocks_two dataset at ${CONVERTED_DATA_S3_URI}/"
+
+default-values:
+  workflow_name: robotwin-stack-blocks-two-dataset500-l40-xianzhef-20260603
+  data_variant: stack_blocks_two-rt-500
+  target_episodes: "500"
+  raw_data_s3_uri: s3://GearHome/users/xianzhef/oci-migration/RoboTwin/data/stack_blocks_two/demo_full_franka
+  raw_bootstrap_data_s3_uri: s3://GearHome/users/xianzhef/oci-migration/RoboTwin/data/stack_blocks_two/demo_full_franka
+  converted_data_s3_uri: s3://GearHome/users/xianzhef/oci-migration/data/robotwin_lerobot_v2/stack_blocks_two-rt-500

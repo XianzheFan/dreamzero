@@ -2,7 +2,7 @@ workflow:
   timeout:
     queue_timeout: 2h
     exec_timeout: 14d
-  name: dreamzero-rt-stack-blocks-two-train-shared-global-xianzhef-20260531-231103
+  name: "{{workflow_name}}"
   resources:
     default:
       cpu: 80
@@ -37,15 +37,25 @@ workflow:
 
             exec > >(tee /tmp/train_stack_blocks_two.log) 2>&1
 
-            RUN_NAME="dreamzero-rt-stack-blocks-two-train-shared-global-xianzhef-20260531-231103"
-            CODE_S3_URI="s3://GearHome/users/xianzhef/oci-migration/dreamzero"
-            CONVERTED_DATA_S3_URI="s3://GearHome/users/xianzhef/oci-migration/data/robotwin_lerobot_v2/stack_blocks_two-rt"
+            RUN_NAME="${RUN_NAME:-{{run_name}}}"
+            RESTORE_RUN_NAME="${RESTORE_RUN_NAME:-{{restore_run_name}}}"
+            CODE_S3_URI="${CODE_S3_URI:-{{code_s3_uri}}}"
+            DATA_VARIANT="${DATA_VARIANT:-{{data_variant}}}"
+            EXPECTED_DATA_EPISODES="${EXPECTED_DATA_EPISODES:-{{expected_data_episodes}}}"
+            CONVERTED_DATA_S3_URI="${CONVERTED_DATA_S3_URI:-{{converted_data_s3_uri}}}"
             MODEL_CACHE_S3_URI="s3://GearHome/users/xianzhef/oci-migration/checkpoints"
             RUN_S3_ROOT="s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/${RUN_NAME}"
             OUTPUT_S3_URI="${RUN_S3_ROOT}/checkpoints"
             LOG_S3_URI="${RUN_S3_ROOT}/logs"
+            BOOTSTRAP_RESTORE_S3_URI="${BOOTSTRAP_RESTORE_S3_URI:-s3://GearHome/users/xianzhef/oci-migration/dreamzero_s3cache/bootstrap_checkpoints/${RUN_NAME}}"
+            CACHE_OUTPUT_S3_URI="${CACHE_OUTPUT_S3_URI:-${BOOTSTRAP_RESTORE_S3_URI}}"
+            BOOTSTRAP_RESTORE_AMLFS_DIR="${BOOTSTRAP_RESTORE_AMLFS_DIR:-/mnt/amlfs-01/home/xianzhef/osmo_cache/dreamzero/bootstrap_checkpoints/${RUN_NAME}}"
+            OUTPUT_AMLFS_DIR="${OUTPUT_AMLFS_DIR:-/mnt/amlfs-01/home/xianzhef/osmo_cache/dreamzero/train_outputs/${RUN_NAME}}"
+            RESTORE_S3_URI="${RESTORE_S3_URI:-s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/${RESTORE_RUN_NAME}/checkpoints}"
+            RESTORE_EVAL_CKPT_S3_URI="${RESTORE_EVAL_CKPT_S3_URI:-s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/${RESTORE_RUN_NAME}/eval_checkpoints}"
+            CHECKPOINT_UPLOAD_INTERVAL_SECONDS="${CHECKPOINT_UPLOAD_INTERVAL_SECONDS:-900}"
 
-            for uri in "$CODE_S3_URI" "$CONVERTED_DATA_S3_URI" "$MODEL_CACHE_S3_URI" "$RUN_S3_ROOT" "$OUTPUT_S3_URI" "$LOG_S3_URI"; do
+            for uri in "$CODE_S3_URI" "$CONVERTED_DATA_S3_URI" "$MODEL_CACHE_S3_URI" "$RUN_S3_ROOT" "$OUTPUT_S3_URI" "$LOG_S3_URI" "$BOOTSTRAP_RESTORE_S3_URI" "$CACHE_OUTPUT_S3_URI" "$RESTORE_S3_URI" "$RESTORE_EVAL_CKPT_S3_URI"; do
               case "$uri" in
                 s3://GearHome/users/xianzhef/*) ;;
                 *)
@@ -55,15 +65,30 @@ workflow:
               esac
             done
 
+            for path in "$BOOTSTRAP_RESTORE_AMLFS_DIR" "$OUTPUT_AMLFS_DIR"; do
+              case "$path" in
+                /mnt/amlfs-01/home/xianzhef/*) ;;
+                *)
+                  echo "Refusing non-xianzhef AMLFS path: $path" >&2
+                  exit 64
+                  ;;
+              esac
+            done
+
             upload_artifacts() {
               status=$?
               set +e
+              if [ -n "${PERIODIC_UPLOADER_PID:-}" ] && kill -0 "$PERIODIC_UPLOADER_PID" 2>/dev/null; then
+                echo "Stopping periodic checkpoint uploader pid=${PERIODIC_UPLOADER_PID}"
+                kill "$PERIODIC_UPLOADER_PID" 2>/dev/null || true
+                wait "$PERIODIC_UPLOADER_PID" 2>/dev/null || true
+              fi
               echo "Training workflow exit status: $status"
               osmo data upload "${LOG_S3_URI}/" /tmp/train_stack_blocks_two.log
-              if [ -d "${OUTPUT_DIR:-}" ]; then
-                osmo data upload "${OUTPUT_S3_URI}/" "${OUTPUT_DIR}"
+              if declare -f upload_eval_checkpoints_once >/dev/null 2>&1; then
+                upload_eval_checkpoints_once || true
               else
-                echo "No OUTPUT_DIR found to upload: ${OUTPUT_DIR:-unset}"
+                echo "Eval-checkpoint uploader was not initialized yet."
               fi
               exit "$status"
             }
@@ -76,6 +101,10 @@ workflow:
             export GIT_LFS_SKIP_SMUDGE=1
             export OSMO_CACHE_ROOT="${OSMO_CACHE_ROOT:-/mnt/amlfs-01/home/xianzhef/osmo_cache}"
             export DREAMZERO_CACHE_ROOT="${DREAMZERO_CACHE_ROOT:-${OSMO_CACHE_ROOT}/dreamzero}"
+            export BOOTSTRAP_RESTORE_S3_URI
+            export CACHE_OUTPUT_S3_URI
+            export BOOTSTRAP_RESTORE_AMLFS_DIR
+            export OUTPUT_AMLFS_DIR
             export HF_HOME="${DREAMZERO_CACHE_ROOT}/hf"
             export HF_HUB_CACHE="${HF_HOME}/hub"
             export TRANSFORMERS_CACHE="${HF_HOME}/transformers"
@@ -86,8 +115,9 @@ workflow:
 
             mkdir -p \
               /workspace/code/dreamzero \
-              /workspace/data/robotwin_lerobot_v2/stack_blocks_two-rt \
+              /workspace/data/robotwin_lerobot_v2 \
               "${DREAMZERO_CACHE_ROOT}/checkpoints" \
+              "${DREAMZERO_CACHE_ROOT}/train_outputs" \
               /workspace/outputs \
               "$HF_HOME" \
               "$WANDB_CACHE_DIR"
@@ -335,9 +365,9 @@ workflow:
               python -c 'import os, wandb; wandb.login(key=os.environ["WANDB_API_KEY"], relogin=True)'
             }
 
-            echo "Downloading persistent converted RoboTwin stack_blocks_two dataset from ${CONVERTED_DATA_S3_URI}/"
+            echo "Downloading persistent converted RoboTwin stack_blocks_two dataset ${DATA_VARIANT} from ${CONVERTED_DATA_S3_URI}/"
             DATA_PARENT="/workspace/data/robotwin_lerobot_v2"
-            DATA_ROOT="${DATA_PARENT}/stack_blocks_two-rt"
+            DATA_ROOT="${DATA_PARENT}/${DATA_VARIANT}"
             mkdir -p "$DATA_PARENT"
             set +e
             osmo data download --resume "${CONVERTED_DATA_S3_URI}/" "$DATA_PARENT"
@@ -346,7 +376,7 @@ workflow:
 
             RESOLVED_DATA_ROOT="$(resolve_lerobot_root "$DATA_ROOT" || true)"
             if [ "$converted_download_status" -ne 0 ] || [ -z "$RESOLVED_DATA_ROOT" ]; then
-              echo "ERROR: persistent stack_blocks_two LeRobot v2 dataset is missing at ${CONVERTED_DATA_S3_URI}/" >&2
+              echo "ERROR: persistent stack_blocks_two LeRobot v2 dataset ${DATA_VARIANT} is missing at ${CONVERTED_DATA_S3_URI}/" >&2
               echo "Run prepare_dataset_workflow.yaml once, then resubmit this training workflow." >&2
               exit 9
             fi
@@ -356,8 +386,11 @@ workflow:
             echo "Downloading DreamZero code from ${CODE_S3_URI}/"
             osmo data download --resume "${CODE_S3_URI}/" /workspace/code/dreamzero
             CODE_ROOT="/workspace/code/dreamzero"
-            if [ ! -f "$CODE_ROOT/pyproject.toml" ]; then
-              found_pyproject="$(find /workspace/code -maxdepth 4 -name pyproject.toml -print -quit)"
+            LATEST_CODE_ROOT="${CODE_ROOT}/dreamzero_gripperfix_upload_latest"
+            if [ -f "${LATEST_CODE_ROOT}/pyproject.toml" ]; then
+              CODE_ROOT="$LATEST_CODE_ROOT"
+            elif [ ! -f "$CODE_ROOT/pyproject.toml" ]; then
+              found_pyproject="$(find /workspace/code -maxdepth 4 -name pyproject.toml -print | sort | tail -n 1)"
               if [ -n "$found_pyproject" ]; then
                 CODE_ROOT="$(dirname "$found_pyproject")"
               fi
@@ -371,7 +404,506 @@ workflow:
               exit 6
             fi
 
+            require_code_marker() {
+              local file="$1"
+              shift
+              local marker
+              if [ ! -f "$CODE_ROOT/$file" ]; then
+                echo "ERROR: expected code file missing: $file" >&2
+                exit 7
+              fi
+              for marker in "$@"; do
+                if ! grep -Fq "$marker" "$CODE_ROOT/$file"; then
+                  echo "ERROR: code marker missing in $file: $marker" >&2
+                  exit 7
+                fi
+              done
+            }
+
+            install_workflow_fallbacks() {
+              if [ ! -f "$CODE_ROOT/scripts/data/inspect_robotwin_lerobot.py" ]; then
+                echo "Installing workflow-local RoboTwin LeRobot inspector fallback."
+                mkdir -p "$CODE_ROOT/scripts/data"
+                cat > "$CODE_ROOT/scripts/data/inspect_robotwin_lerobot.py" <<'PY'
+            from __future__ import annotations
+
+            import argparse
+            import json
+            from pathlib import Path
+
+            import numpy as np
+            import pandas as pd
+
+
+            def parse_dims(value: str) -> tuple[int, ...]:
+                dims = tuple(int(part.strip()) for part in value.split(",") if part.strip())
+                if not dims:
+                    raise ValueError("empty gripper dims")
+                return dims
+
+
+            def read_jsonl(path: Path) -> list[dict]:
+                rows = []
+                with path.open() as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            rows.append(json.loads(line))
+                return rows
+
+
+            def stack_column(df: pd.DataFrame, column: str) -> np.ndarray:
+                return np.stack([np.asarray(value, dtype=np.float32) for value in df[column]], axis=0)
+
+
+            def stats_vector(stats: dict, key: str, stat_name: str, expected_dim: int) -> np.ndarray:
+                values = stats[key][stat_name]
+                arr = np.asarray(values, dtype=np.float32)
+                if arr.shape != (expected_dim,):
+                    raise SystemExit(
+                        f"meta/stats.json {key}.{stat_name} shape {arr.shape} "
+                        f"does not match expected dim {(expected_dim,)}"
+                    )
+                return arr
+
+
+            def normalize_q99_value(value: float, q01: float, q99: float) -> float | None:
+                if q01 == q99:
+                    return None
+                return float(np.clip(2.0 * (value - q01) / (q99 - q01) - 1.0, -1.0, 1.0))
+
+
+            def main() -> None:
+                parser = argparse.ArgumentParser()
+                parser.add_argument("--root", type=Path, required=True)
+                parser.add_argument("--expected-episodes", type=int, required=True)
+                parser.add_argument("--expected-action-dim", type=int, default=16)
+                parser.add_argument("--expected-state-dim", type=int, default=16)
+                parser.add_argument("--gripper-dims", type=parse_dims, default=(7, 15))
+                parser.add_argument("--close-threshold", type=float, default=0.5)
+                parser.add_argument("--gripper-min", type=float, default=0.0)
+                parser.add_argument("--gripper-max", type=float, default=1.0)
+                parser.add_argument("--gripper-range-epsilon", type=float, default=1e-4)
+                args = parser.parse_args()
+
+                root = args.root.resolve()
+                info = json.loads((root / "meta/info.json").read_text())
+                metadata_stats = json.loads((root / "meta/stats.json").read_text())
+                episodes = read_jsonl(root / "meta/episodes.jsonl")
+                if len(episodes) < args.expected_episodes:
+                    raise SystemExit(
+                        f"dataset has {len(episodes)} episodes, expected at least {args.expected_episodes}"
+                    )
+
+                action_dim = int(info["features"]["action"]["shape"][0])
+                state_dim = int(info["features"]["observation.state"]["shape"][0])
+                if action_dim != args.expected_action_dim:
+                    raise SystemExit(f"action dim mismatch: got {action_dim}, expected {args.expected_action_dim}")
+                if state_dim != args.expected_state_dim:
+                    raise SystemExit(f"state dim mismatch: got {state_dim}, expected {args.expected_state_dim}")
+                action_q01 = stats_vector(metadata_stats, "action", "q01", action_dim)
+                action_q99 = stats_vector(metadata_stats, "action", "q99", action_dim)
+
+                data_path = info["data_path"]
+                chunks_size = int(info.get("chunks_size", 1000))
+                actions = []
+                frames_read = 0
+                for episode in episodes:
+                    episode_index = int(episode["episode_index"])
+                    rel = data_path.format(
+                        episode_chunk=episode_index // chunks_size,
+                        episode_index=episode_index,
+                    )
+                    df = pd.read_parquet(root / rel)
+                    action = stack_column(df, "action")
+                    if action.shape[1] != action_dim:
+                        raise SystemExit(f"{rel} action shape {action.shape} does not match {action_dim}")
+                    actions.append(action)
+                    frames_read += int(action.shape[0])
+
+                action_all = np.concatenate(actions, axis=0)
+                gripper = {}
+                for dim in args.gripper_dims:
+                    if dim < 0 or dim >= action_dim:
+                        raise SystemExit(f"gripper dim {dim} outside action dim {action_dim}")
+                    values = action_all[:, dim].astype(np.float32)
+                    unique = np.unique(np.round(values, 4))
+                    close_fraction = float(np.mean(values < args.close_threshold))
+                    value_min = float(values.min())
+                    value_max = float(values.max())
+                    if value_min < args.gripper_min - args.gripper_range_epsilon or value_max > args.gripper_max + args.gripper_range_epsilon:
+                        raise SystemExit(
+                            f"gripper dim {dim} is outside expected Robotwin range "
+                            f"[{args.gripper_min}, {args.gripper_max}]: min={value_min}, max={value_max}"
+                        )
+                    q01 = float(action_q01[dim])
+                    q99 = float(action_q99[dim])
+                    stats = {
+                        "min": value_min,
+                        "max": value_max,
+                        "mean": float(values.mean()),
+                        "std": float(values.std()),
+                        "q01": q01,
+                        "q99": q99,
+                        "close_fraction_raw_lt_threshold": close_fraction,
+                        "normalized_close_threshold_q99": normalize_q99_value(
+                            args.close_threshold,
+                            q01,
+                            q99,
+                        ),
+                        "normalized_min_q99": normalize_q99_value(value_min, q01, q99),
+                        "normalized_max_q99": normalize_q99_value(value_max, q01, q99),
+                        "unique_rounded_count": int(len(unique)),
+                    }
+                    if stats["unique_rounded_count"] < 2:
+                        raise SystemExit(f"gripper dim {dim} is static: {stats}")
+                    if close_fraction <= 0.0 or close_fraction >= 1.0:
+                        raise SystemExit(f"gripper dim {dim} has no open/close mix: {stats}")
+                    gripper[f"dim_{dim}"] = stats
+
+                print(json.dumps({
+                    "root": str(root),
+                    "episodes": len(episodes),
+                    "frames_read": frames_read,
+                    "action_dim": action_dim,
+                    "state_dim": state_dim,
+                    "gripper_dims": list(args.gripper_dims),
+                    "raw_close_threshold": args.close_threshold,
+                    "expected_gripper_range": [args.gripper_min, args.gripper_max],
+                    "gripper_range_epsilon": args.gripper_range_epsilon,
+                    "action_gripper": gripper,
+                }, indent=2, sort_keys=True))
+
+
+            if __name__ == "__main__":
+                main()
+            PY
+              fi
+
+              python - "$CODE_ROOT" <<'PY'
+            import sys
+            from pathlib import Path
+
+            code_root = Path(sys.argv[1])
+            base_py = code_root / "groot/vla/experiment/base.py"
+            text = base_py.read_text()
+            if "gripper_binary_action_loss_avg" in text:
+                raise SystemExit(0)
+
+            if '"gripper_clean_action_loss_avg",' in text:
+                text = text.replace(
+                    '            "gripper_clean_action_loss_avg",\n            "learning_rate",',
+                    '            "gripper_clean_action_loss_avg",\n            "gripper_binary_action_loss_avg",\n            "learning_rate",',
+                    1,
+                )
+            else:
+                text = text.replace(
+                    '            "action_loss_avg",\n            "learning_rate",',
+                    '            "action_loss_avg",\n            "gripper_clean_action_loss_avg",\n            "gripper_binary_action_loss_avg",\n            "learning_rate",',
+                    1,
+                )
+            if "gripper_binary_action_loss_avg" not in text:
+                raise SystemExit("failed to patch LossLoggerCallback gripper binary metric")
+            base_py.write_text(text)
+            print("Patched LossLoggerCallback to log gripper_binary_action_loss_avg")
+            PY
+
+              python - "$CODE_ROOT" <<'PY'
+            import sys
+            from pathlib import Path
+
+            code_root = Path(sys.argv[1])
+            lerobot_py = code_root / "groot/vla/data/dataset/lerobot.py"
+            sharded_py = code_root / "groot/vla/data/dataset/lerobot_sharded.py"
+
+            text = lerobot_py.read_text()
+            if "_normalize_relative_action_key" not in text:
+                helper = '''
+
+            def _normalize_relative_action_key(key: str) -> str:
+                """Canonicalize state/action modality keys for relative-action matching."""
+                for prefix in ("action.", "state."):
+                    if key.startswith(prefix):
+                        return key[len(prefix):]
+                return key
+
+
+            def _normalize_relative_action_keys(keys):
+                if keys is None:
+                    return None
+                return [_normalize_relative_action_key(key) for key in keys]
+
+
+            def _relative_action_key_matches(key: str, relative_action_keys) -> bool:
+                if relative_action_keys is None:
+                    return True
+                return _normalize_relative_action_key(key) in {
+                    _normalize_relative_action_key(rel_key) for rel_key in relative_action_keys
+                }
+            '''
+                marker = 'METADATA_LANG_KEYS = ["detailed_global_instruction_medium", "detailed_global_instruction_concise"]\n'
+                if marker not in text:
+                    raise SystemExit("failed to locate METADATA_LANG_KEYS insertion point")
+                text = text.replace(marker, marker + helper + "\n", 1)
+
+            replacements = {
+                "self.relative_action_keys = relative_action_keys": "self.relative_action_keys = _normalize_relative_action_keys(relative_action_keys)",
+                'k.replace("action.", "") for k in action_keys': "_normalize_relative_action_key(k) for k in action_keys",
+                'subkey = key.replace("action.", "")': "subkey = _normalize_relative_action_key(key)",
+                "if self.relative_action_keys is None or subkey in self.relative_action_keys:": "if _relative_action_key_matches(subkey, self.relative_action_keys):",
+                "and (self.relative_action_keys is None or subkey in self.relative_action_keys)": "and _relative_action_key_matches(subkey, self.relative_action_keys)",
+            }
+            patched_lerobot = False
+            for old, new in replacements.items():
+                if old in text:
+                    text = text.replace(old, new)
+                    patched_lerobot = True
+            if "_relative_action_key_matches(subkey, self.relative_action_keys)" not in text:
+                raise SystemExit("failed to patch lerobot relative_action key matching")
+            lerobot_py.write_text(text)
+
+            text = sharded_py.read_text()
+            if "_relative_action_key_matches" not in text:
+                old_import = "from .lerobot import LE_ROBOT_EPISODE_FILENAME, LeRobotMixtureDataset, LeRobotSingleDataset"
+                new_import = """from .lerobot import (
+                LE_ROBOT_EPISODE_FILENAME,
+                LeRobotMixtureDataset,
+                LeRobotSingleDataset,
+                _normalize_relative_action_key,
+                _relative_action_key_matches,
+            )"""
+                if old_import not in text:
+                    raise SystemExit("failed to locate lerobot_sharded import for relative key helpers")
+                text = text.replace(old_import, new_import, 1)
+            sharded_replacements = {
+                'subkey = key.replace("action.", "")': "subkey = _normalize_relative_action_key(key)",
+                "and (self.relative_action_keys is None or subkey in self.relative_action_keys)": "and _relative_action_key_matches(subkey, self.relative_action_keys)",
+            }
+            patched_sharded = False
+            for old, new in sharded_replacements.items():
+                if old in text:
+                    text = text.replace(old, new)
+                    patched_sharded = True
+            if "_relative_action_key_matches(subkey, self.relative_action_keys)" not in text:
+                raise SystemExit("failed to patch lerobot_sharded relative_action key matching")
+            sharded_py.write_text(text)
+
+            if patched_lerobot or patched_sharded:
+                print("Patched LeRobot relative_action key matching for action./state. prefixes")
+            PY
+              python - "$CODE_ROOT" <<'PY'
+            import sys
+            from pathlib import Path
+
+            code_root = Path(sys.argv[1])
+
+            tags_py = code_root / "groot/vla/data/schema/embodiment_tags.py"
+            tags_s = tags_py.read_text()
+            if 'ROBOTWIN = "robotwin"' not in tags_s:
+                marker = '    DREAM = "dream"\n'
+                insert = (
+                    '    ROBOTWIN = "robotwin"\n'
+                    '    """\n'
+                    '    RoboTwin bimanual SAPIEN tasks. RoboTwin gripper commands are\n'
+                    '    simulator-normalized in [0, 1], with 1.0=open and 0.0=close.\n'
+                    '    """\n\n'
+                )
+                if marker not in tags_s:
+                    raise SystemExit("failed to locate DREAM embodiment tag insertion point")
+                tags_s = tags_s.replace(marker, insert + marker, 1)
+                compile(tags_s, str(tags_py), "exec")
+                tags_py.write_text(tags_s)
+                print("Patched EmbodimentTag with ROBOTWIN.")
+
+            base_cfg = code_root / "groot/vla/configs/data/dreamzero/base_48_wan_fine_aug_relative.yaml"
+            base_s = base_cfg.read_text()
+            if "modality_config_robotwin:" not in base_s:
+                insert_marker = "\n\n################################################################################\n# robofactory 3-arm"
+                if "modality_config_robofactory:" not in base_s or insert_marker not in base_s:
+                    raise SystemExit("failed to locate robofactory config block for robotwin namespace patch")
+                start = base_s.index("modality_config_robofactory:")
+                end = base_s.index(insert_marker)
+                robotwin_block = base_s[start:end].replace(
+                    "modality_config_robofactory",
+                    "modality_config_robotwin",
+                ).replace(
+                    "transform_robofactory",
+                    "transform_robotwin",
+                )
+                header = (
+                    "################################################################################\n"
+                    "# robotwin (RoboTwin bimanual SAPIEN; gripper [0,1], open=1.0, close=0.0)\n"
+                    "################################################################################\n\n"
+                )
+                base_s = base_s[:end] + "\n\n" + header + robotwin_block + base_s[end:]
+
+            replacements = {
+                "  robofactory: ${modality_config_robofactory}\n": (
+                    "  robofactory: ${modality_config_robofactory}\n"
+                    "  robotwin: ${modality_config_robotwin}\n"
+                ),
+                "  robofactory: ${transform_robofactory}\n": (
+                    "  robofactory: ${transform_robofactory}\n"
+                    "  robotwin: ${transform_robotwin}\n"
+                ),
+                "  robofactory: '0221'\n": (
+                    "  robofactory: '0221'\n"
+                    "  robotwin: '0221'\n"
+                ),
+                "  robofactory: 20\n": (
+                    "  robofactory: 20\n"
+                    "  robotwin: 20\n"
+                ),
+            }
+            for old, new in replacements.items():
+                if "robotwin" not in old and old in base_s and new not in base_s:
+                    base_s = base_s.replace(old, new, 1)
+            if "robotwin: ${modality_config_robotwin}" not in base_s:
+                raise SystemExit("failed to patch modality_configs.robotwin")
+            if "robotwin: ${transform_robotwin}" not in base_s:
+                raise SystemExit("failed to patch transforms.robotwin")
+            base_cfg.write_text(base_s)
+
+            for rel in (
+                "groot/vla/configs/data/dreamzero/robotwin_franka_bimanual_relative.yaml",
+                "groot/vla/configs/data/dreamzero/robotwin_franka_bimanual_shared_global.yaml",
+            ):
+                cfg = code_root / rel
+                s = cfg.read_text()
+                s = s.replace(
+                    "        robofactory:\n          - ${robotwin_data_root}",
+                    "        robotwin:\n          - ${robotwin_data_root}",
+                    1,
+                )
+                s = s.replace("modality_config_robofactory", "modality_config_robotwin")
+                if "        robotwin:\n          - ${robotwin_data_root}" not in s:
+                    raise SystemExit(f"failed to patch {rel} to dataset_path.robotwin")
+                cfg.write_text(s)
+
+            print("Patched RoboTwin embodiment namespace separate from RoboFactory.")
+            PY
+              python - "$CODE_ROOT" <<'PY'
+            import sys
+            from pathlib import Path
+
+            code_root = Path(sys.argv[1])
+            train_script = code_root / "scripts/train/robotwin_bimanual_training.sh"
+            text = train_script.read_text()
+            patched = False
+
+            if "GRIPPER_ACTION_DIMS=" not in text:
+                marker = "GRIPPER_CLOSE_THRESHOLD=${GRIPPER_CLOSE_THRESHOLD:-0.0}\n"
+                if marker not in text:
+                    raise SystemExit("failed to locate GRIPPER_CLOSE_THRESHOLD default")
+                text = text.replace(
+                    marker,
+                    marker + "GRIPPER_ACTION_DIMS=${GRIPPER_ACTION_DIMS:-7}\n",
+                    1,
+                )
+                patched = True
+
+            echo_old = (
+                "gripper_close_threshold=$GRIPPER_CLOSE_THRESHOLD  "
+                "gripper_clean_action_loss_weight=$GRIPPER_CLEAN_ACTION_LOSS_WEIGHT"
+            )
+            if "gripper_action_dims=[$GRIPPER_ACTION_DIMS]" not in text and echo_old in text:
+                text = text.replace(
+                    echo_old,
+                    "gripper_close_threshold=$GRIPPER_CLOSE_THRESHOLD  "
+                    "gripper_action_dims=[$GRIPPER_ACTION_DIMS]  "
+                    "gripper_clean_action_loss_weight=$GRIPPER_CLEAN_ACTION_LOSS_WEIGHT",
+                    1,
+                )
+                patched = True
+
+            override_old = (
+                "    ++action_head_cfg.config.gripper_close_threshold=$GRIPPER_CLOSE_THRESHOLD \\\n"
+            )
+            override_new = (
+                override_old
+                + "    ++action_head_cfg.config.gripper_action_dims=[$GRIPPER_ACTION_DIMS] \\\n"
+            )
+            if "++action_head_cfg.config.gripper_action_dims=[$GRIPPER_ACTION_DIMS]" not in text:
+                if override_old not in text:
+                    raise SystemExit("failed to locate gripper_close_threshold hydra override")
+                text = text.replace(override_old, override_new, 1)
+                patched = True
+
+            if "GRIPPER_ACTION_DIMS" not in text or "gripper_action_dims=[$GRIPPER_ACTION_DIMS]" not in text:
+                raise SystemExit("failed to patch RoboTwin training script gripper_action_dims")
+            train_script.write_text(text)
+            if patched:
+                print("Patched RoboTwin training script to pass gripper_action_dims=[7]")
+            PY
+            }
+            install_workflow_fallbacks
+
+            ensure_dataset_inspector_deps() {
+              python - <<'PY'
+            import importlib.util
+            import subprocess
+            import sys
+
+            missing = [
+                package
+                for package, module in (("pandas", "pandas"), ("pyarrow", "pyarrow"), ("numpy", "numpy"))
+                if importlib.util.find_spec(module) is None
+            ]
+            if missing:
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", *missing])
+            PY
+            }
+
+            require_code_marker \
+              scripts/train/robotwin_bimanual_training.sh \
+              "GRIPPER_CLEAN_ACTION_LOSS_WEIGHT" \
+              "GRIPPER_BINARY_ACTION_LOSS_WEIGHT" \
+              "gripper_action_dims" \
+              "diffusion_model_cfg.num_agents=2"
+                        require_code_marker \
+                          groot/vla/configs/data/dreamzero/robotwin_franka_bimanual_shared_global.yaml \
+                          "robotwin:" \
+                          "global_views: [0]" \
+                          "global_condition_mode: current_repeat"
+                        require_code_marker \
+                          groot/vla/data/schema/embodiment_tags.py \
+                          'ROBOTWIN = "robotwin"'
+                        require_code_marker \
+                          groot/vla/configs/data/dreamzero/base_48_wan_fine_aug_relative.yaml \
+                          "modality_config_robotwin" \
+                          "robotwin: \${transform_robotwin}"
+            require_code_marker \
+              groot/vla/model/dreamzero/action_head/wan_flow_matching_action_tf.py \
+              "gripper_clean_action_loss_weight" \
+              "gripper_binary_action_loss_weight"
+            require_code_marker \
+              groot/vla/data/dataset/lerobot.py \
+              "_normalize_relative_action_key"
+            require_code_marker \
+              groot/vla/data/dataset/lerobot_sharded.py \
+              "_relative_action_key_matches"
+            require_code_marker \
+              groot/vla/experiment/base.py \
+              "gripper_binary_action_loss_avg"
+            require_code_marker \
+              scripts/data/inspect_robotwin_lerobot.py \
+              "close_fraction_raw_lt_threshold"
+            require_code_marker \
+              tests/model/test_wan_action_head_multi_agent.py \
+              "test_forward_multi_agent_shared_global_video_runs"
+            echo "DreamZero code marker self-check passed."
+
             cd "$CODE_ROOT"
+            ensure_dataset_inspector_deps
+            echo "Inspecting RoboTwin LeRobot dataset before training"
+            python scripts/data/inspect_robotwin_lerobot.py \
+              --root "$DATA_ROOT" \
+              --expected-episodes "$EXPECTED_DATA_EPISODES" \
+              --expected-action-dim 16 \
+              --expected-state-dim 16 \
+              --gripper-dims 7,15 \
+              --close-threshold 0.5
+
             echo "Installing DreamZero package from $CODE_ROOT"
             if command -v uv >/dev/null 2>&1; then
               uv pip install --system -e . --no-deps || uv pip install -e . --no-deps || python -m pip install -e . --no-deps
@@ -392,20 +924,207 @@ workflow:
             export BATCH_SIZE=1
             export SAVE_STEPS=500
             export LEARNING_RATE=1e-5
+            export ACTION_LOSS_WEIGHT="${ACTION_LOSS_WEIGHT:-5.0}"
+            export GRIPPER_ACTION_LOSS_WEIGHT="${GRIPPER_ACTION_LOSS_WEIGHT:-6.0}"
+            export GRIPPER_CLOSE_ACTION_LOSS_WEIGHT="${GRIPPER_CLOSE_ACTION_LOSS_WEIGHT:-4.0}"
+            export GRIPPER_CLOSE_THRESHOLD="${GRIPPER_CLOSE_THRESHOLD:-0.0}"
+            export GRIPPER_ACTION_DIMS="${GRIPPER_ACTION_DIMS:-7}"
+            export GRIPPER_CLEAN_ACTION_LOSS_WEIGHT="${GRIPPER_CLEAN_ACTION_LOSS_WEIGHT:-2.0}"
+            export GRIPPER_CLEAN_CLOSE_ACTION_LOSS_WEIGHT="${GRIPPER_CLEAN_CLOSE_ACTION_LOSS_WEIGHT:-4.0}"
+            export GRIPPER_CLEAN_MAX_SIGMA="${GRIPPER_CLEAN_MAX_SIGMA:-0.75}"
+            export GRIPPER_BINARY_ACTION_LOSS_WEIGHT="${GRIPPER_BINARY_ACTION_LOSS_WEIGHT:-4.0}"
+            export GRIPPER_BINARY_CLOSE_ACTION_LOSS_WEIGHT="${GRIPPER_BINARY_CLOSE_ACTION_LOSS_WEIGHT:-6.0}"
+            export GRIPPER_BINARY_LOGIT_SCALE="${GRIPPER_BINARY_LOGIT_SCALE:-4.0}"
+            export GRIPPER_BINARY_MAX_SIGMA="${GRIPPER_BINARY_MAX_SIGMA:-0.75}"
+            export ACTION_PREFIX_LOSS_WEIGHT="${ACTION_PREFIX_LOSS_WEIGHT:-2.0}"
+            export ACTION_PREFIX_LOSS_LEN="${ACTION_PREFIX_LOSS_LEN:-8}"
             export REPORT_TO=wandb
             export WANDB_PROJECT=dreamzero_robotwin
             export WANDB_RUN_NAME="$RUN_NAME"
             export WANDB_RUN_ID="$RUN_NAME"
             export DATALOADER_NUM_WORKERS=4
             export ROBOTWIN_DATA_ROOT="$DATA_ROOT"
-            export OUTPUT_DIR="/workspace/outputs/robotwin_franka_bimanual_stack_blocks_two_droid_ma_sg_dzrel_50k"
+            export OUTPUT_DIR="$OUTPUT_AMLFS_DIR"
             export WAN_CKPT_DIR
             export TOKENIZER_DIR
             export PRETRAINED_DIR
+            mkdir -p "$OUTPUT_DIR"
+
+            stage_eval_checkpoints_for_upload() {
+              stage_root="/workspace/eval_checkpoint_upload"
+              stage_dir="${stage_root}/${RUN_NAME}"
+              rm -rf "$stage_dir"
+              mkdir -p "$stage_dir"
+
+              if [ -d "${OUTPUT_DIR}/experiment_cfg" ]; then
+                cp -a "${OUTPUT_DIR}/experiment_cfg" "$stage_dir/"
+              fi
+              if [ -f "${OUTPUT_DIR}/wandb_config.json" ]; then
+                cp -a "${OUTPUT_DIR}/wandb_config.json" "$stage_dir/"
+              fi
+              if [ -f "${OUTPUT_DIR}/loss_log.jsonl" ]; then
+                cp -a "${OUTPUT_DIR}/loss_log.jsonl" "$stage_dir/"
+              fi
+
+              found=0
+              while IFS= read -r ckpt_dir; do
+                [ -n "$ckpt_dir" ] || continue
+                if [ -f "${ckpt_dir}/model.safetensors" ] && \
+                   [ -f "${ckpt_dir}/trainer_state.json" ] && \
+                   [ -f "${ckpt_dir}/experiment_cfg/conf.yaml" ]; then
+                  ckpt_name="$(basename "$ckpt_dir")"
+                  mkdir -p "${stage_dir}/${ckpt_name}"
+                  cp -a "${ckpt_dir}/model.safetensors" "${stage_dir}/${ckpt_name}/"
+                  cp -a "${ckpt_dir}/trainer_state.json" "${stage_dir}/${ckpt_name}/"
+                  if [ -f "${ckpt_dir}/config.json" ]; then
+                    cp -a "${ckpt_dir}/config.json" "${stage_dir}/${ckpt_name}/"
+                  fi
+                  if [ -f "${ckpt_dir}/wandb_config.json" ]; then
+                    cp -a "${ckpt_dir}/wandb_config.json" "${stage_dir}/${ckpt_name}/"
+                  fi
+                  cp -a "${ckpt_dir}/experiment_cfg" "${stage_dir}/${ckpt_name}/"
+                  found=1
+                fi
+              done < <(find "$OUTPUT_DIR" -maxdepth 1 -type d -name 'checkpoint-*' | sort)
+
+              if [ "$found" -eq 0 ]; then
+                echo "No complete checkpoints ready for periodic upload." >&2
+                return 1
+              fi
+              echo "$stage_dir"
+              return 0
+            }
+
+            upload_eval_checkpoints_once() {
+              stage_dir="$(stage_eval_checkpoints_for_upload || true)"
+              if [ -n "$stage_dir" ] && [ -d "$stage_dir" ]; then
+                osmo data upload "${OUTPUT_S3_URI}/" "$stage_dir"
+                osmo data upload "${CACHE_OUTPUT_S3_URI}/" "$stage_dir"
+              fi
+            }
+
+            periodic_checkpoint_upload() {
+              while true; do
+                sleep "$CHECKPOINT_UPLOAD_INTERVAL_SECONDS" || break
+                echo "Periodic checkpoint upload tick: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+                osmo data upload "${LOG_S3_URI}/" /tmp/train_stack_blocks_two.log || true
+                upload_eval_checkpoints_once || true
+              done
+            }
+
+            is_complete_resume_checkpoint() {
+              ckpt_dir="$1"
+              [ -f "${ckpt_dir}/trainer_state.json" ] && \
+                { [ -f "${ckpt_dir}/model.safetensors" ] || [ -f "${ckpt_dir}/model.safetensors.index.json" ]; }
+            }
+
+            restore_checkpoints_from_s3() {
+              src_uri="$1"
+              label="$2"
+              import_dir="/workspace/restore_import/${label}"
+              rm -rf "$import_dir"
+              mkdir -p "$import_dir"
+              echo "Restoring candidate checkpoints from ${src_uri}/ into ${import_dir}"
+              set +e
+              osmo data download --resume "${src_uri}/" "$import_dir"
+              restore_status=$?
+              set -e
+              if [ "$restore_status" -ne 0 ]; then
+                echo "Checkpoint restore from ${src_uri}/ failed with status=${restore_status}."
+                return 1
+              fi
+
+              found=0
+              while IFS= read -r ckpt_dir; do
+                [ -n "$ckpt_dir" ] || continue
+                ckpt_name="$(basename "$ckpt_dir")"
+                if is_complete_resume_checkpoint "$ckpt_dir"; then
+                  echo "Promoting restored checkpoint ${ckpt_dir} -> ${OUTPUT_DIR}/${ckpt_name}"
+                  mkdir -p "${OUTPUT_DIR}/${ckpt_name}"
+                  cp -an "${ckpt_dir}/." "${OUTPUT_DIR}/${ckpt_name}/"
+                  found=1
+                else
+                  echo "Skipping incomplete restored checkpoint ${ckpt_dir}; need model weights plus trainer_state.json."
+                fi
+              done < <(find "$import_dir" -type d -name 'checkpoint-*' | sort)
+
+              if [ "$found" -eq 0 ]; then
+                echo "No usable complete checkpoint-* directories found under ${src_uri}/."
+                return 1
+              fi
+              return 0
+            }
+
+            restore_checkpoints_from_dir() {
+              src_dir="$1"
+              label="$2"
+              if [ ! -d "$src_dir" ]; then
+                echo "No AMLFS bootstrap checkpoint dir found: ${src_dir}"
+                return 1
+              fi
+
+              echo "Restoring candidate checkpoints from AMLFS ${src_dir}"
+              found=0
+              while IFS= read -r ckpt_dir; do
+                [ -n "$ckpt_dir" ] || continue
+                ckpt_name="$(basename "$ckpt_dir")"
+                if is_complete_resume_checkpoint "$ckpt_dir"; then
+                  echo "Promoting ${label} checkpoint ${ckpt_dir} -> ${OUTPUT_DIR}/${ckpt_name}"
+                  mkdir -p "${OUTPUT_DIR}/${ckpt_name}"
+                  cp -al "${ckpt_dir}/." "${OUTPUT_DIR}/${ckpt_name}/" 2>/dev/null || \
+                    cp -an "${ckpt_dir}/." "${OUTPUT_DIR}/${ckpt_name}/"
+                  found=1
+                else
+                  echo "Skipping incomplete ${label} checkpoint ${ckpt_dir}; need model weights plus trainer_state.json."
+                fi
+              done < <(find "$src_dir" -type d -name 'checkpoint-*' | sort)
+
+              if [ "$found" -eq 0 ]; then
+                echo "No usable complete checkpoint-* directories found under ${src_dir}."
+                return 1
+              fi
+              return 0
+            }
+
+            latest_existing_ckpt="$(find "$OUTPUT_DIR" -maxdepth 1 -type d -name 'checkpoint-*' -print | sort -V | tail -n 1 || true)"
+            if [ -n "$latest_existing_ckpt" ]; then
+              echo "Using existing OUTPUT_DIR checkpoint without S3 restore: ${latest_existing_ckpt}"
+            else
+              restore_checkpoints_from_dir "$BOOTSTRAP_RESTORE_AMLFS_DIR" "amlfs_bootstrap" || \
+                restore_checkpoints_from_s3 "$BOOTSTRAP_RESTORE_S3_URI" "s3_bootstrap" || \
+                restore_checkpoints_from_s3 "$RESTORE_S3_URI" "old_primary" || \
+                restore_checkpoints_from_s3 "$RESTORE_EVAL_CKPT_S3_URI" "eval_export" || \
+                echo "No previous checkpoints restored; training will start fresh."
+            fi
+
+            echo "Checkpoints available before training:"
+            find "$OUTPUT_DIR" -maxdepth 1 -type d -name 'checkpoint-*' -print | sort || true
+
+            periodic_checkpoint_upload &
+            PERIODIC_UPLOADER_PID=$!
+            echo "Started periodic checkpoint uploader pid=${PERIODIC_UPLOADER_PID}, interval=${CHECKPOINT_UPLOAD_INTERVAL_SECONDS}s"
 
             require_wandb
 
             echo "Launching DreamZero RoboTwin Franka bimanual shared-global training"
+            echo "DATA_VARIANT=$DATA_VARIANT"
             echo "DATA_ROOT=$DATA_ROOT"
             echo "OUTPUT_DIR=$OUTPUT_DIR"
+            echo "GRIPPER_ACTION_LOSS_WEIGHT=$GRIPPER_ACTION_LOSS_WEIGHT"
+            echo "GRIPPER_CLOSE_ACTION_LOSS_WEIGHT=$GRIPPER_CLOSE_ACTION_LOSS_WEIGHT"
+            echo "GRIPPER_ACTION_DIMS=$GRIPPER_ACTION_DIMS"
+            echo "GRIPPER_CLEAN_ACTION_LOSS_WEIGHT=$GRIPPER_CLEAN_ACTION_LOSS_WEIGHT"
+            echo "GRIPPER_CLEAN_MAX_SIGMA=$GRIPPER_CLEAN_MAX_SIGMA"
+            echo "GRIPPER_BINARY_ACTION_LOSS_WEIGHT=$GRIPPER_BINARY_ACTION_LOSS_WEIGHT"
+            echo "GRIPPER_BINARY_CLOSE_ACTION_LOSS_WEIGHT=$GRIPPER_BINARY_CLOSE_ACTION_LOSS_WEIGHT"
+            echo "GRIPPER_BINARY_LOGIT_SCALE=$GRIPPER_BINARY_LOGIT_SCALE"
+            echo "GRIPPER_BINARY_MAX_SIGMA=$GRIPPER_BINARY_MAX_SIGMA"
             bash scripts/train/robotwin_bimanual_training.sh
+default-values:
+  workflow_name: dreamzero-rt-stack-blocks-two-train-shared-global-gripperfix-data500-xianzhef-20260603
+  run_name: dreamzero-rt-stack-blocks-two-train-shared-global-gripperfix-data500-xianzhef-20260603
+  restore_run_name: dreamzero-rt-stack-blocks-two-train-shared-global-gripperfix-xianzhef-20260601
+  code_s3_uri: s3://GearHome/users/xianzhef/oci-migration/dreamzero_gripperfix_20260601
+  data_variant: stack_blocks_two-rt-500
+  expected_data_episodes: "500"
+  converted_data_s3_uri: s3://GearHome/users/xianzhef/oci-migration/data/robotwin_lerobot_v2/stack_blocks_two-rt-500

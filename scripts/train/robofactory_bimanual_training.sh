@@ -4,7 +4,9 @@
 # Set ``NUM_ARMS=3`` or ``NUM_ARMS=4`` to switch to the 3-arm
 # (CameraAlignment-rf, ThreeRobotsStackCube-rf) or 4-arm (TakePhoto-rf)
 # variants -- the script picks the matching data config and propagates
-# ``num_agents`` into ``diffusion_model_cfg``. Default is 2 (bimanual).
+# ``num_agents`` into ``diffusion_model_cfg``. Set ``SHARED_GLOBAL=1``
+# for the shared-global layout currently wired for 2-arm and 3-arm
+# RoboFactory training. Default is 2-arm duplicated-global.
 #
 # Usage:
 #   ROBOFACTORY_DATA_ROOT=/path/to/lerobot_v2/LiftBarrier-rf \
@@ -32,10 +34,9 @@ export HYDRA_FULL_ERROR=1
 export ATTENTION_BACKEND=${ATTENTION_BACKEND:-flex}
 
 NUM_ARMS=${NUM_ARMS:-2}
-# PR 23: SHARED_GLOBAL=1 swaps the bimanual data config to the variant
-# that emits a separate ``video_global`` stream + per-agent wrist-only
-# video (no duplicated global view). Only supported for NUM_ARMS=2 for
-# now; 3/4-arm shared-global yamls can be added later.
+# PR 23: SHARED_GLOBAL=1 swaps the data config to the variant that emits
+# a separate ``video_global`` stream + per-agent wrist-only video (no
+# duplicated global view).
 SHARED_GLOBAL=${SHARED_GLOBAL:-0}
 case "$NUM_ARMS" in
     2)
@@ -45,12 +46,18 @@ case "$NUM_ARMS" in
             DATA_CFG="dreamzero/robofactory_bimanual_relative"
         fi
         ;;
-    3) DATA_CFG="dreamzero/robofactory_3arm_relative" ;;
+    3)
+        if [ "$SHARED_GLOBAL" = "1" ]; then
+            DATA_CFG="dreamzero/robofactory_3arm_shared_global"
+        else
+            DATA_CFG="dreamzero/robofactory_3arm_relative"
+        fi
+        ;;
     4) DATA_CFG="dreamzero/robofactory_4arm_relative" ;;
     *) echo "Unsupported NUM_ARMS=$NUM_ARMS (expected 2, 3, or 4)" >&2; exit 1 ;;
 esac
-if [ "$SHARED_GLOBAL" = "1" ] && [ "$NUM_ARMS" -ne 2 ]; then
-    echo "SHARED_GLOBAL=1 is currently only wired for NUM_ARMS=2 (bimanual)" >&2
+if [ "$SHARED_GLOBAL" = "1" ] && [ "$NUM_ARMS" -eq 4 ]; then
+    echo "SHARED_GLOBAL=1 is currently only wired for NUM_ARMS=2 or NUM_ARMS=3" >&2
     exit 1
 fi
 # Gradient checkpointing trade-off, post FlexAttention switch (PR 20):
@@ -102,11 +109,15 @@ ACTION_LOSS_WEIGHT=${ACTION_LOSS_WEIGHT:-5.0}
 GRIPPER_ACTION_LOSS_WEIGHT=${GRIPPER_ACTION_LOSS_WEIGHT:-6.0}
 GRIPPER_CLOSE_ACTION_LOSS_WEIGHT=${GRIPPER_CLOSE_ACTION_LOSS_WEIGHT:-4.0}
 GRIPPER_CLOSE_THRESHOLD=${GRIPPER_CLOSE_THRESHOLD:-0.0}
+GRIPPER_ACTION_DIMS=${GRIPPER_ACTION_DIMS:-7}
+GRIPPER_CLEAN_ACTION_LOSS_WEIGHT=${GRIPPER_CLEAN_ACTION_LOSS_WEIGHT:-2.0}
+GRIPPER_CLEAN_CLOSE_ACTION_LOSS_WEIGHT=${GRIPPER_CLEAN_CLOSE_ACTION_LOSS_WEIGHT:-4.0}
+GRIPPER_CLEAN_MAX_SIGMA=${GRIPPER_CLEAN_MAX_SIGMA:-0.75}
 ACTION_PREFIX_LOSS_WEIGHT=${ACTION_PREFIX_LOSS_WEIGHT:-2.0}
 ACTION_PREFIX_LOSS_LEN=${ACTION_PREFIX_LOSS_LEN:-8}
 
 echo "save_steps=$SAVE_STEPS  save_total_limit=$SAVE_TOTAL_LIMIT"
-echo "action_loss_weight=$ACTION_LOSS_WEIGHT  gripper_action_loss_weight=$GRIPPER_ACTION_LOSS_WEIGHT  gripper_close_action_loss_weight=$GRIPPER_CLOSE_ACTION_LOSS_WEIGHT  gripper_close_threshold=$GRIPPER_CLOSE_THRESHOLD  action_prefix_loss_weight=$ACTION_PREFIX_LOSS_WEIGHT  action_prefix_loss_len=$ACTION_PREFIX_LOSS_LEN"
+echo "action_loss_weight=$ACTION_LOSS_WEIGHT  gripper_action_loss_weight=$GRIPPER_ACTION_LOSS_WEIGHT  gripper_close_action_loss_weight=$GRIPPER_CLOSE_ACTION_LOSS_WEIGHT  gripper_close_threshold=$GRIPPER_CLOSE_THRESHOLD  gripper_action_dims=[$GRIPPER_ACTION_DIMS]  gripper_clean_action_loss_weight=$GRIPPER_CLEAN_ACTION_LOSS_WEIGHT  gripper_clean_close_action_loss_weight=$GRIPPER_CLEAN_CLOSE_ACTION_LOSS_WEIGHT  gripper_clean_max_sigma=$GRIPPER_CLEAN_MAX_SIGMA  action_prefix_loss_weight=$ACTION_PREFIX_LOSS_WEIGHT  action_prefix_loss_len=$ACTION_PREFIX_LOSS_LEN"
 
 WAN_CKPT_DIR=${WAN_CKPT_DIR:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/Wan2.1-I2V-14B-480P"}
 TOKENIZER_DIR=${TOKENIZER_DIR:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/umt5-xxl"}
@@ -177,6 +188,10 @@ torchrun --nproc_per_node $NUM_GPUS --standalone groot/vla/experiment/experiment
     ++action_head_cfg.config.gripper_action_loss_weight=$GRIPPER_ACTION_LOSS_WEIGHT \
     ++action_head_cfg.config.gripper_close_action_loss_weight=$GRIPPER_CLOSE_ACTION_LOSS_WEIGHT \
     ++action_head_cfg.config.gripper_close_threshold=$GRIPPER_CLOSE_THRESHOLD \
+    ++action_head_cfg.config.gripper_action_dims=[$GRIPPER_ACTION_DIMS] \
+    ++action_head_cfg.config.gripper_clean_action_loss_weight=$GRIPPER_CLEAN_ACTION_LOSS_WEIGHT \
+    ++action_head_cfg.config.gripper_clean_close_action_loss_weight=$GRIPPER_CLEAN_CLOSE_ACTION_LOSS_WEIGHT \
+    ++action_head_cfg.config.gripper_clean_max_sigma=$GRIPPER_CLEAN_MAX_SIGMA \
     ++action_head_cfg.config.action_prefix_loss_weight=$ACTION_PREFIX_LOSS_WEIGHT \
     ++action_head_cfg.config.action_prefix_loss_len=$ACTION_PREFIX_LOSS_LEN \
     ++action_head_cfg.config.max_state_dim=8 \

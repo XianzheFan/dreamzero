@@ -2,8 +2,8 @@
 
 # RoboTwin Franka/Panda bimanual training config -- shared-global variant.
 #
-# The converted RoboTwin LeRobot v2 data uses the same tensor layout as
-# RoboFactory's two-Panda tasks:
+# The converted RoboTwin LeRobot v2 data uses its own ``robotwin`` embodiment
+# tag while keeping the same tensor layout as RoboFactory's two-Panda tasks:
 #   state/action = [left 7 joints, left gripper, right 7 joints, right gripper]
 # The converter writes absolute next-qpos targets. DreamZero's
 # ``relative_action`` path converts only the joint targets to
@@ -21,7 +21,7 @@
 # Required CLI overrides:
 #   data=dreamzero/robotwin_franka_bimanual_shared_global
 #   model/dreamzero/transform=bimanual_cotrain
-#   robotwin_data_root=/path/to/converted/lerobot_v2/beat_block_hammer-rt
+#   robotwin_data_root=/path/to/converted/lerobot_v2/stack_blocks_two-rt
 
 defaults:
   - dreamzero/base_48_wan_fine_aug_relative
@@ -46,7 +46,7 @@ train_dataset:
   _convert_: object
   mixture_spec:
     - dataset_path:
-        robofactory:
+        robotwin:
           - ${robotwin_data_root}
       dataset_weight: 1.0
       distribute_weights: true
@@ -69,7 +69,7 @@ train_dataset:
     seed: 42
     shard_sampling_rate: ${dataset_shard_sampling_rate}
 
-# Video key order in modality_config_robofactory.video.modality_keys:
+# Video key order in modality_config_robotwin.video.modality_keys:
 #   0 = head/global camera, 1 = left wrist camera, 2 = right wrist camera.
 # Shared-global factors view 0 out so it is encoded once, not once per arm.
 global_views: [0]

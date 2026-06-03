@@ -1,16 +1,15 @@
 #!/bin/bash
 # DreamZero RoboTwin (Franka/Panda) bimanual smoke training.
 #
-# Mirrors robofactory_bimanual_training.sh exactly except for the data
-# root and run name, because RoboTwin franka-panda exposes the same
-# 7+1 dim per-arm layout that the ``robofactory`` embodiment tag
-# already encodes. The RoboTwin data is produced by
-# ``scripts/data/robotwin_to_lerobot_v2.py``. The converter stores
-# absolute next-qpos action targets; the RoboTwin data config enables
-# DreamZero's relative-action path for the joint keys.
+# RoboTwin franka-panda exposes the same 7+1 per-arm tensor layout as
+# RoboFactory, but uses its own ``robotwin`` embodiment/config namespace so
+# simulator-specific gripper semantics stay separate. RoboTwin gripper commands
+# are [0, 1], open=1.0, close=0.0. The converter stores absolute next-qpos
+# action targets; the RoboTwin data config enables DreamZero's relative-action
+# path for joint keys only.
 #
 # Usage:
-#   ROBOTWIN_DATA_ROOT=/path/to/lerobot_v2/beat_block_hammer-rt \
+#   ROBOTWIN_DATA_ROOT=/path/to/lerobot_v2/stack_blocks_two-rt \
 #   OUTPUT_DIR=$HOME/checkpoints/robotwin_bimanual_smoke \
 #   PRETRAINED_DIR=/path/to/DreamZero-DROID \
 #   bash scripts/train/robotwin_bimanual_training.sh
@@ -30,7 +29,7 @@ DEEPSPEED_CFG=${DEEPSPEED_CFG:-groot/vla/configs/deepspeed/zero2_offload.json}
 DATA_CFG=${DATA_CFG:-dreamzero/robotwin_franka_bimanual_shared_global}
 export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
 
-ROBOTWIN_DATA_ROOT=${ROBOTWIN_DATA_ROOT:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/data/robotwin_lerobot_v2/beat_block_hammer-rt-dzrel"}
+ROBOTWIN_DATA_ROOT=${ROBOTWIN_DATA_ROOT:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/data/robotwin_lerobot_v2/stack_blocks_two-rt"}
 OUTPUT_DIR=${OUTPUT_DIR:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/robotwin_franka_bimanual_shared_global_dzrel_smoke"}
 NUM_GPUS=${NUM_GPUS:-1}
 MAX_STEPS=${MAX_STEPS:-10}
@@ -40,6 +39,20 @@ LEARNING_RATE=${LEARNING_RATE:-1e-5}
 REPORT_TO=${REPORT_TO:-none}
 WANDB_PROJECT=${WANDB_PROJECT:-dreamzero_robotwin_smoke}
 WANDB_RUN_NAME=${WANDB_RUN_NAME:-robotwin_franka_bimanual_shared_global_dzrel_smoke}
+ACTION_LOSS_WEIGHT=${ACTION_LOSS_WEIGHT:-5.0}
+GRIPPER_ACTION_LOSS_WEIGHT=${GRIPPER_ACTION_LOSS_WEIGHT:-6.0}
+GRIPPER_CLOSE_ACTION_LOSS_WEIGHT=${GRIPPER_CLOSE_ACTION_LOSS_WEIGHT:-4.0}
+GRIPPER_CLOSE_THRESHOLD=${GRIPPER_CLOSE_THRESHOLD:-0.0}
+GRIPPER_ACTION_DIMS=${GRIPPER_ACTION_DIMS:-7}
+GRIPPER_CLEAN_ACTION_LOSS_WEIGHT=${GRIPPER_CLEAN_ACTION_LOSS_WEIGHT:-2.0}
+GRIPPER_CLEAN_CLOSE_ACTION_LOSS_WEIGHT=${GRIPPER_CLEAN_CLOSE_ACTION_LOSS_WEIGHT:-4.0}
+GRIPPER_CLEAN_MAX_SIGMA=${GRIPPER_CLEAN_MAX_SIGMA:-0.75}
+GRIPPER_BINARY_ACTION_LOSS_WEIGHT=${GRIPPER_BINARY_ACTION_LOSS_WEIGHT:-4.0}
+GRIPPER_BINARY_CLOSE_ACTION_LOSS_WEIGHT=${GRIPPER_BINARY_CLOSE_ACTION_LOSS_WEIGHT:-6.0}
+GRIPPER_BINARY_LOGIT_SCALE=${GRIPPER_BINARY_LOGIT_SCALE:-4.0}
+GRIPPER_BINARY_MAX_SIGMA=${GRIPPER_BINARY_MAX_SIGMA:-0.75}
+ACTION_PREFIX_LOSS_WEIGHT=${ACTION_PREFIX_LOSS_WEIGHT:-2.0}
+ACTION_PREFIX_LOSS_LEN=${ACTION_PREFIX_LOSS_LEN:-8}
 
 WAN_CKPT_DIR=${WAN_CKPT_DIR:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/Wan2.1-I2V-14B-480P"}
 TOKENIZER_DIR=${TOKENIZER_DIR:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/umt5-xxl"}
@@ -60,6 +73,8 @@ if [ ! -d "$ROBOTWIN_DATA_ROOT" ]; then
 fi
 
 echo "RoboTwin Franka bimanual: data=$DATA_CFG  gradient_checkpointing=$GRAD_CKPT  deepspeed=$DEEPSPEED_CFG"
+echo "action_loss_weight=$ACTION_LOSS_WEIGHT  gripper_action_loss_weight=$GRIPPER_ACTION_LOSS_WEIGHT  gripper_close_action_loss_weight=$GRIPPER_CLOSE_ACTION_LOSS_WEIGHT  gripper_close_threshold=$GRIPPER_CLOSE_THRESHOLD  gripper_action_dims=[$GRIPPER_ACTION_DIMS]  gripper_clean_action_loss_weight=$GRIPPER_CLEAN_ACTION_LOSS_WEIGHT  gripper_clean_close_action_loss_weight=$GRIPPER_CLEAN_CLOSE_ACTION_LOSS_WEIGHT  gripper_clean_max_sigma=$GRIPPER_CLEAN_MAX_SIGMA  action_prefix_loss_weight=$ACTION_PREFIX_LOSS_WEIGHT  action_prefix_loss_len=$ACTION_PREFIX_LOSS_LEN"
+echo "gripper_binary_action_loss_weight=$GRIPPER_BINARY_ACTION_LOSS_WEIGHT  gripper_binary_close_action_loss_weight=$GRIPPER_BINARY_CLOSE_ACTION_LOSS_WEIGHT  gripper_binary_logit_scale=$GRIPPER_BINARY_LOGIT_SCALE  gripper_binary_max_sigma=$GRIPPER_BINARY_MAX_SIGMA"
 
 torchrun --nproc_per_node $NUM_GPUS --standalone groot/vla/experiment/experiment.py \
     report_to=$REPORT_TO \
@@ -108,6 +123,20 @@ torchrun --nproc_per_node $NUM_GPUS --standalone groot/vla/experiment/experiment
     pretrained_model_path=$PRETRAINED_DIR \
     ++action_head_cfg.config.skip_component_loading=true \
     ++action_head_cfg.config.defer_lora_injection=true \
+    ++action_head_cfg.config.action_loss_weight=$ACTION_LOSS_WEIGHT \
+    ++action_head_cfg.config.gripper_action_loss_weight=$GRIPPER_ACTION_LOSS_WEIGHT \
+    ++action_head_cfg.config.gripper_close_action_loss_weight=$GRIPPER_CLOSE_ACTION_LOSS_WEIGHT \
+    ++action_head_cfg.config.gripper_close_threshold=$GRIPPER_CLOSE_THRESHOLD \
+    ++action_head_cfg.config.gripper_action_dims=[$GRIPPER_ACTION_DIMS] \
+    ++action_head_cfg.config.gripper_clean_action_loss_weight=$GRIPPER_CLEAN_ACTION_LOSS_WEIGHT \
+    ++action_head_cfg.config.gripper_clean_close_action_loss_weight=$GRIPPER_CLEAN_CLOSE_ACTION_LOSS_WEIGHT \
+    ++action_head_cfg.config.gripper_clean_max_sigma=$GRIPPER_CLEAN_MAX_SIGMA \
+    ++action_head_cfg.config.gripper_binary_action_loss_weight=$GRIPPER_BINARY_ACTION_LOSS_WEIGHT \
+    ++action_head_cfg.config.gripper_binary_close_action_loss_weight=$GRIPPER_BINARY_CLOSE_ACTION_LOSS_WEIGHT \
+    ++action_head_cfg.config.gripper_binary_logit_scale=$GRIPPER_BINARY_LOGIT_SCALE \
+    ++action_head_cfg.config.gripper_binary_max_sigma=$GRIPPER_BINARY_MAX_SIGMA \
+    ++action_head_cfg.config.action_prefix_loss_weight=$ACTION_PREFIX_LOSS_WEIGHT \
+    ++action_head_cfg.config.action_prefix_loss_len=$ACTION_PREFIX_LOSS_LEN \
     ++action_head_cfg.config.use_gradient_checkpointing=$GRAD_CKPT \
     ++action_head_cfg.config.max_state_dim=8 \
     ++action_head_cfg.config.action_dim=8 \

@@ -2,7 +2,7 @@ workflow:
   timeout:
     queue_timeout: 2h
     exec_timeout: 8h
-  name: dreamzero-rt-stack-blocks-two-eval-ckpt7000-l40-xianzhef-20260601
+  name: "{{workflow_name}}"
   resources:
     default:
       cpu: 31
@@ -25,6 +25,8 @@ workflow:
         ACCEPT_EULA: "Y"
         NO_NUCLEUS: "Y"
         NVIDIA_DRIVER_CAPABILITIES: "all"
+        OSMO_CACHE_ROOT: "{{osmo_cache_root}}"
+        EVAL_CKPT_ROOT: "{{eval_ckpt_root}}"
       args: ["/tmp/eval_stack_blocks_two.sh"]
       files:
         - path: /tmp/eval_stack_blocks_two.sh
@@ -34,27 +36,42 @@ workflow:
 
             exec > >(tee /tmp/eval_stack_blocks_two.log) 2>&1
 
-            RUN_NAME="dreamzero-rt-stack-blocks-two-eval-ckpt7000-l40-xianzhef-20260601"
-            CODE_S3_URI="s3://GearHome/users/xianzhef/oci-migration/dreamzero"
+            RUN_NAME="{{workflow_name}}"
+            SOURCE_TRAIN_RUN_NAME="{{source_train_run_name}}"
+            CODE_S3_URI="s3://GearHome/users/xianzhef/oci-migration/dreamzero_gripperfix_20260601"
             MODEL_CACHE_S3_URI="s3://GearHome/users/xianzhef/oci-migration/checkpoints"
-            EVAL_CKPT_S3_URI="s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/dreamzero-rt-stack-blocks-two-train-shared-global-xianzhef-20260531-231103/eval_checkpoints"
+            EVAL_CKPT_S3_URI="${EVAL_CKPT_S3_URI:-s3://GearHome/users/xianzhef/oci-migration/dreamzero_s3cache/bootstrap_checkpoints/${SOURCE_TRAIN_RUN_NAME}}"
+            EVAL_CKPT_FALLBACK_S3_URI="${EVAL_CKPT_FALLBACK_S3_URI:-s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/${SOURCE_TRAIN_RUN_NAME}/checkpoints}"
             RUN_S3_ROOT="s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/${RUN_NAME}"
-            OUT_S3_URI="${RUN_S3_ROOT}/stack_blocks_two_checkpoint-7000"
+            OUT_S3_URI="${RUN_S3_ROOT}/stack_blocks_two_{{ckpt_setting}}"
             OSMO_CACHE_ROOT="${OSMO_CACHE_ROOT:-/mnt/amlfs-04/home/xianzhef/osmo_cache}"
             DREAMZERO_CACHE_ROOT="${DREAMZERO_CACHE_ROOT:-${OSMO_CACHE_ROOT}/dreamzero}"
             DREAMZERO_VENV="${DREAMZERO_CACHE_ROOT}/venvs/server_py312_system"
             AMLFS_MODEL_CACHE_DIR="${DREAMZERO_CACHE_ROOT}/checkpoints"
-            EVAL_CKPT_ROOT="${DREAMZERO_CACHE_ROOT}/eval_ckpts/robotwin_stack_blocks_two_ckpt7000"
+            EVAL_CKPT_ROOT="${EVAL_CKPT_ROOT:-${DREAMZERO_CACHE_ROOT}/eval_ckpts/robotwin_stack_blocks_two_${SOURCE_TRAIN_RUN_NAME}_{{ckpt_setting}}}"
+            ROBOTWIN_S3_URI="${ROBOTWIN_S3_URI:-s3://GearHome/users/xianzhef/oci-migration/RoboTwin}"
             ROBOTWIN_REPO_CACHE="${ROBOTWIN_REPO_CACHE:-${OSMO_CACHE_ROOT}/RoboTwin}"
             ROBOTWIN_ENV_DIR="${ROBOTWIN_ENV_DIR:-${OSMO_CACHE_ROOT}/robotwin_env}"
-            CKPT_SETTING="checkpoint-7000"
+            CKPT_SETTING="{{ckpt_setting}}"
             PORT=5001
             TASK_NAME="stack_blocks_two"
             TASK_CONFIG="demo_full_franka"
             SEED=0
-            NUM_EPISODES=5
+            NUM_EPISODES="{{num_episodes}}"
+            CLIENT_TIMEOUT_SECONDS="{{client_timeout_seconds}}"
+            DREAMZERO_PROMPT_OVERRIDE="${DREAMZERO_PROMPT_OVERRIDE:-{{prompt_override}}}"
+            DREAMZERO_GRIPPER_BINARIZE_THRESHOLD="${DREAMZERO_GRIPPER_BINARIZE_THRESHOLD:-{{gripper_binarize_threshold}}}"
+            DREAMZERO_GRIPPER_CLOSE_HOLD_STEPS="${DREAMZERO_GRIPPER_CLOSE_HOLD_STEPS:-{{gripper_close_hold_steps}}}"
+            DREAMZERO_GRIPPER_CLOSE_HOLD_MIN_INFER="${DREAMZERO_GRIPPER_CLOSE_HOLD_MIN_INFER:-{{gripper_close_hold_min_infer}}}"
+            DREAMZERO_GRIPPER_FORCE_OPEN_UNTIL_INFER="${DREAMZERO_GRIPPER_FORCE_OPEN_UNTIL_INFER:-{{gripper_force_open_until_infer}}}"
+            DREAMZERO_GRIPPER_OVERRIDE="${DREAMZERO_GRIPPER_OVERRIDE:-{{gripper_override}}}"
+            DREAMZERO_GRIPPER_CLOSE_AFTER_INFER="${DREAMZERO_GRIPPER_CLOSE_AFTER_INFER:-{{gripper_close_after_infer}}}"
+            DREAMZERO_GRIPPER_CLOSE_VALUE="${DREAMZERO_GRIPPER_CLOSE_VALUE:-{{gripper_close_value}}}"
+            export DREAMZERO_GRIPPER_CLOSE_HOLD_STEPS
+            export DREAMZERO_GRIPPER_CLOSE_HOLD_MIN_INFER
+            export DREAMZERO_GRIPPER_FORCE_OPEN_UNTIL_INFER
 
-            for uri in "$CODE_S3_URI" "$MODEL_CACHE_S3_URI" "$EVAL_CKPT_S3_URI" "$RUN_S3_ROOT" "$OUT_S3_URI"; do
+            for uri in "$CODE_S3_URI" "$MODEL_CACHE_S3_URI" "$EVAL_CKPT_S3_URI" "$EVAL_CKPT_FALLBACK_S3_URI" "$RUN_S3_ROOT" "$OUT_S3_URI" "$ROBOTWIN_S3_URI"; do
               case "$uri" in
                 s3://GearHome/users/xianzhef/*) ;;
                 *) echo "Refusing non-xianzhef S3 URI: $uri" >&2; exit 64 ;;
@@ -63,7 +80,7 @@ workflow:
 
             for path in "$OSMO_CACHE_ROOT" "$AMLFS_MODEL_CACHE_DIR" "$EVAL_CKPT_ROOT" "$ROBOTWIN_REPO_CACHE" "$ROBOTWIN_ENV_DIR"; do
               case "$path" in
-                /mnt/amlfs-04/home/xianzhef/*) ;;
+                /mnt/amlfs-0[1-9]/home/xianzhef/*) ;;
                 *) echo "Refusing non-xianzhef AMLFS path: $path" >&2; exit 64 ;;
               esac
             done
@@ -72,6 +89,7 @@ workflow:
               local status="${1:-$?}"
               set +e
               mkdir -p /workspace/robotwin_eval_outputs
+              write_eval_diagnostic_summary "$status" || true
               cp -f /tmp/eval_stack_blocks_two.log /workspace/robotwin_eval_outputs/eval_stack_blocks_two.log
               if [ -f /tmp/server.log ]; then cp -f /tmp/server.log /workspace/robotwin_eval_outputs/server.log; fi
               if [ -f /tmp/client.log ]; then cp -f /tmp/client.log /workspace/robotwin_eval_outputs/client.log; fi
@@ -81,6 +99,50 @@ workflow:
               echo "Uploading eval artifacts to ${OUT_S3_URI}/"
               osmo data upload "${OUT_S3_URI}/" /workspace/robotwin_eval_outputs
               exit "$status"
+            }
+
+            write_eval_diagnostic_summary() {
+              local status="${1:-unknown}"
+              local summary=/workspace/robotwin_eval_outputs/diagnostic_summary.txt
+              {
+                echo "workflow=${RUN_NAME}"
+                echo "source_train_run=${SOURCE_TRAIN_RUN_NAME}"
+                echo "ckpt_setting=${CKPT_SETTING}"
+                echo "num_episodes=${NUM_EPISODES}"
+                echo "client_timeout_seconds=${CLIENT_TIMEOUT_SECONDS}"
+                echo "client_status=${status}"
+                echo "prompt_override=${DREAMZERO_PROMPT_OVERRIDE}"
+                echo "gripper_binarize_threshold=${DREAMZERO_GRIPPER_BINARIZE_THRESHOLD}"
+                echo "gripper_close_hold_steps=${DREAMZERO_GRIPPER_CLOSE_HOLD_STEPS}"
+                echo "gripper_close_hold_min_infer=${DREAMZERO_GRIPPER_CLOSE_HOLD_MIN_INFER}"
+                echo "gripper_force_open_until_infer=${DREAMZERO_GRIPPER_FORCE_OPEN_UNTIL_INFER}"
+                echo "gripper_override=${DREAMZERO_GRIPPER_OVERRIDE}"
+                echo "gripper_close_after_infer=${DREAMZERO_GRIPPER_CLOSE_AFTER_INFER}"
+                echo "gripper_close_value=${DREAMZERO_GRIPPER_CLOSE_VALUE}"
+                echo "eval_ckpt_s3_uri=${EVAL_CKPT_S3_URI}"
+                echo "eval_ckpt_fallback_s3_uri=${EVAL_CKPT_FALLBACK_S3_URI}"
+                echo
+                echo "== Client Success Lines =="
+                if [ -f /tmp/client.log ]; then
+                  grep -E "Success rate|success rate|Client timed out|Episode [0-9]+|instruction=|DreamZero/RoboTwin|mode=auto->" /tmp/client.log | tail -120 || true
+                else
+                  echo "client.log missing"
+                fi
+                echo
+                echo "== Server Action Summaries =="
+                if [ -f /tmp/server.log ]; then
+                  grep "Action summary session=" /tmp/server.log | tail -120 || true
+                else
+                  echo "server.log missing"
+                fi
+                echo
+                echo "== Result Files =="
+                if [ -d /workspace/robotwin/eval_result ]; then
+                  find /workspace/robotwin/eval_result -type f | sort | sed -n '1,120p'
+                else
+                  echo "eval_result missing"
+                fi
+              } > "$summary"
             }
 
             cleanup() {
@@ -256,13 +318,192 @@ workflow:
             echo "Downloading DreamZero code from ${CODE_S3_URI}/"
             osmo data download --resume "${CODE_S3_URI}/" /workspace/code/dreamzero
             CODE_ROOT="/workspace/code/dreamzero"
-            if [ ! -f "$CODE_ROOT/pyproject.toml" ]; then
-              found_pyproject="$(find /workspace/code -maxdepth 4 -name pyproject.toml -print -quit)"
+            LATEST_CODE_ROOT="${CODE_ROOT}/dreamzero_gripperfix_upload_latest"
+            if [ -f "${LATEST_CODE_ROOT}/pyproject.toml" ]; then
+              CODE_ROOT="$LATEST_CODE_ROOT"
+            elif [ ! -f "$CODE_ROOT/pyproject.toml" ]; then
+              found_pyproject="$(find /workspace/code -maxdepth 4 -name pyproject.toml -print | sort | tail -n 1)"
               if [ -n "$found_pyproject" ]; then
                 CODE_ROOT="$(dirname "$found_pyproject")"
               fi
             fi
             test -f "$CODE_ROOT/pyproject.toml"
+
+            python - <<'PY'
+            from pathlib import Path
+
+            code_root = Path("/workspace/code/dreamzero")
+            latest_root = code_root / "dreamzero_gripperfix_upload_latest"
+            if (latest_root / "pyproject.toml").is_file():
+                code_root = latest_root
+            else:
+                matches = sorted(Path("/workspace/code").glob("**/pyproject.toml"))
+                if matches:
+                    code_root = matches[-1].parent
+
+            server = code_root / "eval_utils/bimanual_policy_server.py"
+            s = server.read_text()
+            new_doc_marker = "Repeat all camera streams from the current observation"
+            if new_doc_marker not in s:
+                old_doc = (
+                    '        Shared-global training uses ``global_condition_mode=current_repeat``:\n'
+                    '        only the factored ``video_global`` scene stream is repeated from the\n'
+                    '        current observation. Per-agent wrist streams remain normal temporal\n'
+                    '        windows, matching ``BimanualDreamTransform._prepare_video``.\n'
+                )
+                new_doc = (
+                    '        Shared-global training uses ``global_condition_mode=current_repeat``:\n'
+                    '        frame 0 is the current observation and the action head uses frame 0\n'
+                    '        for per-agent I2V conditioning whenever ``video_global`` is present.\n'
+                    '        Repeat all camera streams from the current observation so the\n'
+                    '        closed-loop path conditions on the same frame index as training.\n'
+                    '        Legacy non-shared-global checkpoints keep the rolling history window.\n'
+                )
+                if old_doc in s:
+                    s = s.replace(old_doc, new_doc, 1)
+                old_block = (
+                    '        if self._uses_shared_global():\n'
+                    '            current_global = history[-1][0]\n'
+                    '            global_history = np.repeat(\n'
+                    '                current_global[None], self.num_frames, axis=0\n'
+                    '            )\n'
+                    '        return global_history, agent0_history, agent1_history\n'
+                )
+                new_block = (
+                    '        if self._uses_shared_global():\n'
+                    '            current_global, current_agent0, current_agent1 = history[-1]\n'
+                    '            global_history = np.repeat(current_global[None], self.num_frames, axis=0)\n'
+                    '            agent0_history = np.repeat(current_agent0[None], self.num_frames, axis=0)\n'
+                    '            agent1_history = np.repeat(current_agent1[None], self.num_frames, axis=0)\n'
+                    '        return global_history, agent0_history, agent1_history\n'
+                )
+                if old_block not in s:
+                    raise SystemExit("did not find shared-global video window block to patch")
+                s = s.replace(old_block, new_block, 1)
+                compile(s, str(server), "exec")
+                server.write_text(s)
+                print("Patched shared-global eval video windows to repeat current frame for all streams.")
+
+            s = server.read_text()
+            if "def _metadata_tag(self)" not in s:
+                s = s.replace(
+                    '            self._transform = transforms["robofactory"]\n',
+                    '            transform_tag = "robotwin" if "robotwin" in transforms else "robofactory"\n'
+                    '            metadata_tag = self._metadata_tag()\n'
+                    '            self._transform = transforms[transform_tag]\n',
+                    1,
+                )
+                s = s.replace(
+                    '            if "robofactory" in self._metadata:\n'
+                    '                metadata = DatasetMetadata.model_validate(self._metadata["robofactory"])\n',
+                    '            if metadata_tag is not None:\n'
+                    '                metadata = DatasetMetadata.model_validate(self._metadata[metadata_tag])\n',
+                    1,
+                )
+                s = s.replace(
+                    "                    \"metadata.json lacks 'robofactory' key — transform will fail \"\n"
+                    "                    \"on first infer(). Found keys: %s\",\n",
+                    "                    \"metadata.json lacks 'robotwin' or legacy 'robofactory' key — \"\n"
+                    "                    \"transform will fail on first infer(). Found keys: %s\",\n",
+                    1,
+                )
+                s = s.replace(
+                    '                "transforms.robofactory failed to instantiate — server will "\n',
+                    '                "bimanual transforms failed to instantiate — server will "\n',
+                    1,
+                )
+                session_marker = "    # ----- session bookkeeping ------------------------------------------\n"
+                metadata_method = (
+                    "    def _metadata_tag(self) -> str | None:\n"
+                    "        if \"robotwin\" in self._metadata:\n"
+                    "            return \"robotwin\"\n"
+                    "        if \"robofactory\" in self._metadata:\n"
+                    "            return \"robofactory\"\n"
+                    "        return None\n\n"
+                )
+                if session_marker not in s:
+                    raise SystemExit("did not find session bookkeeping marker for metadata tag patch")
+                s = s.replace(session_marker, metadata_method + session_marker, 1)
+                old_meta = (
+                    '        emb_meta = (\n'
+                    '            self._metadata.get("robofactory", {})\n'
+                    '            .get("statistics", {})\n'
+                    '            .get("action", {})\n'
+                    '        )\n'
+                )
+                new_meta = (
+                    '        metadata_tag = self._metadata_tag()\n'
+                    '        emb_meta = {}\n'
+                    '        if metadata_tag is not None:\n'
+                    '            emb_meta = self._metadata[metadata_tag].get("statistics", {}).get("action", {})\n'
+                )
+                if old_meta not in s:
+                    raise SystemExit("did not find robofactory action metadata block to patch")
+                s = s.replace(old_meta, new_meta, 1)
+                compile(s, str(server), "exec")
+                server.write_text(s)
+                print("Patched eval server to prefer robotwin metadata with robofactory fallback.")
+
+            test_file = code_root / "tests/model/test_bimanual_policy_server.py"
+            if test_file.is_file():
+                t = test_file.read_text()
+                t = t.replace(
+                    "test_shared_global_video_window_repeats_only_global_stream",
+                    "test_shared_global_video_window_repeats_current_frame_for_all_streams",
+                )
+                t = t.replace(
+                    "np.testing.assert_array_equal(agent0_video[:, 0, 0, 0], [10, 11, 12])",
+                    "np.testing.assert_array_equal(agent0_video[:, 0, 0, 0], [12, 12, 12])",
+                )
+                t = t.replace(
+                    "np.testing.assert_array_equal(agent1_video[:, 0, 0, 0], [20, 21, 22])",
+                    "np.testing.assert_array_equal(agent1_video[:, 0, 0, 0], [22, 22, 22])",
+                )
+                compile(t, str(test_file), "exec")
+                test_file.write_text(t)
+            PY
+
+            require_code_marker() {
+              local file="$1"
+              shift
+              local marker
+              if [ ! -f "$CODE_ROOT/$file" ]; then
+                echo "ERROR: expected code file missing: $file" >&2
+                exit 7
+              fi
+              for marker in "$@"; do
+                if ! grep -Fq "$marker" "$CODE_ROOT/$file"; then
+                  echo "ERROR: code marker missing in $file: $marker" >&2
+                  exit 7
+                fi
+              done
+            }
+            require_code_marker \
+              eval_utils/bimanual_policy_server.py \
+              "_set_eval_inference_transform_modes" \
+              "_build_video_windows" \
+              "Action summary session=" \
+              "gripper_binarize_threshold"
+            require_code_marker \
+              tests/model/test_bimanual_policy_server.py \
+              "test_shared_global_video_window_repeats_current_frame_for_all_streams"
+                        require_code_marker \
+                          eval_utils/bimanual_policy_server.py \
+                          "Repeat all camera streams from the current observation"
+                        require_code_marker \
+                          eval_utils/bimanual_policy_server.py \
+                          "def _metadata_tag" \
+                          "robotwin"
+            require_code_marker \
+              groot/vla/data/dataset/lerobot.py \
+              "_normalize_relative_action_key"
+            require_code_marker \
+              scripts/data/robotwin_to_lerobot_v2.py \
+              "_validate_joint_action_vector"
+            require_code_marker \
+              tests/model/test_wan_action_head_multi_agent.py \
+              "test_forward_multi_agent_shared_global_video_runs"
+            echo "DreamZero code marker self-check passed."
 
             echo "Preparing DreamZero server Python 3.12 environment at ${DREAMZERO_VENV}"
             cd "$CODE_ROOT"
@@ -314,22 +555,113 @@ workflow:
             ln -sfn "$PRETRAINED_DIR" /workspace/checkpoints/DreamZero-DROID
 
             echo "Restoring eval checkpoint ${CKPT_SETTING}"
+            restore_lock_dir="${EVAL_CKPT_ROOT}/${CKPT_SETTING}.restore.lock"
+            restore_lock_acquired=0
             if [ ! -f "${EVAL_CKPT_ROOT}/${CKPT_SETTING}/model.safetensors" ]; then
-              rm -rf /workspace/eval_ckpts/import
-              mkdir -p /workspace/eval_ckpts/import
-              osmo data download --resume "${EVAL_CKPT_S3_URI}/" /workspace/eval_ckpts/import
-              found_model="$(find /workspace/eval_ckpts/import -path "*/${CKPT_SETTING}/model.safetensors" -print -quit)"
-              if [ -z "$found_model" ]; then
-                echo "ERROR: did not find ${CKPT_SETTING}/model.safetensors after checkpoint download." >&2
-                find /workspace/eval_ckpts/import -maxdepth 5 -type f | head -100 >&2
-                exit 9
-              fi
-              found_ckpt="$(dirname "$found_model")"
-              mkdir -p "${EVAL_CKPT_ROOT}/${CKPT_SETTING}"
-              cp -an "${found_ckpt}/." "${EVAL_CKPT_ROOT}/${CKPT_SETTING}/"
+              while true; do
+                if [ -f "${EVAL_CKPT_ROOT}/${CKPT_SETTING}/model.safetensors" ]; then
+                  echo "Eval checkpoint cache became available while waiting: ${EVAL_CKPT_ROOT}/${CKPT_SETTING}"
+                  break
+                fi
+                if mkdir "$restore_lock_dir" 2>/dev/null; then
+                  restore_lock_acquired=1
+                  trap 'if [ "${restore_lock_acquired:-0}" = "1" ] && [ -n "${restore_lock_dir:-}" ]; then rm -rf "$restore_lock_dir"; fi' EXIT
+                  echo "Acquired eval checkpoint restore lock: ${restore_lock_dir}"
+                  break
+                fi
+                echo "Waiting for eval checkpoint cache lock: ${restore_lock_dir}"
+                sleep 30
+              done
+            fi
+            if [ "$restore_lock_acquired" = "1" ] && [ ! -f "${EVAL_CKPT_ROOT}/${CKPT_SETTING}/model.safetensors" ]; then
+              restore_eval_checkpoint_from_uri() {
+                local src_uri="$1"
+                local import_dir="$2"
+                rm -rf "$import_dir"
+                mkdir -p "$import_dir"
+
+                promote_imported_eval_checkpoint() {
+                  local imported_dir="$1"
+                  local label="$2"
+                  local found_model
+                  found_model="$(find "$imported_dir" -name model.safetensors -print -quit)"
+                  if [ -z "$found_model" ]; then
+                    echo "No model.safetensors found under ${label}." >&2
+                    find "$imported_dir" -maxdepth 5 -type f | head -100 >&2
+                    return 1
+                  fi
+                  local found_ckpt
+                  found_ckpt="$(dirname "$found_model")"
+                  mkdir -p "${EVAL_CKPT_ROOT}/${CKPT_SETTING}"
+                  cp -an "${found_ckpt}/." "${EVAL_CKPT_ROOT}/${CKPT_SETTING}/"
+                  echo "Restored eval checkpoint from ${label}"
+                  return 0
+                }
+
+                local direct_idx=0
+                local direct_uri
+                for direct_uri in \
+                  "${src_uri}/${SOURCE_TRAIN_RUN_NAME}/${CKPT_SETTING}" \
+                  "${src_uri}/${CKPT_SETTING}"; do
+                  direct_idx=$((direct_idx + 1))
+                  local direct_import_dir="${import_dir}_direct_${direct_idx}"
+                  rm -rf "$direct_import_dir"
+                  mkdir -p "$direct_import_dir"
+                  echo "Trying direct eval checkpoint path ${direct_uri}/"
+                  set +e
+                  osmo data download --resume "${direct_uri}/" "$direct_import_dir"
+                  local direct_status=$?
+                  set -e
+                  if [ "$direct_status" -eq 0 ] && \
+                     promote_imported_eval_checkpoint "$direct_import_dir" "$direct_uri/"; then
+                    return 0
+                  fi
+                  echo "Direct checkpoint download from ${direct_uri}/ did not produce a usable model.safetensors." >&2
+                done
+
+                echo "Downloading eval checkpoint candidate from ${src_uri}/"
+                local ckpt_regex
+                ckpt_regex=".*${CKPT_SETTING}/(model\\.safetensors|config\\.json|trainer_state\\.json|wandb_config\\.json|latest|experiment_cfg/.*)$"
+                set +e
+                osmo data download --resume --regex "$ckpt_regex" "${src_uri}/" "$import_dir"
+                local download_status=$?
+                set -e
+                if [ "$download_status" -ne 0 ]; then
+                  echo "Checkpoint download from ${src_uri}/ failed with status=${download_status}." >&2
+                  return 1
+                fi
+                promote_imported_eval_checkpoint "$import_dir" "${src_uri}/"
+              }
+
+              restore_eval_checkpoint_from_uri "$EVAL_CKPT_S3_URI" /workspace/eval_ckpts/import_primary || \
+                restore_eval_checkpoint_from_uri "$EVAL_CKPT_FALLBACK_S3_URI" /workspace/eval_ckpts/import_fallback || {
+                  echo "ERROR: did not find ${CKPT_SETTING}/model.safetensors in primary or fallback checkpoint locations." >&2
+                  exit 9
+                }
+            fi
+            if [ "$restore_lock_acquired" = "1" ]; then
+              rm -rf "$restore_lock_dir"
+              restore_lock_acquired=0
+              trap - EXIT
             fi
             test -f "${EVAL_CKPT_ROOT}/${CKPT_SETTING}/model.safetensors"
             test -f "${EVAL_CKPT_ROOT}/${CKPT_SETTING}/experiment_cfg/conf.yaml"
+            require_gripperfix_checkpoint_config() {
+              local conf="${EVAL_CKPT_ROOT}/${CKPT_SETTING}/experiment_cfg/conf.yaml"
+              for marker in \
+                "gripper_clean_action_loss_weight: 2.0" \
+                "gripper_clean_close_action_loss_weight: 4.0" \
+                "gripper_clean_max_sigma: 0.75" \
+                "action_prefix_loss_len: 8"; do
+                if ! grep -Fq "$marker" "$conf"; then
+                  echo "ERROR: eval checkpoint ${CKPT_SETTING} is missing gripperfix config marker: ${marker}" >&2
+                  echo "Refusing to evaluate a stale or non-gripperfix checkpoint." >&2
+                  exit 13
+                fi
+              done
+              echo "Eval checkpoint gripperfix config self-check passed."
+            }
+            require_gripperfix_checkpoint_config
             date -u +"%Y-%m-%dT%H:%M:%SZ" > "${EVAL_CKPT_ROOT}/${CKPT_SETTING}/.cache_complete"
             du -sh "${EVAL_CKPT_ROOT}/${CKPT_SETTING}"
 
@@ -342,12 +674,203 @@ workflow:
               base="$(basename "$p")"
               if [ "$base" = "script" ]; then
                 cp -a "$p" /workspace/robotwin/script
+              elif [ "$base" = "policy" ]; then
+                cp -a "$p" /workspace/robotwin/policy
               else
                 ln -sfn "$p" "/workspace/robotwin/$base"
               fi
             done
             python - <<'PY'
             from pathlib import Path
+
+            robot_py = Path("/workspace/robotwin/envs/robot/robot.py")
+            base_task_py = Path("/workspace/robotwin/envs/_base_task.py")
+            if not robot_py.is_file():
+                raise SystemExit(f"missing RoboTwin robot definition: {robot_py}")
+            if not base_task_py.is_file():
+                raise SystemExit(f"missing RoboTwin base task definition: {base_task_py}")
+
+            robot_s = robot_py.read_text()
+            base_task_s = base_task_py.read_text()
+            checks = {
+                "set_gripper declares gripper_val in [0,1]": "gripper_val in [0,1]" in robot_s,
+                "set_gripper clips gripper_val to [0,1]": "np.clip(gripper_val, 0, 1)" in robot_s,
+                "left normalized real gripper is clipped to [0,1]": "np.clip(normal_left_gripper_val, 0, 1)" in robot_s,
+                "right normalized real gripper is clipped to [0,1]": "np.clip(normal_right_gripper_val, 0, 1)" in robot_s,
+                "open threshold uses high gripper values": "left_gripper_val > 0.8" in robot_s and "right_gripper_val > 0.8" in robot_s,
+                "close threshold uses low gripper values": "left_gripper_val < 0.2" in robot_s and "right_gripper_val < 0.2" in robot_s,
+                "close_gripper default is 0.0": "def close_gripper(self, arm_tag: ArmTag, pos: float = 0.0)" in base_task_s,
+                "open_gripper default is 1.0": "def open_gripper(self, arm_tag: ArmTag, pos: float = 1.0)" in base_task_s,
+                "together close defaults to 0": "def together_close_gripper(self, save_freq=-1, left_pos=0, right_pos=0)" in base_task_s,
+                "together open defaults to 1": "def together_open_gripper(self, save_freq=-1, left_pos=1, right_pos=1)" in base_task_s,
+            }
+            missing = [name for name, ok in checks.items() if not ok]
+            if missing:
+                raise SystemExit(
+                    "RoboTwin gripper convention self-check failed; expected range=[0,1], "
+                    "open=1.0, close=0.0. Missing markers: " + ", ".join(missing)
+                )
+            print("RoboTwin gripper convention self-check passed: range=[0,1], open=1.0, close=0.0")
+            PY
+            rm -rf /workspace/robotwin_client_refresh
+            mkdir -p /workspace/robotwin_client_refresh
+            osmo data download --resume \
+              --regex ".*policy/DreamZero/deploy_policy\\.(py|yml)$" \
+              "${ROBOTWIN_S3_URI}/" \
+              /workspace/robotwin_client_refresh
+            if [ -f /workspace/robotwin_client_refresh/policy/DreamZero/deploy_policy.py ]; then
+              cp -f /workspace/robotwin_client_refresh/policy/DreamZero/deploy_policy.py \
+                /workspace/robotwin/policy/DreamZero/deploy_policy.py
+              cp -f /workspace/robotwin_client_refresh/policy/DreamZero/deploy_policy.yml \
+                /workspace/robotwin/policy/DreamZero/deploy_policy.yml
+            else
+              echo "ERROR: did not refresh RoboTwin DreamZero deploy policy from ${ROBOTWIN_S3_URI}" >&2
+              exit 12
+            fi
+            python - <<'PY'
+            import os
+            from pathlib import Path
+
+            deploy = Path("/workspace/robotwin/policy/DreamZero/deploy_policy.py")
+            deploy_s = deploy.read_text()
+            for marker in ("action_representation", "_resolved_action_mode", "absolute_qpos"):
+                if marker not in deploy_s:
+                    raise SystemExit(f"RoboTwin DreamZero client is missing {marker}; refusing stale action client")
+            gripper_hold_steps = int(os.environ.get("DREAMZERO_GRIPPER_CLOSE_HOLD_STEPS", "0") or "0")
+            gripper_force_open_until_infer = int(os.environ.get("DREAMZERO_GRIPPER_FORCE_OPEN_UNTIL_INFER", "0") or "0")
+            if gripper_hold_steps <= 0 and gripper_force_open_until_infer <= 0:
+                print("Skipping gripper close patch because hold and force-open controls are disabled")
+            elif "gripper_close_hold_steps" not in deploy_s:
+                init_old = '        self.debug_interval = int(usr_args.get("debug_interval", 0))\n'
+                init_new = init_old + (
+                    '        self.gripper_close_hold_steps = int(usr_args.get(\n'
+                    '            "gripper_close_hold_steps",\n'
+                    '            os.environ.get("DREAMZERO_GRIPPER_CLOSE_HOLD_STEPS", "0"),\n'
+                    '        ))\n'
+                    '        if self.gripper_close_hold_steps < 0:\n'
+                    '            raise ValueError("gripper_close_hold_steps must be >= 0")\n'
+                    '        self.gripper_close_hold_min_infer = int(usr_args.get(\n'
+                    '            "gripper_close_hold_min_infer",\n'
+                    '            os.environ.get("DREAMZERO_GRIPPER_CLOSE_HOLD_MIN_INFER", "0"),\n'
+                    '        ))\n'
+                    '        if self.gripper_close_hold_min_infer < 0:\n'
+                    '            raise ValueError("gripper_close_hold_min_infer must be >= 0")\n'
+                    '        self.gripper_force_open_until_infer = int(usr_args.get(\n'
+                    '            "gripper_force_open_until_infer",\n'
+                    '            os.environ.get("DREAMZERO_GRIPPER_FORCE_OPEN_UNTIL_INFER", "0"),\n'
+                    '        ))\n'
+                    '        if self.gripper_force_open_until_infer < 0:\n'
+                    '            raise ValueError("gripper_force_open_until_infer must be >= 0")\n'
+                    '        self._gripper_hold_remaining = np.zeros(2, dtype=np.int32)\n'
+                )
+                if init_old not in deploy_s:
+                    raise SystemExit("did not find debug_interval init line for gripper hold patch")
+                deploy_s = deploy_s.replace(init_old, init_new, 1)
+
+                reset_old = (
+                    '        self.session_id = uuid.uuid4().hex\n'
+                    '        self._needs_reset = True\n'
+                    '        self._infer_count = 0\n'
+                )
+                reset_new = reset_old + '        self._gripper_hold_remaining[:] = 0\n'
+                if reset_old not in deploy_s:
+                    raise SystemExit("did not find reset block for gripper hold patch")
+                deploy_s = deploy_s.replace(reset_old, reset_new, 1)
+
+                method_anchor = '    def _as_abs_action_chunk(self, action_chunk: np.ndarray, qpos: np.ndarray) -> list[np.ndarray]:\n'
+                hold_method = (
+                    '    def _force_gripper_open_until_infer(self, targets: list[np.ndarray]) -> bool:\n'
+                    '        if self.gripper_force_open_until_infer <= 0:\n'
+                    '            return False\n'
+                    '        if self._infer_count >= self.gripper_force_open_until_infer:\n'
+                    '            return False\n'
+                    '        for target in targets:\n'
+                    '            target[7] = 1.0\n'
+                    '            target[15] = 1.0\n'
+                    '        self._gripper_hold_remaining[:] = 0\n'
+                    '        return True\n'
+                    '\n'
+                    '    def _apply_gripper_close_hold(self, targets: list[np.ndarray]) -> None:\n'
+                    '        if not targets:\n'
+                    '            return\n'
+                    '        if self._force_gripper_open_until_infer(targets):\n'
+                    '            return\n'
+                    '        if self.gripper_close_hold_steps <= 0:\n'
+                    '            return\n'
+                    '        if self._infer_count < self.gripper_close_hold_min_infer:\n'
+                    '            return\n'
+                    '        grippers = np.asarray([[target[7], target[15]] for target in targets], dtype=np.float32)\n'
+                    '        close_seen = grippers < 0.5\n'
+                    '        for arm_idx, dim in enumerate((7, 15)):\n'
+                    '            if self._gripper_hold_remaining[arm_idx] > 0:\n'
+                    '                for target in targets:\n'
+                    '                    target[dim] = 0.0\n'
+                    '                self._gripper_hold_remaining[arm_idx] = max(\n'
+                    '                    0, int(self._gripper_hold_remaining[arm_idx]) - len(targets)\n'
+                    '                )\n'
+                    '            if close_seen[:, arm_idx].any():\n'
+                    '                start = int(np.argmax(close_seen[:, arm_idx]))\n'
+                    '                for target in targets[start:]:\n'
+                    '                    target[dim] = 0.0\n'
+                    '                remaining = int(self.gripper_close_hold_steps) - (len(targets) - start)\n'
+                    '                self._gripper_hold_remaining[arm_idx] = max(\n'
+                    '                    int(self._gripper_hold_remaining[arm_idx]), remaining\n'
+                    '                )\n'
+                    '\n'
+                )
+                if method_anchor not in deploy_s:
+                    raise SystemExit("did not find _as_abs_action_chunk anchor for gripper hold patch")
+                deploy_s = deploy_s.replace(method_anchor, hold_method + method_anchor, 1)
+
+                abs_old = (
+                    '            for target in targets:\n'
+                    '                self._clip_target_inplace(target)\n'
+                    '            return targets\n'
+                )
+                abs_new = (
+                    '            for target in targets:\n'
+                    '                self._clip_target_inplace(target)\n'
+                    '            self._apply_gripper_close_hold(targets)\n'
+                    '            return targets\n'
+                )
+                if abs_old not in deploy_s:
+                    raise SystemExit("did not find absolute target return block for gripper hold patch")
+                deploy_s = deploy_s.replace(abs_old, abs_new, 1)
+
+                delta_old = (
+                    '            targets.append(target.astype(np.float32, copy=True))\n'
+                    '            cur = target\n'
+                    '        return targets\n'
+                )
+                delta_new = (
+                    '            targets.append(target.astype(np.float32, copy=True))\n'
+                    '            cur = target\n'
+                    '        self._apply_gripper_close_hold(targets)\n'
+                    '        return targets\n'
+                )
+                if delta_old not in deploy_s:
+                    raise SystemExit("did not find delta target return block for gripper hold patch")
+                deploy_s = deploy_s.replace(delta_old, delta_new, 1)
+
+                debug_old = (
+                    '            f"grip=({targets[0][7]:.3f},{targets[0][15]:.3f}) "\n'
+                )
+                debug_new = debug_old + (
+                    '            f"hold=({int(self._gripper_hold_remaining[0])},{int(self._gripper_hold_remaining[1])})/"\n'
+                    '            f"{self.gripper_close_hold_steps} "\n'
+                )
+                if debug_old not in deploy_s:
+                    raise SystemExit("did not find debug grip line for gripper hold patch")
+                deploy_s = deploy_s.replace(debug_old, debug_new, 1)
+                compile(deploy_s, str(deploy), "exec")
+                for marker in ("_apply_gripper_close_hold", "_force_gripper_open_until_infer", "DREAMZERO_GRIPPER_CLOSE_HOLD_STEPS", "hold=("):
+                    if marker not in deploy_s:
+                        raise SystemExit(f"gripper hold patch marker missing after patch: {marker}")
+                deploy.write_text(deploy_s)
+            if gripper_hold_steps > 0 and "gripper_close_hold_steps" not in deploy_s:
+                raise SystemExit("gripper close hold requested, but refreshed client lacks gripper_close_hold_steps")
+            if gripper_force_open_until_infer > 0 and "gripper_force_open_until_infer" not in deploy_s:
+                raise SystemExit("gripper force-open requested, but refreshed client lacks gripper_force_open_until_infer")
 
             p = Path("/workspace/robotwin/script/eval_policy.py")
             s = p.read_text()
@@ -375,6 +898,9 @@ workflow:
             s = s.replace(old_instruction, new_instruction, 1)
             old_set_instruction = "        TASK_ENV.set_instruction(instruction=instruction)  # set language instruction\n"
             new_set_instruction = (
+                "        prompt_override = os.environ.get(\"DREAMZERO_PROMPT_OVERRIDE\", \"\").strip()\n"
+                "        if prompt_override:\n"
+                "            instruction = prompt_override\n"
                 "        print(f\"Episode {now_id}: episode_info={episode_info_list[0]}\", flush=True)\n"
                 "        print(f\"Episode {now_id}: instruction={instruction}\", flush=True)\n"
                 "        TASK_ENV.set_instruction(instruction=instruction)  # set language instruction\n"
@@ -451,6 +977,11 @@ workflow:
               --num-frames 33 \
               --action-horizon 24 \
               --return-action-debug \
+              --prompt-override "$DREAMZERO_PROMPT_OVERRIDE" \
+              --gripper-binarize-threshold "$DREAMZERO_GRIPPER_BINARIZE_THRESHOLD" \
+              --gripper-override "$DREAMZERO_GRIPPER_OVERRIDE" \
+              --gripper-close-after-infer "$DREAMZERO_GRIPPER_CLOSE_AFTER_INFER" \
+              --gripper-close-value "$DREAMZERO_GRIPPER_CLOSE_VALUE" \
               > /tmp/server.log 2>&1 &
             SERVER_PID=$!
 
@@ -479,28 +1010,52 @@ workflow:
             cd /workspace/robotwin
             export DREAMZERO_HOST=127.0.0.1
             export DREAMZERO_PORT="$PORT"
+            export DREAMZERO_PROMPT_OVERRIDE
+            export DREAMZERO_GRIPPER_BINARIZE_THRESHOLD
+            export DREAMZERO_GRIPPER_CLOSE_HOLD_STEPS
+            export DREAMZERO_GRIPPER_CLOSE_HOLD_MIN_INFER
+            export DREAMZERO_GRIPPER_FORCE_OPEN_UNTIL_INFER
             export ROBOTWIN_EVAL_EPISODES="$NUM_EPISODES"
             export MUJOCO_GL=egl
-            echo "Running RoboTwin closed-loop eval: task=${TASK_NAME}, config=${TASK_CONFIG}, episodes=${NUM_EPISODES}, seed=${SEED}"
+            echo "Running RoboTwin closed-loop eval: task=${TASK_NAME}, config=${TASK_CONFIG}, episodes=${NUM_EPISODES}, seed=${SEED}, prompt_override=${DREAMZERO_PROMPT_OVERRIDE}, gripper_binarize_threshold=${DREAMZERO_GRIPPER_BINARIZE_THRESHOLD}, gripper_close_hold_steps=${DREAMZERO_GRIPPER_CLOSE_HOLD_STEPS}, gripper_close_hold_min_infer=${DREAMZERO_GRIPPER_CLOSE_HOLD_MIN_INFER}, gripper_force_open_until_infer=${DREAMZERO_GRIPPER_FORCE_OPEN_UNTIL_INFER}, client_timeout_seconds=${CLIENT_TIMEOUT_SECONDS}"
             set +e
-            CUDA_VISIBLE_DEVICES=1 "$ROBOTWIN_PYTHON" -u /workspace/robotwin/script/eval_policy.py \
-              --config /workspace/robotwin/policy/DreamZero/deploy_policy.yml \
-              --overrides \
-              --task_name "$TASK_NAME" \
-              --task_config "$TASK_CONFIG" \
-              --ckpt_setting "$CKPT_SETTING" \
-              --seed "$SEED" \
-              --policy_name DreamZero \
-              --server_host "$DREAMZERO_HOST" \
-              --server_port "$DREAMZERO_PORT" \
-              --need_plan False \
-              --expert_check False \
-              --instruction_type unseen \
-              > /tmp/client.log 2>&1
+            CLIENT_CMD=(
+              "$ROBOTWIN_PYTHON" -u /workspace/robotwin/script/eval_policy.py
+              --config /workspace/robotwin/policy/DreamZero/deploy_policy.yml
+              --overrides
+              --task_name "$TASK_NAME"
+              --task_config "$TASK_CONFIG"
+              --ckpt_setting "$CKPT_SETTING"
+              --seed "$SEED"
+              --policy_name DreamZero
+              --server_host "$DREAMZERO_HOST"
+              --server_port "$DREAMZERO_PORT"
+              --action_mode auto
+              --debug_interval 1
+              --need_plan False
+              --expert_check False
+              --instruction_type unseen
+            )
+            if [ "${DREAMZERO_GRIPPER_CLOSE_HOLD_STEPS:-0}" -gt 0 ] 2>/dev/null; then
+              CLIENT_CMD+=(--gripper_close_hold_steps "$DREAMZERO_GRIPPER_CLOSE_HOLD_STEPS")
+              CLIENT_CMD+=(--gripper_close_hold_min_infer "$DREAMZERO_GRIPPER_CLOSE_HOLD_MIN_INFER")
+            fi
+            if [ "${DREAMZERO_GRIPPER_FORCE_OPEN_UNTIL_INFER:-0}" -gt 0 ] 2>/dev/null; then
+              CLIENT_CMD+=(--gripper_force_open_until_infer "$DREAMZERO_GRIPPER_FORCE_OPEN_UNTIL_INFER")
+            fi
+            if command -v timeout >/dev/null 2>&1; then
+              CUDA_VISIBLE_DEVICES=1 timeout "$CLIENT_TIMEOUT_SECONDS" "${CLIENT_CMD[@]}" > /tmp/client.log 2>&1
+            else
+              echo "WARNING: timeout command not found; running client without watchdog" >&2
+              CUDA_VISIBLE_DEVICES=1 "${CLIENT_CMD[@]}" > /tmp/client.log 2>&1
+            fi
             client_status=$?
             set -e
 
             echo "Client exit status: ${client_status}"
+            if [ "$client_status" -eq 124 ]; then
+              echo "Client timed out after ${CLIENT_TIMEOUT_SECONDS}s"
+            fi
             echo "Last 240 client log lines:"
             tail -n 240 /tmp/client.log || true
             if [ "$client_status" -ne 0 ]; then
@@ -512,4 +1067,21 @@ workflow:
             find /workspace/robotwin/eval_result -type f | sort | sed -n '1,120p' | tee /workspace/robotwin_eval_outputs/result_files.txt
             find /workspace/robotwin/eval_result -name '_result.txt' -print -exec sed -n '1,120p' {} \; | tee /workspace/robotwin_eval_outputs/summary.txt
 
-            echo "RoboTwin stack_blocks_two checkpoint-7000 eval complete"
+            echo "RoboTwin stack_blocks_two ${CKPT_SETTING} eval complete"
+
+default-values:
+  workflow_name: dreamzero-rt-stack-blocks-two-eval-gripperfix-data500-ckpt50000-l40-xianzhef-20260603
+  source_train_run_name: dreamzero-rt-stack-blocks-two-train-shared-global-gripperfix-data500-xianzhef-20260603
+  ckpt_setting: checkpoint-50000
+  num_episodes: 1
+  client_timeout_seconds: 14400
+  osmo_cache_root: /mnt/amlfs-04/home/xianzhef/osmo_cache
+  eval_ckpt_root: /mnt/amlfs-04/home/xianzhef/osmo_cache/dreamzero/eval_ckpts/robotwin_stack_blocks_two_dreamzero-rt-stack-blocks-two-train-shared-global-gripperfix-data500-xianzhef-20260603_checkpoint-50000
+  prompt_override: stack the two blocks
+  gripper_binarize_threshold: "0.5"
+  gripper_close_hold_steps: "0"
+  gripper_close_hold_min_infer: "0"
+  gripper_force_open_until_infer: "0"
+  gripper_override: none
+  gripper_close_after_infer: "0"
+  gripper_close_value: "0.0"

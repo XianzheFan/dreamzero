@@ -47,6 +47,31 @@ LEROBOT_RELATIVE_HORIZON_STATS_FILE_NAME = "meta/relative_horizon_stats_dreamzer
 METADATA_LANG_KEYS = ["detailed_global_instruction_medium", "detailed_global_instruction_concise"]
 
 
+def _normalize_relative_action_key(key: str) -> str:
+    """Canonicalize state/action modality keys for relative-action matching."""
+    for prefix in ("action.", "state."):
+        if key.startswith(prefix):
+            return key[len(prefix):]
+    return key
+
+
+def _normalize_relative_action_keys(keys: Sequence[str] | None) -> list[str] | None:
+    if keys is None:
+        return None
+    return [_normalize_relative_action_key(key) for key in keys]
+
+
+def _relative_action_key_matches(
+    key: str,
+    relative_action_keys: Sequence[str] | None,
+) -> bool:
+    if relative_action_keys is None:
+        return True
+    return _normalize_relative_action_key(key) in {
+        _normalize_relative_action_key(rel_key) for rel_key in relative_action_keys
+    }
+
+
 def calculate_dataset_statistics(
     parquet_paths: list[Path], features: list[str] | None = None
 ) -> dict[str, DatasetStatisticalValues]:
@@ -175,7 +200,7 @@ class LeRobotSingleDataset(Dataset):
         self.relative_action_per_horizon = relative_action_per_horizon
         # Determine which action keys should use relative action
         if relative_action_keys is not None:
-            self.relative_action_keys = relative_action_keys
+            self.relative_action_keys = _normalize_relative_action_keys(relative_action_keys)
         else:
             # Default: apply to all action keys except those containing 'gripper'
             self.relative_action_keys = None  # Will be set after modality_configs is available
@@ -201,7 +226,7 @@ class LeRobotSingleDataset(Dataset):
             # Default: apply to all action keys except those containing 'gripper'
             action_keys = self.modality_configs.get("action", ModalityConfig(delta_indices=[0], modality_keys=[])).modality_keys
             self.relative_action_keys = [
-                k.replace("action.", "") for k in action_keys 
+                _normalize_relative_action_key(k) for k in action_keys
                 if "gripper" not in k.lower()
             ]
             print(f"Relative action will be applied to keys: {self.relative_action_keys}")
@@ -501,8 +526,8 @@ class LeRobotSingleDataset(Dataset):
         # Filter to only the keys that should use relative action
         action_keys_to_process = []
         for key in all_action_keys:
-            subkey = key.replace("action.", "")
-            if self.relative_action_keys is None or subkey in self.relative_action_keys:
+            subkey = _normalize_relative_action_key(key)
+            if _relative_action_key_matches(subkey, self.relative_action_keys):
                 action_keys_to_process.append(subkey)
         
         if not action_keys_to_process:
@@ -581,8 +606,8 @@ class LeRobotSingleDataset(Dataset):
         # Filter to only the keys that should use relative action
         action_keys_to_process = []
         for key in all_action_keys:
-            subkey = key.replace("action.", "")
-            if self.relative_action_keys is None or subkey in self.relative_action_keys:
+            subkey = _normalize_relative_action_key(key)
+            if _relative_action_key_matches(subkey, self.relative_action_keys):
                 action_keys_to_process.append(subkey)
         
         if not action_keys_to_process:
@@ -1077,7 +1102,7 @@ class LeRobotSingleDataset(Dataset):
                     our_modality == "action"
                     and self.relative_action_per_horizon
                     and subkey in per_horizon_stats
-                    and (self.relative_action_keys is None or subkey in self.relative_action_keys)
+                    and _relative_action_key_matches(subkey, self.relative_action_keys)
                 )
                 
                 # Use relative stats for action modality if relative_action is enabled and stats are available
@@ -1086,7 +1111,7 @@ class LeRobotSingleDataset(Dataset):
                     our_modality == "action" 
                     and self.relative_action 
                     and subkey in relative_stats
-                    and (self.relative_action_keys is None or subkey in self.relative_action_keys)
+                    and _relative_action_key_matches(subkey, self.relative_action_keys)
                 )
                 
                 if should_use_per_horizon:

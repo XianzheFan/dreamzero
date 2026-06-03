@@ -12,7 +12,13 @@ import yaml
 
 from groot.vla.common.utils import get_frames_by_timestamps
 
-from .lerobot import LE_ROBOT_EPISODE_FILENAME, LeRobotMixtureDataset, LeRobotSingleDataset
+from .lerobot import (
+    LE_ROBOT_EPISODE_FILENAME,
+    LeRobotMixtureDataset,
+    LeRobotSingleDataset,
+    _normalize_relative_action_key,
+    _relative_action_key_matches,
+)
 
 
 class ShardedLeRobotSingleDataset(LeRobotSingleDataset):
@@ -1035,11 +1041,11 @@ class ShardedLeRobotSubLangSingleActionChunkDatasetDROID(LeRobotSingleDataset):
         # print("action data before convert", key)
         # Calculate relative action on the fly if relative_action is enabled
         # Only apply to keys that are in relative_action_keys
-        subkey = key.replace("action.", "")
+        subkey = _normalize_relative_action_key(key)
         should_convert_to_relative = (
             (self.relative_action or self.relative_action_per_horizon)  
             and len(sampled_indices) > 0
-            and (self.relative_action_keys is None or subkey in self.relative_action_keys)
+            and _relative_action_key_matches(subkey, self.relative_action_keys)
         )
         if should_convert_to_relative:
             # print("action data before convert", action_data[0], action_data[-1], key)

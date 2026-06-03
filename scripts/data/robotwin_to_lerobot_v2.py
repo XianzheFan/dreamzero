@@ -1,7 +1,7 @@
 """Convert a RoboTwin 2.0 franka-panda demonstration set into a LeRobot v2
-layout consumable by the DreamZero ``multi-agent`` branch under the
-existing ``robofactory`` embodiment tag (both expose two Panda arms with
-the same 7 joints + 1 gripper per arm).
+layout consumable by the DreamZero ``multi-agent`` branch under the dedicated
+``robotwin`` embodiment tag (two Panda/Franka arms with 7 joints + 1 gripper
+per arm).
 
 Source layout (one episode per .hdf5, produced by RoboTwin's
 ``script/collect_data.py``)::
@@ -21,8 +21,8 @@ Each episode contains::
     /observation/left_camera/rgb     [T] uint8
     /observation/right_camera/rgb    [T] uint8
 
-Output (LeRobot v2 schema, reusing the existing two-Panda RoboFactory
-modality names so the bimanual DreamZero transform can be reused)::
+Output (LeRobot v2 schema, using Panda-style modality names under the
+RoboTwin-specific transform namespace)::
 
     {out_dir}/
         data/chunk-000/episode_000000.parquet
@@ -31,7 +31,7 @@ modality names so the bimanual DreamZero transform can be reused)::
         videos/chunk-000/observation.images.agent1/episode_000000.mp4
         meta/{info,modality,episodes,tasks,stats,embodiment}.{json,jsonl}
 
-State / action layout (16 dims total, matches ``robofactory``)::
+State / action layout (16 dims total)::
 
     [left_arm_joint(0:7), left_gripper(7:8),
      right_arm_joint(8:15), right_gripper(15:16)]
@@ -92,6 +92,33 @@ ARM_STATE_DIM = 8   # 7 joints + 1 gripper finger
 ARM_ACTION_DIM = 8
 STATE_DIM = 2 * ARM_STATE_DIM  # 16
 ACTION_DIM = 2 * ARM_ACTION_DIM  # 16
+
+
+def _validate_joint_action_vector(traj: h5py.File, state: np.ndarray) -> None:
+    """Check RoboTwin's canonical joint-action vector when present.
+
+    The converter intentionally writes ``state`` from the named component
+    datasets so the layout is explicit. RoboTwin also stores the same value
+    as ``/joint_action/vector``; validating it catches silent left/right or
+    gripper ordering drift in upstream collection code.
+    """
+    vector_path = "/joint_action/vector"
+    if vector_path not in traj:
+        return
+
+    vector = np.asarray(traj[vector_path][()], dtype=np.float32)
+    if vector.shape != state.shape:
+        raise ValueError(
+            f"{vector_path} shape {vector.shape} does not match concatenated "
+            f"joint_action shape {state.shape}"
+        )
+
+    if not np.allclose(vector, state, atol=1e-5, rtol=1e-5):
+        max_abs_diff = float(np.max(np.abs(vector - state)))
+        raise ValueError(
+            f"{vector_path} does not match concatenated left_arm, left_gripper, "
+            f"right_arm, right_gripper layout; max_abs_diff={max_abs_diff:.6g}"
+        )
 
 
 def _decode_jpeg_stream(rgb_dataset: h5py.Dataset, T: int) -> np.ndarray:
@@ -163,6 +190,7 @@ def _read_state_and_action(traj: h5py.File) -> tuple[np.ndarray, np.ndarray]:
     T = left_arm.shape[0]
     state = np.concatenate([left_arm, left_grip, right_arm, right_grip], axis=1)
     assert state.shape == (T, STATE_DIM)
+    _validate_joint_action_vector(traj, state)
 
     # Absolute next-step qpos target. Joint targets are converted to
     # relative offsets by the DreamZero dataset loader when
@@ -249,11 +277,10 @@ def write_meta(
         },
     }
 
-    # Reuse the robofactory state/action naming so the existing modality
-    # config (state.panda0_joint_pos, etc.) lines up dimension-for-
-    # dimension. The training pipeline doesn't care that the actual robot
-    # is a RoboTwin franka-panda rather than a RoboFactory franka-panda;
-    # what matters is the 7+1 per-arm split.
+    # Keep Panda-style state/action naming so the tensor layout is explicit,
+    # but use the dedicated robotwin embodiment tag/config. RoboTwin and
+    # RoboFactory have compatible 7+1 per-arm slices but different simulator
+    # gripper semantics, so their config namespaces stay separate.
     state_names = [
         *(f"panda0_joint_{i}.pos" for i in range(7)),
         "panda0_gripper.pos",
@@ -352,9 +379,7 @@ def write_meta(
 
     (meta / "embodiment.json").write_text(json.dumps({
         "robot_type": "bi_panda_robotwin",
-        # Reuse the existing robofactory embodiment tag so we don't need
-        # to wire up a new entry in embodiment_tags.py / base_48.yaml.
-        "embodiment_tag": "robofactory",
+        "embodiment_tag": "robotwin",
     }, indent=2))
 
     all_actions = np.concatenate(actions, axis=0)
