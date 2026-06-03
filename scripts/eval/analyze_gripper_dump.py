@@ -9,6 +9,8 @@
   policy samples before/after inference-time clipping to ``[-1, 1]``.
 * ``exec_action``: commands actually executed in the env, shape
   ``[n_steps, 16]``.
+* ``exec_chunk_index`` / ``exec_gripper_chunk_index`` (optional): the
+  joint chunk index and gripper chunk index used for each env step.
 * ``obs_qpos``: qpos observed at each policy call, shape ``[n_infer, 16]``.
 
 LiftBarrier gripper command dims are 7 (left) and 15 (right):
@@ -140,6 +142,14 @@ def analyze_episode(
     )
     infer_step = np.asarray(d["infer_step"] if "infer_step" in d.files else [], dtype=np.int64)
     obs_qpos = np.asarray(d["obs_qpos"] if "obs_qpos" in d.files else [], dtype=np.float32)
+    exec_chunk_index = np.asarray(
+        d["exec_chunk_index"] if "exec_chunk_index" in d.files else [],
+        dtype=np.int64,
+    )
+    exec_gripper_chunk_index = np.asarray(
+        d["exec_gripper_chunk_index"] if "exec_gripper_chunk_index" in d.files else [],
+        dtype=np.int64,
+    )
     steps = int(exec_action.shape[0])
 
     if exec_action.ndim != 2 or exec_action.shape[1] < 16:
@@ -168,6 +178,21 @@ def analyze_episode(
         "right": _chunk_close_offsets(pred_chunk, GRIP_DIMS[1], decisive_threshold),
     }
 
+    gripper_source_offset = None
+    if exec_chunk_index.size and exec_gripper_chunk_index.size:
+        if exec_chunk_index.shape != exec_gripper_chunk_index.shape:
+            raise ValueError(
+                f"{path}: exec_chunk_index shape {exec_chunk_index.shape} "
+                f"does not match exec_gripper_chunk_index shape "
+                f"{exec_gripper_chunk_index.shape}"
+            )
+        offset = exec_gripper_chunk_index - exec_chunk_index
+        gripper_source_offset = {
+            "min": int(offset.min()),
+            "max": int(offset.max()),
+            "mean": float(offset.mean()),
+        }
+
     norm_debug = None
     if action_norm_raw is not None and action_norm_clipped is not None:
         raw_grip = action_norm_raw[..., GRIP_DIMS]
@@ -195,6 +220,7 @@ def analyze_episode(
         "mean_joint_step_delta": mean_joint_step_delta,
         "first_cmd_delta_mean": first_cmd_delta_mean,
         "first_cmd_delta_max": first_cmd_delta_max,
+        "gripper_source_offset": gripper_source_offset,
         "norm_debug": norm_debug,
     }
 
@@ -241,6 +267,13 @@ def analyze_episode(
 
     if infer_step.size:
         print(f"  infer steps: first={int(infer_step[0])} last={int(infer_step[-1])} count={infer_step.size}")
+    if gripper_source_offset is not None:
+        print(
+            "  gripper chunk source offset: "
+            f"min={gripper_source_offset['min']} "
+            f"max={gripper_source_offset['max']} "
+            f"mean={gripper_source_offset['mean']:.1f}"
+        )
     if norm_debug is not None:
         rg = norm_debug["raw_gripper"]
         print(

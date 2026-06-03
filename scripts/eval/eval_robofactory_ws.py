@@ -174,6 +174,7 @@ def run_episode(
     gripper_close_after_step: int,
     gripper_open_value: float,
     gripper_close_value: float,
+    gripper_chunk_lookahead: int,
     dump: dict | None = None,
 ):
     raw_obs, _ = env.reset(seed=seed)
@@ -234,8 +235,17 @@ def run_episode(
                     )
 
         cur = qpos.copy()
-        for da in actions[:replan_every]:
+        for chunk_idx, da in enumerate(actions[:replan_every]):
+            gripper_chunk_idx = min(
+                chunk_idx + gripper_chunk_lookahead,
+                actions.shape[0] - 1,
+            )
             abs16 = integrate_action(da, cur, action_representation)
+            if gripper_chunk_lookahead > 0:
+                # Use the model's own future gripper prediction while keeping
+                # short-horizon receding control for the arm joints.
+                abs16[7] = actions[gripper_chunk_idx, 7]
+                abs16[15] = actions[gripper_chunk_idx, 15]
             abs16 = apply_gripper_override(
                 abs16,
                 steps,
@@ -249,6 +259,8 @@ def run_episode(
             steps += 1
             if dump is not None:
                 dump["exec_action"].append(abs16.copy())
+                dump["exec_chunk_index"].append(int(chunk_idx))
+                dump["exec_gripper_chunk_index"].append(int(gripper_chunk_idx))
             if _bool_from(info.get("success", False)):
                 return True, steps
             if _bool_from(term) or _bool_from(trunc):
@@ -293,6 +305,17 @@ def main():
     ap.add_argument("--gripper-open-value", type=float, default=1.0)
     ap.add_argument("--gripper-close-value", type=float, default=-1.0)
     ap.add_argument(
+        "--gripper-chunk-lookahead",
+        type=int,
+        default=0,
+        help=(
+            "Use the model-predicted gripper command from this many future "
+            "chunk positions while executing joints from the current chunk "
+            "position. 0 preserves the original behavior; this is not a "
+            "forced open/close schedule."
+        ),
+    )
+    ap.add_argument(
         "--video-dir",
         default=None,
         help="If set, wrap env with RecordEpisode and write one mp4 per seed.",
@@ -322,8 +345,11 @@ def main():
     print(f"Max steps:     {args.max_steps}")
     print(f"Replan every:  {args.replan_every}")
     print(f"Gripper mode:  {args.gripper_override}")
+    print(f"Grip lookahead:{args.gripper_chunk_lookahead}")
     if args.gripper_override == "close-after-step":
         print(f"Close after:   {args.gripper_close_after_step}")
+    if args.gripper_chunk_lookahead < 0:
+        raise ValueError("--gripper-chunk-lookahead must be >= 0")
 
     # Build env FIRST (sapien init takes ~30-60s); only then open the
     # ws connection. The sync ws client doesn't service pings while
@@ -403,6 +429,7 @@ def main():
                         "gripper_close_after_step": args.gripper_close_after_step,
                         "gripper_open_value": args.gripper_open_value,
                         "gripper_close_value": args.gripper_close_value,
+                        "gripper_chunk_lookahead": args.gripper_chunk_lookahead,
                     },
                     "n_completed": len(results),
                     "n_target": args.num_episodes,
@@ -425,6 +452,10 @@ def main():
             "pred_chunk": np.stack(dump["pred_chunk"]),       # denorm [n_infer, chunk_len, 16]
             "obs_qpos": np.stack(dump["obs_qpos"]),           # [n_infer, 16]
             "exec_action": np.stack(dump["exec_action"]),     # [n_steps, 16]
+            "exec_chunk_index": np.asarray(dump["exec_chunk_index"], dtype=np.int32),
+            "exec_gripper_chunk_index": np.asarray(
+                dump["exec_gripper_chunk_index"], dtype=np.int32
+            ),
         }
         if dump.get("action_norm_raw"):
             payload["action_norm_raw"] = np.stack(dump["action_norm_raw"])
@@ -444,6 +475,8 @@ def main():
                 "pred_chunk": [],
                 "obs_qpos": [],
                 "exec_action": [],
+                "exec_chunk_index": [],
+                "exec_gripper_chunk_index": [],
                 "action_norm_raw": [],
                 "action_norm_clipped": [],
                 "action_physical_pre_binarize": [],
@@ -460,6 +493,7 @@ def main():
                 gripper_close_after_step=args.gripper_close_after_step,
                 gripper_open_value=args.gripper_open_value,
                 gripper_close_value=args.gripper_close_value,
+                gripper_chunk_lookahead=args.gripper_chunk_lookahead,
                 dump=dump,
             )
         except Exception as e:
