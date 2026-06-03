@@ -131,6 +131,21 @@ def test_gripper_binarize_preserves_zero_one_gripper_convention():
     np.testing.assert_allclose(out[:, 15], [1.0, 0.0])
 
 
+def test_gripper_action_values_exposes_metadata_open_close_convention():
+    metadata = _metadata_with_action_stats()
+    action_stats = metadata["robofactory"]["statistics"]["action"]
+    action_stats["panda0_gripper_pos"] = _stats([-1.0], [1.0])
+    action_stats["panda1_gripper_pos"] = _stats([-0.9], [0.8])
+    policy = _make_policy(metadata)
+
+    values = policy.gripper_action_values()
+
+    assert values["left"]["close"] == pytest.approx(-1.0)
+    assert values["left"]["open"] == pytest.approx(1.0)
+    assert values["right"]["close"] == pytest.approx(-0.9)
+    assert values["right"]["open"] == pytest.approx(0.8)
+
+
 def test_denorm_action_raises_when_action_stats_are_missing():
     metadata = _metadata_with_action_stats()
     del metadata["robofactory"]["statistics"]["action"]["panda1_gripper_pos"]

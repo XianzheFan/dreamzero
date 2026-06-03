@@ -30,6 +30,11 @@ import msgpack_numpy
 
 msgpack_numpy.patch()
 
+from eval_utils.gripper_convention import (
+    gripper_values_mismatch_message,
+    resolve_gripper_values_from_server_meta,
+)
+
 # Module-level wildcard import for env registration -- Python rejects
 # ``from x import *`` inside a function. Only ever imported from the
 # RoboFactory conda env (the dreamzero policy server doesn't import
@@ -171,80 +176,22 @@ def apply_client_gripper_binarize(
     return out
 
 
-def resolve_gripper_values_from_server_meta(
-    meta: dict,
-    fallback_open: float,
-    fallback_close: float,
-) -> tuple[float, float]:
-    """Return symmetric client gripper values inferred from server metadata.
-
-    The policy server reports per-arm q01/q99-derived values where q01 is the
-    close command and q99 is the open command. Eval sends a single scalar value
-    to each arm, so require both arms to agree closely before using metadata.
-    """
-    values = meta.get("gripper_action_values")
-    if not isinstance(values, dict):
-        print(
-            "Server meta has no gripper_action_values; using CLI gripper values "
-            f"open={fallback_open} close={fallback_close}",
-            flush=True,
-        )
-        return fallback_open, fallback_close
-
-    pairs = []
-    for side in ("left", "right"):
-        side_values = values.get(side)
-        if not isinstance(side_values, dict):
-            raise ValueError(f"server meta missing {side} gripper values: {values}")
-        pairs.append(
-            (
-                float(side_values["open"]),
-                float(side_values["close"]),
-            )
-        )
-
-    open_values = np.asarray([p[0] for p in pairs], dtype=np.float32)
-    close_values = np.asarray([p[1] for p in pairs], dtype=np.float32)
-    if not (np.isfinite(open_values).all() and np.isfinite(close_values).all()):
-        raise ValueError(f"non-finite server gripper values: {values}")
-    if float(np.max(np.abs(open_values - open_values[0]))) > 1e-3:
-        raise ValueError(f"left/right open gripper values disagree: {values}")
-    if float(np.max(np.abs(close_values - close_values[0]))) > 1e-3:
-        raise ValueError(f"left/right close gripper values disagree: {values}")
-    if not close_values[0] < open_values[0]:
-        raise ValueError(
-            "expected close gripper command to be lower than open command, "
-            f"got {values}"
-        )
-    return float(open_values[0]), float(close_values[0])
-
-
 def warn_if_gripper_values_mismatch(
     meta: dict,
     client_open: float,
     client_close: float,
 ) -> None:
-    values = meta.get("gripper_action_values")
-    if not isinstance(values, dict):
-        return
     try:
-        meta_open, meta_close = resolve_gripper_values_from_server_meta(
+        message = gripper_values_mismatch_message(
             meta,
-            fallback_open=client_open,
-            fallback_close=client_close,
+            client_open=client_open,
+            client_close=client_close,
         )
     except Exception as exc:
         print(f"WARNING: cannot validate server gripper values: {exc}", flush=True)
         return
-    if abs(meta_open - client_open) > 1e-3 or abs(meta_close - client_close) > 1e-3:
-        print(
-            "WARNING: client gripper binarize values differ from checkpoint "
-            "metadata: "
-            f"client_open={client_open} client_close={client_close} "
-            f"metadata_open={meta_open} metadata_close={meta_close}. "
-            "Pass --client-gripper-values-from-server-metadata to use metadata.",
-            flush=True,
-        )
+    if message:
+        print(f"WARNING: {message}", flush=True)
 
 
 def _bool_from(info_val) -> bool:
@@ -579,6 +526,13 @@ def main():
         flush=True,
     )
     if args.client_gripper_values_from_server_metadata:
+        if not isinstance(meta.get("gripper_action_values"), dict):
+            print(
+                "Server meta has no gripper_action_values; using CLI gripper "
+                f"values open={args.gripper_open_value} "
+                f"close={args.gripper_close_value}",
+                flush=True,
+            )
         args.gripper_open_value, args.gripper_close_value = (
             resolve_gripper_values_from_server_meta(
                 meta,
