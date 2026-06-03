@@ -152,6 +152,25 @@ def apply_gripper_override(
     return out
 
 
+def apply_client_gripper_binarize(
+    action16: np.ndarray,
+    threshold: float | None,
+    open_value: float,
+    close_value: float,
+) -> np.ndarray:
+    """Discretize model gripper outputs by value, not by time.
+
+    This is a calibration diagnostic for continuous gripper predictions. It
+    keeps the model's open/close timing and only changes the sign threshold.
+    """
+    out = np.asarray(action16, dtype=np.float32).copy()
+    if threshold is None:
+        return out
+    out[7] = open_value if out[7] >= threshold else close_value
+    out[15] = open_value if out[15] >= threshold else close_value
+    return out
+
+
 def _bool_from(info_val) -> bool:
     if info_val is None:
         return False
@@ -176,6 +195,7 @@ def run_episode(
     gripper_close_value: float,
     gripper_chunk_lookahead: int,
     gripper_exec_mode: str,
+    client_gripper_binarize_threshold: float | None,
     dump: dict | None = None,
 ):
     raw_obs, _ = env.reset(seed=seed)
@@ -275,6 +295,13 @@ def run_episode(
                 # short-horizon receding control for the arm joints.
                 abs16[7] = actions[gripper_chunk_idx, 7]
                 abs16[15] = actions[gripper_chunk_idx, 15]
+            pre_client_binarize = abs16.copy()
+            abs16 = apply_client_gripper_binarize(
+                abs16,
+                client_gripper_binarize_threshold,
+                gripper_open_value,
+                gripper_close_value,
+            )
             abs16 = apply_gripper_override(
                 abs16,
                 steps,
@@ -288,6 +315,9 @@ def run_episode(
             steps += 1
             if dump is not None:
                 dump["exec_action"].append(abs16.copy())
+                dump["exec_action_pre_client_binarize"].append(
+                    pre_client_binarize.copy()
+                )
                 dump["exec_chunk_index"].append(int(chunk_idx))
                 dump["exec_gripper_chunk_index"].append(int(gripper_chunk_idx))
                 dump["exec_gripper_source_infer_step"].append(
@@ -336,6 +366,17 @@ def main():
     )
     ap.add_argument("--gripper-open-value", type=float, default=1.0)
     ap.add_argument("--gripper-close-value", type=float, default=-1.0)
+    ap.add_argument(
+        "--client-gripper-binarize-threshold",
+        type=float,
+        default=None,
+        help=(
+            "Optional client-side gripper threshold in physical action units. "
+            "When set, gripper commands >= threshold become --gripper-open-value "
+            "and lower commands become --gripper-close-value. This calibrates "
+            "model gripper sign without a time-based forced schedule."
+        ),
+    )
     ap.add_argument(
         "--gripper-chunk-lookahead",
         type=int,
@@ -389,6 +430,7 @@ def main():
     print(f"Max steps:     {args.max_steps}")
     print(f"Replan every:  {args.replan_every}")
     print(f"Gripper mode:  {args.gripper_override}")
+    print(f"Client grip bin:{args.client_gripper_binarize_threshold}")
     print(f"Grip exec:     {args.gripper_exec_mode}")
     print(f"Grip lookahead:{args.gripper_chunk_lookahead}")
     if args.gripper_override == "close-after-step":
@@ -474,6 +516,7 @@ def main():
                         "gripper_close_after_step": args.gripper_close_after_step,
                         "gripper_open_value": args.gripper_open_value,
                         "gripper_close_value": args.gripper_close_value,
+                        "client_gripper_binarize_threshold": args.client_gripper_binarize_threshold,
                         "gripper_chunk_lookahead": args.gripper_chunk_lookahead,
                         "gripper_exec_mode": args.gripper_exec_mode,
                     },
@@ -498,6 +541,9 @@ def main():
             "pred_chunk": np.stack(dump["pred_chunk"]),       # denorm [n_infer, chunk_len, 16]
             "obs_qpos": np.stack(dump["obs_qpos"]),           # [n_infer, 16]
             "exec_action": np.stack(dump["exec_action"]),     # [n_steps, 16]
+            "exec_action_pre_client_binarize": np.stack(
+                dump["exec_action_pre_client_binarize"]
+            ),
             "exec_chunk_index": np.asarray(dump["exec_chunk_index"], dtype=np.int32),
             "exec_gripper_chunk_index": np.asarray(
                 dump["exec_gripper_chunk_index"], dtype=np.int32
@@ -524,6 +570,7 @@ def main():
                 "pred_chunk": [],
                 "obs_qpos": [],
                 "exec_action": [],
+                "exec_action_pre_client_binarize": [],
                 "exec_chunk_index": [],
                 "exec_gripper_chunk_index": [],
                 "exec_gripper_source_infer_step": [],
@@ -545,6 +592,7 @@ def main():
                 gripper_close_value=args.gripper_close_value,
                 gripper_chunk_lookahead=args.gripper_chunk_lookahead,
                 gripper_exec_mode=args.gripper_exec_mode,
+                client_gripper_binarize_threshold=args.client_gripper_binarize_threshold,
                 dump=dump,
             )
         except Exception as e:

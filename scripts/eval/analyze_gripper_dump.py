@@ -122,6 +122,18 @@ def _range_stats(values: np.ndarray) -> dict[str, float]:
     }
 
 
+def _threshold_sweep(values: np.ndarray, thresholds: tuple[float, ...]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for threshold in thresholds:
+        mask = values < threshold
+        out[f"{threshold:+.2f}"] = {
+            "frac_close": float(mask.mean()),
+            "first_close": _first_index(mask),
+            "max_consecutive_close": _max_consecutive(mask),
+        }
+    return out
+
+
 def analyze_episode(
     path: str,
     close_threshold: float,
@@ -132,6 +144,11 @@ def analyze_episode(
     seed = int(d["seed"])
     success = bool(d["success"])
     exec_action = np.asarray(d["exec_action"], dtype=np.float32)
+    exec_action_pre_client_binarize = (
+        np.asarray(d["exec_action_pre_client_binarize"], dtype=np.float32)
+        if "exec_action_pre_client_binarize" in d.files
+        else None
+    )
     pred_chunk = np.asarray(d["pred_chunk"], dtype=np.float32)
     action_norm_raw = (
         np.asarray(d["action_norm_raw"], dtype=np.float32)
@@ -141,6 +158,11 @@ def analyze_episode(
     action_norm_clipped = (
         np.asarray(d["action_norm_clipped"], dtype=np.float32)
         if "action_norm_clipped" in d.files
+        else None
+    )
+    action_physical_pre_binarize = (
+        np.asarray(d["action_physical_pre_binarize"], dtype=np.float32)
+        if "action_physical_pre_binarize" in d.files
         else None
     )
     infer_step = np.asarray(d["infer_step"] if "infer_step" in d.files else [], dtype=np.int64)
@@ -232,6 +254,38 @@ def analyze_episode(
             "clamp_delta_max": float(clamp_delta.max()),
         }
 
+    pre_binarize_debug = None
+    if action_physical_pre_binarize is not None:
+        pre_binarize_debug = {}
+        for label, dim in (("left", GRIP_DIMS[0]), ("right", GRIP_DIMS[1])):
+            values = action_physical_pre_binarize[..., dim].reshape(-1)
+            pre_binarize_debug[label] = {
+                "range": _range_stats(values),
+                "threshold_sweep": _threshold_sweep(
+                    values,
+                    (0.0, -0.1, -0.25, -0.5),
+                ),
+            }
+
+    exec_pre_client_debug = None
+    if exec_action_pre_client_binarize is not None:
+        if exec_action_pre_client_binarize.shape != exec_action.shape:
+            raise ValueError(
+                f"{path}: exec_action_pre_client_binarize shape "
+                f"{exec_action_pre_client_binarize.shape} does not match "
+                f"exec_action {exec_action.shape}"
+            )
+        exec_pre_client_debug = {}
+        for label, dim in (("left", GRIP_DIMS[0]), ("right", GRIP_DIMS[1])):
+            values = exec_action_pre_client_binarize[:, dim]
+            exec_pre_client_debug[label] = {
+                "range": _range_stats(values),
+                "threshold_sweep": _threshold_sweep(
+                    values,
+                    (0.0, -0.1, -0.25, -0.5),
+                ),
+            }
+
     episode = {
         "file": os.path.basename(path),
         "seed": seed,
@@ -248,6 +302,8 @@ def analyze_episode(
         "gripper_source_offset": gripper_source_offset,
         "gripper_queue_age": gripper_queue_age,
         "norm_debug": norm_debug,
+        "pre_binarize_debug": pre_binarize_debug,
+        "exec_pre_client_debug": exec_pre_client_debug,
     }
 
     print(
@@ -316,6 +372,38 @@ def analyze_episode(
             f"clamp_delta_mean={norm_debug['clamp_delta_mean']:.3f} "
             f"clamp_delta_max={norm_debug['clamp_delta_max']:.3f}"
         )
+    if pre_binarize_debug is not None:
+        print("  physical gripper pre-binarize threshold sweep:")
+        for label in ("left", "right"):
+            rg = pre_binarize_debug[label]["range"]
+            parts = []
+            for threshold, stats in pre_binarize_debug[label]["threshold_sweep"].items():
+                parts.append(
+                    f"<{threshold}:first={stats['first_close']} "
+                    f"frac={stats['frac_close']:.2f} "
+                    f"run={stats['max_consecutive_close']}"
+                )
+            print(
+                f"    {label}: min={rg['min']:+.2f} max={rg['max']:+.2f} "
+                f"mean={rg['mean']:+.2f} std={rg['std']:.2f} | "
+                + "; ".join(parts)
+            )
+    if exec_pre_client_debug is not None:
+        print("  executed-timeline gripper pre-client-binarize threshold sweep:")
+        for label in ("left", "right"):
+            rg = exec_pre_client_debug[label]["range"]
+            parts = []
+            for threshold, stats in exec_pre_client_debug[label]["threshold_sweep"].items():
+                parts.append(
+                    f"<{threshold}:first={stats['first_close']} "
+                    f"frac={stats['frac_close']:.2f} "
+                    f"run={stats['max_consecutive_close']}"
+                )
+            print(
+                f"    {label}: min={rg['min']:+.2f} max={rg['max']:+.2f} "
+                f"mean={rg['mean']:+.2f} std={rg['std']:.2f} | "
+                + "; ".join(parts)
+            )
 
     return episode
 
