@@ -19,8 +19,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import time
 import uuid
+from pathlib import Path
 
 import numpy as np
 
@@ -29,6 +31,10 @@ import msgpack
 import msgpack_numpy
 
 msgpack_numpy.patch()
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from eval_utils.gripper_convention import (
     gripper_values_mismatch_message,
