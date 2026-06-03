@@ -91,6 +91,7 @@ class BimanualServerConfig:
     fps: int = 20
     return_action_debug: bool = False
     action_representation: str = "robotwin_delta"
+    gripper_action_values: dict[str, dict[str, float]] | None = None
 
 
 def _make_packer():
@@ -814,6 +815,25 @@ class BimanualPolicy:
             raise ValueError(f"Action stats for {matched_key!r} contain non-finite values")
         return q01, q99
 
+    def gripper_action_values(self) -> dict[str, dict[str, float]]:
+        """Return physical open/close values inferred from action statistics.
+
+        RoboFactory gripper commands are ordered so values below the threshold
+        close and values at/above it open. In the training metadata this maps
+        to q01=close and q99=open for each one-dimensional gripper action key.
+        """
+        out: dict[str, dict[str, float]] = {}
+        for side, key in (
+            ("left", "action.panda0_gripper_pos"),
+            ("right", "action.panda1_gripper_pos"),
+        ):
+            q01, q99 = self._action_stats_for_key(key, 1)
+            out[side] = {
+                "close": float(q01[0]),
+                "open": float(q99[0]),
+            }
+        return out
+
     def _binarize_gripper_targets(self, out: np.ndarray) -> None:
         if self.gripper_binarize_threshold is None:
             return
@@ -948,6 +968,7 @@ class BimanualWebsocketServer:
             action_dim=policy.action_dim,
             return_action_debug=policy.return_action_debug,
             action_representation=policy.action_representation,
+            gripper_action_values=policy.gripper_action_values(),
         )
         logging.getLogger("websockets.server").setLevel(logging.INFO)
 
