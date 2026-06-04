@@ -71,6 +71,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--num-workers", type=int, default=0)
     p.add_argument("--device", type=str, default="cuda")
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument(
+        "--gripper-class-threshold",
+        type=float,
+        default=0.0,
+        help=(
+            "Threshold in normalized action space for gripper open/close "
+            "classification. close < threshold, open >= threshold."
+        ),
+    )
     return p.parse_args()
 
 
@@ -265,6 +274,94 @@ def collect_dim_subset(
     return np.concatenate(pieces, axis=0)
 
 
+def collect_dim_pairs(
+    all_values: list[tuple[np.ndarray, np.ndarray, np.ndarray]], dims
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return flattened (pred, gt) values for ``dims`` under the valid mask."""
+    pred_pieces = []
+    gt_pieces = []
+    for pred, gt, valid in all_values:
+        p = pred[..., dims]
+        g = gt[..., dims]
+        v = valid[..., dims]
+        pred_pieces.append(p[v])
+        gt_pieces.append(g[v])
+    if not pred_pieces:
+        empty = np.empty((0,), dtype=np.float32)
+        return empty, empty
+    return np.concatenate(pred_pieces, axis=0), np.concatenate(gt_pieces, axis=0)
+
+
+def _safe_rate(num: int, denom: int) -> float:
+    if denom == 0:
+        return float("nan")
+    return float(num) / float(denom)
+
+
+def gripper_open_close_metrics(
+    pred: np.ndarray,
+    gt: np.ndarray,
+    threshold: float = 0.0,
+) -> dict[str, float | int]:
+    """Classify gripper commands as close/open and return confusion metrics.
+
+    The eval tensors are in normalized action space. For both RoboTwin 0/1 and
+    RoboFactory -1/+1 gripper commands, the midpoint maps to approximately 0,
+    so the default threshold checks the command semantics rather than raw L1.
+    """
+    pred = np.asarray(pred).reshape(-1)
+    gt = np.asarray(gt).reshape(-1)
+    if pred.shape != gt.shape:
+        raise ValueError(
+            f"pred and gt must have the same shape, got {pred.shape} and {gt.shape}"
+        )
+
+    pred_open = pred >= threshold
+    gt_open = gt >= threshold
+
+    gt_close_pred_close = int((~gt_open & ~pred_open).sum())
+    gt_close_pred_open = int((~gt_open & pred_open).sum())
+    gt_open_pred_close = int((gt_open & ~pred_open).sum())
+    gt_open_pred_open = int((gt_open & pred_open).sum())
+    total = int(pred.size)
+
+    gt_close = gt_close_pred_close + gt_close_pred_open
+    gt_open_count = gt_open_pred_close + gt_open_pred_open
+    pred_close = gt_close_pred_close + gt_open_pred_close
+    pred_open_count = gt_close_pred_open + gt_open_pred_open
+    correct = gt_close_pred_close + gt_open_pred_open
+    close_recall = _safe_rate(gt_close_pred_close, gt_close)
+    open_recall = _safe_rate(gt_open_pred_open, gt_open_count)
+    if total == 0:
+        balanced_accuracy = float("nan")
+    else:
+        balanced_accuracy = float(np.nanmean([close_recall, open_recall]))
+
+    return {
+        "n": total,
+        "gt_close_pred_close": gt_close_pred_close,
+        "gt_close_pred_open": gt_close_pred_open,
+        "gt_open_pred_close": gt_open_pred_close,
+        "gt_open_pred_open": gt_open_pred_open,
+        "accuracy": _safe_rate(correct, total),
+        "balanced_accuracy": balanced_accuracy,
+        "close_recall": close_recall,
+        "open_recall": open_recall,
+        "close_precision": _safe_rate(gt_close_pred_close, pred_close),
+        "open_precision": _safe_rate(gt_open_pred_open, pred_open_count),
+        "gt_open_rate": _safe_rate(gt_open_count, total),
+        "pred_open_rate": _safe_rate(pred_open_count, total),
+        "pred_mean": float(pred.mean()) if total else float("nan"),
+        "gt_mean": float(gt.mean()) if total else float("nan"),
+    }
+
+
+def _format_pct(value: float) -> str:
+    if np.isnan(value):
+        return "n/a"
+    return f"{value * 100:5.1f}%"
+
+
 def summarize(flat: np.ndarray, thresholds, label: str) -> None:
     if flat.size == 0:
         print(f"  {label}: no valid entries")
@@ -279,6 +376,48 @@ def summarize(flat: np.ndarray, thresholds, label: str) -> None:
     for thr in thresholds:
         rate = (flat < thr).mean() * 100
         print(f"    |err| < {thr:<6}: {rate:5.1f}%")
+
+
+def summarize_gripper_open_close(
+    pred: np.ndarray,
+    gt: np.ndarray,
+    threshold: float,
+) -> dict[str, float | int]:
+    metrics = gripper_open_close_metrics(pred, gt, threshold)
+    if metrics["n"] == 0:
+        print("  Gripper open/close: no valid entries")
+        return metrics
+
+    print(
+        f"  Gripper open/close @ threshold {threshold:.3f} "
+        f"(n={metrics['n']}; close < threshold, open >= threshold):"
+    )
+    print(
+        f"    accuracy = {_format_pct(metrics['accuracy'])}"
+        f"   balanced = {_format_pct(metrics['balanced_accuracy'])}"
+    )
+    print(
+        "    gt close: "
+        f"pred close={metrics['gt_close_pred_close']} "
+        f"pred open={metrics['gt_close_pred_open']} "
+        f"close recall={_format_pct(metrics['close_recall'])}"
+    )
+    print(
+        "    gt open : "
+        f"pred close={metrics['gt_open_pred_close']} "
+        f"pred open={metrics['gt_open_pred_open']} "
+        f"open recall={_format_pct(metrics['open_recall'])}"
+    )
+    print(
+        f"    precision: close={_format_pct(metrics['close_precision'])} "
+        f"open={_format_pct(metrics['open_precision'])}"
+    )
+    print(
+        f"    open rate: gt={_format_pct(metrics['gt_open_rate'])} "
+        f"pred={_format_pct(metrics['pred_open_rate'])} "
+        f"(mean gt={metrics['gt_mean']:.4f}, mean pred={metrics['pred_mean']:.4f})"
+    )
+    return metrics
 
 
 def main():
@@ -296,7 +435,8 @@ def main():
         metadata=metadata,
     )
 
-    all_abs_err: list[np.ndarray] = []
+    all_abs_err: list[tuple[np.ndarray, np.ndarray]] = []
+    all_action_values: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
     inference_secs: list[float] = []
 
     print(f"\n=== Running offline eval on {args.num_batches} batches ===\n")
@@ -369,6 +509,7 @@ def main():
             # Store the full-shaped err for per-dim breakdown; mask aggregated
             # to the same shape as err.
             all_abs_err.append((err.numpy(), valid.numpy()))
+            all_action_values.append((pred.numpy(), gt.numpy(), valid.numpy()))
             print(
                 f"[batch {i}] pred {tuple(pred.shape)} gt {tuple(gt.shape)} "
                 f"valid {valid_count}/{total_count} "
@@ -385,6 +526,9 @@ def main():
     # episodes contribute only their real timesteps.
     joints_flat = collect_dim_subset(all_abs_err, PER_ARM_JOINT_DIMS)
     grippers_flat = collect_dim_subset(all_abs_err, PER_ARM_GRIPPER_DIMS)
+    gripper_pred_flat, gripper_gt_flat = collect_dim_pairs(
+        all_action_values, PER_ARM_GRIPPER_DIMS
+    )
     all_flat = np.concatenate([joints_flat, grippers_flat], axis=0)
 
     n_batches = len(all_abs_err)
@@ -398,6 +542,11 @@ def main():
 
     summarize(joints_flat, JOINT_THRESHOLDS, "Joints (per-arm dims 0..6)")
     summarize(grippers_flat, GRIPPER_THRESHOLDS, "Gripper (per-arm dim 7)")
+    summarize_gripper_open_close(
+        gripper_pred_flat,
+        gripper_gt_flat,
+        args.gripper_class_threshold,
+    )
 
 
 if __name__ == "__main__":

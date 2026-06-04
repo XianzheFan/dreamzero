@@ -28,6 +28,7 @@ def test_liftbarrier_offline_eval_workflow_defaults_to_ckpt500_and_cached_code()
     assert defaults["ckpt_setting"] == "checkpoint-500"
     assert defaults["min_model_bytes"] == "80000000000"
     assert defaults["num_batches"] == "4"
+    assert defaults["gripper_class_threshold"] == "0.0"
 
     resources = workflow["workflow"]["resources"]["default"]
     assert resources["gpu"] == 8
@@ -78,6 +79,9 @@ def test_liftbarrier_offline_eval_workflow_checks_robofactory_data_and_runs_eval
         "--ckpt-dir \"$EVAL_CKPT_ROOT\"",
         "--ckpt-setting \"$CKPT_SETTING\"",
         "--num-batches \"$NUM_BATCHES\"",
+        "--gripper-class-threshold \"$GRIPPER_CLASS_THRESHOLD\"",
+        "gripper_class_threshold=${GRIPPER_CLASS_THRESHOLD}",
+        "open rate",
     ):
         assert marker in script
 

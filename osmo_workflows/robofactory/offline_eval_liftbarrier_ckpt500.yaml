@@ -43,6 +43,7 @@ workflow:
             CKPT_SETTING="${CKPT_SETTING:-{{ckpt_setting}}}"
             MIN_MODEL_BYTES="${MIN_MODEL_BYTES:-{{min_model_bytes}}}"
             NUM_BATCHES="${NUM_BATCHES:-{{num_batches}}}"
+            GRIPPER_CLASS_THRESHOLD="${GRIPPER_CLASS_THRESHOLD:-{{gripper_class_threshold}}}"
             MODEL_CACHE_S3_URI="s3://GearHome/users/xianzhef/oci-migration/checkpoints"
             EVAL_CKPT_S3_URI="${EVAL_CKPT_S3_URI:-s3://GearHome/users/xianzhef/oci-migration/dreamzero_s3cache/bootstrap_checkpoints/${SOURCE_TRAIN_RUN_NAME}}"
             EVAL_CKPT_FALLBACK_S3_URI="${EVAL_CKPT_FALLBACK_S3_URI:-s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/${SOURCE_TRAIN_RUN_NAME}/checkpoints}"
@@ -370,6 +371,7 @@ workflow:
               --num-batches "$NUM_BATCHES" \
               --batch-size 1 \
               --num-workers 0 \
+              --gripper-class-threshold "$GRIPPER_CLASS_THRESHOLD" \
               --device cuda | tee /workspace/offline_eval_outputs/offline_eval_stdout.txt
 
             {
@@ -377,11 +379,12 @@ workflow:
               echo "source_train_run=${SOURCE_TRAIN_RUN_NAME}"
               echo "ckpt_setting=${CKPT_SETTING}"
               echo "num_batches=${NUM_BATCHES}"
+              echo "gripper_class_threshold=${GRIPPER_CLASS_THRESHOLD}"
               echo "min_model_bytes=${MIN_MODEL_BYTES}"
               echo "data_root=${DATA_ROOT}"
               echo "code_commit=$(cat "$CODE_ROOT/OSMO_CODE_COMMIT")"
               echo
-              grep -E "Overall|Joints|Gripper|L1 mean|\\|err\\|" /workspace/offline_eval_outputs/offline_eval_stdout.txt || true
+              grep -E "Overall|Joints|Gripper|L1 mean|\\|err\\||accuracy|balanced|gt close|gt open|precision|open rate" /workspace/offline_eval_outputs/offline_eval_stdout.txt || true
             } > /workspace/offline_eval_outputs/summary.txt
 
 default-values:
@@ -394,3 +397,4 @@ default-values:
   ckpt_setting: checkpoint-500
   min_model_bytes: "80000000000"
   num_batches: "4"
+  gripper_class_threshold: "0.0"
