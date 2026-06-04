@@ -31,5 +31,13 @@ def test_robofactory_training_script_passes_binary_gripper_loss_knobs():
         assert marker in script
 
 
+def test_robofactory_training_script_uses_full_dataset_sampling_by_default():
+    script = SCRIPT_PATH.read_text()
+
+    assert "DATASET_SHARD_SAMPLING_RATE=${DATASET_SHARD_SAMPLING_RATE:-1.0}" in script
+    assert "dataset_shard_sampling_rate=$DATASET_SHARD_SAMPLING_RATE" in script
+    assert "dataset_shard_sampling_rate=$DATASET_SHARD_SAMPLING_RATE \\" in script
+
+
 def test_robofactory_training_script_is_valid_bash():
     subprocess.run(["bash", "-n", str(SCRIPT_PATH)], check=True)

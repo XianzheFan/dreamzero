@@ -1,0 +1,585 @@
+workflow:
+  timeout:
+    queue_timeout: 2h
+    exec_timeout: 14d
+  name: "{{workflow_name}}"
+  resources:
+    default:
+      cpu: 84
+      gpu: 8
+      memory: 1681Gi
+      storage: 803Gi
+      platform: dgx-h100
+  tasks:
+    - name: train
+      image: nvcr.io/nvidian/gear-h100-train:latest
+      credentials:
+        gear-aws-cred:
+          AWS_ACCESS_KEY_ID: aws_access_key_id
+          AWS_SECRET_ACCESS_KEY: aws_secret_access_key
+          AWS_DEFAULT_REGION: aws_default_region
+          AWS_ENDPOINT_URL: aws_endpoint_url
+        gear-data-credentials:
+          GEAR_DATA_CREDENTIALS: data_credentials
+        wandb-api-key:
+          WANDB_API_KEY: WANDB_API_KEY
+      command: ["bash"]
+      environment:
+        ACCEPT_EULA: "Y"
+        NO_NUCLEUS: "Y"
+      exitActions:
+        RESCHEDULE: 3001
+      args: ["/tmp/train_liftbarrier_shared_global.sh"]
+      files:
+        - path: /tmp/train_liftbarrier_shared_global.sh
+          contents: |
+            #!/usr/bin/env bash
+            set -euo pipefail
+
+            exec > >(tee /tmp/train_liftbarrier_shared_global.log) 2>&1
+
+            RUN_NAME="${RUN_NAME:-{{run_name}}}"
+            RESTORE_RUN_NAME="${RESTORE_RUN_NAME:-{{restore_run_name}}}"
+            CODE_S3_URI="${CODE_S3_URI:-{{code_s3_uri}}}"
+            EXPECTED_CODE_COMMIT="${EXPECTED_CODE_COMMIT:-{{expected_code_commit}}}"
+            DATA_VARIANT="${DATA_VARIANT:-{{data_variant}}}"
+            EXPECTED_DATA_EPISODES="${EXPECTED_DATA_EPISODES:-{{expected_data_episodes}}}"
+            DATA_S3_URI="${DATA_S3_URI:-{{data_s3_uri}}}"
+            MODEL_CACHE_S3_URI="s3://GearHome/users/xianzhef/oci-migration/checkpoints"
+            RUN_S3_ROOT="s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/${RUN_NAME}"
+            OUTPUT_S3_URI="${RUN_S3_ROOT}/checkpoints"
+            LOG_S3_URI="${RUN_S3_ROOT}/logs"
+            CACHE_OUTPUT_S3_URI="${CACHE_OUTPUT_S3_URI:-s3://GearHome/users/xianzhef/oci-migration/dreamzero_s3cache/bootstrap_checkpoints/${RUN_NAME}}"
+            RESTORE_S3_URI="${RESTORE_S3_URI:-s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/${RESTORE_RUN_NAME}/checkpoints}"
+            RESTORE_CACHE_S3_URI="${RESTORE_CACHE_S3_URI:-s3://GearHome/users/xianzhef/oci-migration/dreamzero_s3cache/bootstrap_checkpoints/${RESTORE_RUN_NAME}}"
+            CHECKPOINT_UPLOAD_INTERVAL_SECONDS="${CHECKPOINT_UPLOAD_INTERVAL_SECONDS:-900}"
+
+            for uri in "$CODE_S3_URI" "$DATA_S3_URI" "$MODEL_CACHE_S3_URI" "$RUN_S3_ROOT" "$OUTPUT_S3_URI" "$LOG_S3_URI" "$CACHE_OUTPUT_S3_URI" "$RESTORE_S3_URI" "$RESTORE_CACHE_S3_URI"; do
+              case "$uri" in
+                s3://GearHome/users/xianzhef/*) ;;
+                swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/*) ;;
+                *)
+                  echo "Refusing non-xianzhef data URI: $uri" >&2
+                  exit 64
+                  ;;
+              esac
+            done
+
+            upload_artifacts() {
+              status=$?
+              set +e
+              if [ -n "${PERIODIC_UPLOADER_PID:-}" ] && kill -0 "$PERIODIC_UPLOADER_PID" 2>/dev/null; then
+                echo "Stopping periodic checkpoint uploader pid=${PERIODIC_UPLOADER_PID}"
+                kill "$PERIODIC_UPLOADER_PID" 2>/dev/null || true
+                wait "$PERIODIC_UPLOADER_PID" 2>/dev/null || true
+              fi
+              echo "Training workflow exit status: $status"
+              osmo data upload "${LOG_S3_URI}/" /tmp/train_liftbarrier_shared_global.log
+              if declare -f upload_checkpoints_once >/dev/null 2>&1; then
+                upload_checkpoints_once || true
+              fi
+              exit "$status"
+            }
+            trap upload_artifacts EXIT
+
+            export PYTHONUNBUFFERED=1
+            export HYDRA_FULL_ERROR=1
+            export MUJOCO_GL=egl
+            export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+            export GIT_LFS_SKIP_SMUDGE=1
+            export OSMO_CACHE_ROOT="${OSMO_CACHE_ROOT:-/workspace/osmo_cache}"
+            export HF_HOME="${OSMO_CACHE_ROOT}/hf"
+            export HF_HUB_CACHE="${HF_HOME}/hub"
+            export TRANSFORMERS_CACHE="${HF_HOME}/transformers"
+            export WANDB_DIR="${OSMO_CACHE_ROOT}/wandb"
+            export WANDB_CACHE_DIR="${WANDB_DIR}/cache"
+            export WANDB_RESUME=allow
+
+            mkdir -p \
+              /workspace/code/dreamzero \
+              /workspace/data/robofactory_lerobot_v2 \
+              /workspace/checkpoints \
+              /workspace/outputs \
+              "$OSMO_CACHE_ROOT" \
+              "$HF_HOME" \
+              "$WANDB_CACHE_DIR"
+
+            dir_has_files() {
+              [ -d "$1" ] && [ -n "$(find "$1" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]
+            }
+
+            has_lerobot_meta() {
+              [ -d "$1/meta" ] && [ -f "$1/meta/info.json" ] && [ -f "$1/meta/modality.json" ]
+            }
+
+            resolve_lerobot_root() {
+              root="$1"
+              if has_lerobot_meta "$root"; then
+                printf '%s\n' "$root"
+                return 0
+              fi
+              meta_file="$(find "$root" -maxdepth 4 -path "*/meta/info.json" -print -quit 2>/dev/null || true)"
+              if [ -n "$meta_file" ]; then
+                dirname "$(dirname "$meta_file")"
+                return 0
+              fi
+              return 1
+            }
+
+            hf_download() {
+              repo="$1"
+              repo_type="$2"
+              dest="$3"
+              mkdir -p "$dest"
+              if command -v hf >/dev/null 2>&1; then
+                hf download "$repo" --repo-type "$repo_type" --local-dir "$dest"
+              else
+                huggingface-cli download "$repo" --repo-type "$repo_type" --local-dir "$dest"
+              fi
+            }
+
+            model_dir_is_usable() {
+              cache_name="$1"
+              dest="$2"
+              case "$cache_name" in
+                Wan2.1-I2V-14B-480P)
+                  [ -f "$dest/Wan2.1_VAE.pth" ] &&
+                    [ -f "$dest/models_t5_umt5-xxl-enc-bf16.pth" ] &&
+                    [ -f "$dest/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth" ]
+                  ;;
+                DreamZero-DROID)
+                  [ -f "$dest/model.safetensors" ] || [ -f "$dest/model.safetensors.index.json" ]
+                  ;;
+                *)
+                  dir_has_files "$dest"
+                  ;;
+              esac
+            }
+
+            resolve_model_root() {
+              cache_name="$1"
+              dest="$2"
+              if model_dir_is_usable "$cache_name" "$dest"; then
+                printf '%s\n' "$dest"
+                return 0
+              fi
+              case "$cache_name" in
+                Wan2.1-I2V-14B-480P)
+                  root="$(find "$dest" -maxdepth 3 -name Wan2.1_VAE.pth -print -quit 2>/dev/null || true)"
+                  ;;
+                DreamZero-DROID)
+                  root="$(find "$dest" -maxdepth 3 \( -name model.safetensors -o -name model.safetensors.index.json \) -print -quit 2>/dev/null || true)"
+                  ;;
+                *)
+                  root=""
+                  ;;
+              esac
+              if [ -n "${root:-}" ]; then
+                dirname "$root"
+                return 0
+              fi
+              return 1
+            }
+
+            promote_model_root() {
+              resolved="$1"
+              dest="$2"
+              if [ "$resolved" = "$dest" ]; then
+                return 0
+              fi
+              echo "Promoting nested model cache from ${resolved} into ${dest}."
+              case "$resolved" in
+                "$dest"/*)
+                  find "$resolved" -mindepth 1 -maxdepth 1 -exec mv -n -t "$dest" {} +
+                  ;;
+                *)
+                  cp -an "${resolved}/." "$dest/"
+                  ;;
+              esac
+            }
+
+            download_or_restore_model() {
+              cache_name="$1"
+              repo="$2"
+              repo_type="$3"
+              dest="$4"
+              mkdir -p "$dest"
+
+              if model_dir_is_usable "$cache_name" "$dest"; then
+                echo "Model already present locally: $dest"
+                return 0
+              fi
+
+              echo "Trying xianzhef S3 model cache: ${MODEL_CACHE_S3_URI}/${cache_name}/"
+              set +e
+              osmo data download --resume "${MODEL_CACHE_S3_URI}/${cache_name}/" "$dest"
+              cache_status=$?
+              set -e
+              resolved_cache_root="$(resolve_model_root "$cache_name" "$dest" || true)"
+              if [ "$cache_status" -eq 0 ] && [ -n "$resolved_cache_root" ]; then
+                promote_model_root "$resolved_cache_root" "$dest"
+                echo "Restored ${cache_name} from xianzhef S3 cache."
+                return 0
+              fi
+
+              if ! command -v huggingface-cli >/dev/null 2>&1 && ! command -v hf >/dev/null 2>&1; then
+                python -m pip install -q "huggingface_hub[cli]"
+              fi
+              echo "No usable S3 cache for ${cache_name}; downloading from Hugging Face repo ${repo}."
+              hf_download "$repo" "$repo_type" "$dest"
+              resolved_download_root="$(resolve_model_root "$cache_name" "$dest" || true)"
+              if [ -n "$resolved_download_root" ]; then
+                promote_model_root "$resolved_download_root" "$dest"
+              fi
+              if ! model_dir_is_usable "$cache_name" "$dest"; then
+                echo "ERROR: downloaded ${cache_name}, but required checkpoint files are still missing." >&2
+                exit 8
+              fi
+            }
+
+            valid_tokenizer_dir() {
+              [ -f "$1/tokenizer_config.json" ] && { [ -f "$1/tokenizer.json" ] || [ -f "$1/spiece.model" ]; }
+            }
+
+            download_or_restore_tokenizer() {
+              cache_name="$1"
+              repo="$2"
+              dest="$3"
+              mkdir -p "$dest"
+              if valid_tokenizer_dir "$dest"; then
+                echo "Tokenizer already present locally: $dest"
+                return 0
+              fi
+              echo "Trying xianzhef S3 tokenizer cache: ${MODEL_CACHE_S3_URI}/${cache_name}/"
+              set +e
+              osmo data download --resume "${MODEL_CACHE_S3_URI}/${cache_name}/" "$dest"
+              cache_status=$?
+              set -e
+              if [ "$cache_status" -eq 0 ] && valid_tokenizer_dir "$dest"; then
+                echo "Restored ${cache_name} from xianzhef S3 cache."
+                return 0
+              fi
+              python - <<'PY'
+            import importlib.util
+            import subprocess
+            import sys
+
+            if importlib.util.find_spec("huggingface_hub") is None:
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "huggingface_hub"])
+            PY
+              python - "$repo" "$dest" <<'PY'
+            import sys
+            from huggingface_hub import snapshot_download
+
+            repo, dest = sys.argv[1], sys.argv[2]
+            snapshot_download(
+                repo_id=repo,
+                repo_type="model",
+                local_dir=dest,
+                allow_patterns=[
+                    "config.json",
+                    "special_tokens_map.json",
+                    "spiece.model",
+                    "tokenizer.json",
+                    "tokenizer_config.json",
+                ],
+            )
+            PY
+              if ! valid_tokenizer_dir "$dest"; then
+                echo "ERROR: tokenizer cache ${dest} is still missing tokenizer files." >&2
+                exit 7
+              fi
+            }
+
+            require_code_marker() {
+              local file="$1"
+              shift
+              local marker
+              if [ ! -f "$CODE_ROOT/$file" ]; then
+                echo "ERROR: expected code file missing: $file" >&2
+                exit 7
+              fi
+              for marker in "$@"; do
+                if ! grep -Fq "$marker" "$CODE_ROOT/$file"; then
+                  echo "ERROR: code marker missing in $file: $marker" >&2
+                  exit 7
+                fi
+              done
+            }
+
+            require_wandb() {
+              if [ -z "${WANDB_API_KEY:-}" ]; then
+                echo "ERROR: REPORT_TO=wandb but WANDB_API_KEY is not set." >&2
+                exit 5
+              fi
+              python - <<'PY'
+            import importlib.util
+            import subprocess
+            import sys
+
+            if importlib.util.find_spec("wandb") is None:
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "wandb"])
+            PY
+              python -c 'import os, wandb; wandb.login(key=os.environ["WANDB_API_KEY"], relogin=True)'
+            }
+
+            echo "Downloading DreamZero code from ${CODE_S3_URI}/"
+            osmo data download --resume "${CODE_S3_URI}/" /workspace/code/dreamzero
+            CODE_ROOT="/workspace/code/dreamzero"
+            LATEST_CODE_ROOT="${CODE_ROOT}/dreamzero_gripperfix_upload_latest"
+            if [ -f "${LATEST_CODE_ROOT}/pyproject.toml" ]; then
+              CODE_ROOT="$LATEST_CODE_ROOT"
+            elif [ ! -f "$CODE_ROOT/pyproject.toml" ]; then
+              found_pyproject="$(find /workspace/code -maxdepth 4 -name pyproject.toml -print | sort | tail -n 1)"
+              if [ -n "$found_pyproject" ]; then
+                CODE_ROOT="$(dirname "$found_pyproject")"
+              fi
+            fi
+            if [ ! -f "$CODE_ROOT/pyproject.toml" ]; then
+              echo "ERROR: did not find DreamZero pyproject.toml after code download." >&2
+              exit 3
+            fi
+            if [ -f "$CODE_ROOT/OSMO_CODE_COMMIT" ]; then
+              actual_code_commit="$(cat "$CODE_ROOT/OSMO_CODE_COMMIT")"
+              echo "DreamZero code cache commit: ${actual_code_commit}"
+              if [ -n "$EXPECTED_CODE_COMMIT" ] && [ "$EXPECTED_CODE_COMMIT" != "$actual_code_commit" ]; then
+                echo "ERROR: expected code commit ${EXPECTED_CODE_COMMIT}, got ${actual_code_commit}" >&2
+                exit 8
+              fi
+            else
+              echo "ERROR: code cache is missing OSMO_CODE_COMMIT marker." >&2
+              exit 8
+            fi
+            require_code_marker \
+              scripts/train/robofactory_bimanual_training.sh \
+              "DATASET_SHARD_SAMPLING_RATE" \
+              "gripper_binary_action_loss_weight"
+            require_code_marker \
+              groot/vla/model/dreamzero/action_head/wan_flow_matching_action_tf.py \
+              "gripper_binary_action_loss_weight" \
+              "_compute_gripper_binary_action_loss"
+            require_code_marker \
+              groot/vla/configs/data/dreamzero/robofactory_bimanual_shared_global.yaml \
+              "agent_action_dims: [[0, 8], [8, 16]]"
+            echo "DreamZero code marker self-check passed."
+
+            echo "Downloading RoboFactory ${DATA_VARIANT} data from ${DATA_S3_URI}/"
+            DATA_PARENT="/workspace/data/robofactory_lerobot_v2"
+            DATA_ROOT="${DATA_PARENT}/${DATA_VARIANT}"
+            mkdir -p "$DATA_PARENT"
+            osmo data download --resume "${DATA_S3_URI}/" "$DATA_PARENT"
+            RESOLVED_DATA_ROOT="$(resolve_lerobot_root "$DATA_ROOT" || true)"
+            if [ -z "$RESOLVED_DATA_ROOT" ]; then
+              RESOLVED_DATA_ROOT="$(resolve_lerobot_root "$DATA_PARENT" || true)"
+            fi
+            if [ -z "$RESOLVED_DATA_ROOT" ]; then
+              echo "ERROR: did not find LeRobot metadata after data download." >&2
+              find /workspace/data -maxdepth 4 -type d | head -100
+              exit 4
+            fi
+            DATA_ROOT="$RESOLVED_DATA_ROOT"
+            echo "Using RoboFactory LeRobot dataset root: $DATA_ROOT"
+
+            cd "$CODE_ROOT"
+            python -m pip install -q pandas pyarrow numpy
+            echo "Inspecting RoboFactory LeRobot dataset before training"
+            python scripts/data/inspect_robotwin_lerobot.py \
+              --root "$DATA_ROOT" \
+              --expected-episodes "$EXPECTED_DATA_EPISODES" \
+              --expected-action-dim 16 \
+              --expected-state-dim 16 \
+              --gripper-dims 7,15 \
+              --close-threshold 0.0 \
+              --gripper-min -1.0 \
+              --gripper-max 1.0 \
+              --expected-embodiment-tag robofactory \
+              --legacy-embodiment-tags ""
+
+            echo "Installing DreamZero package from $CODE_ROOT"
+            if command -v uv >/dev/null 2>&1; then
+              uv pip install --system -e . --no-deps || uv pip install -e . --no-deps || python -m pip install -e . --no-deps
+            else
+              python -m pip install -e . --no-deps
+            fi
+
+            WAN_CKPT_DIR="/workspace/checkpoints/Wan2.1-I2V-14B-480P"
+            TOKENIZER_DIR="/workspace/checkpoints/umt5-xxl-tokenizer"
+            PRETRAINED_DIR="/workspace/checkpoints/DreamZero-DROID"
+
+            download_or_restore_model "Wan2.1-I2V-14B-480P" "Wan-AI/Wan2.1-I2V-14B-480P" "model" "$WAN_CKPT_DIR"
+            download_or_restore_tokenizer "umt5-xxl-tokenizer" "google/umt5-xxl" "$TOKENIZER_DIR"
+            download_or_restore_model "DreamZero-DROID" "GEAR-Dreams/DreamZero-DROID" "model" "$PRETRAINED_DIR"
+
+            export NUM_GPUS=8
+            export NUM_ARMS=2
+            export SHARED_GLOBAL=1
+            export DATASET_SHARD_SAMPLING_RATE="${DATASET_SHARD_SAMPLING_RATE:-1.0}"
+            export MAX_STEPS="${MAX_STEPS:-{{max_steps}}}"
+            export BATCH_SIZE=1
+            export SAVE_STEPS="${SAVE_STEPS:-{{save_steps}}}"
+            export SAVE_TOTAL_LIMIT="${SAVE_TOTAL_LIMIT:-{{save_total_limit}}}"
+            export LEARNING_RATE="${LEARNING_RATE:-{{learning_rate}}}"
+            export ACTION_LOSS_WEIGHT="${ACTION_LOSS_WEIGHT:-5.0}"
+            export GRIPPER_ACTION_LOSS_WEIGHT="${GRIPPER_ACTION_LOSS_WEIGHT:-6.0}"
+            export GRIPPER_CLOSE_ACTION_LOSS_WEIGHT="${GRIPPER_CLOSE_ACTION_LOSS_WEIGHT:-4.0}"
+            export GRIPPER_CLOSE_THRESHOLD="${GRIPPER_CLOSE_THRESHOLD:-0.0}"
+            export GRIPPER_ACTION_DIMS="${GRIPPER_ACTION_DIMS:-7}"
+            export GRIPPER_CLEAN_ACTION_LOSS_WEIGHT="${GRIPPER_CLEAN_ACTION_LOSS_WEIGHT:-2.0}"
+            export GRIPPER_CLEAN_CLOSE_ACTION_LOSS_WEIGHT="${GRIPPER_CLEAN_CLOSE_ACTION_LOSS_WEIGHT:-4.0}"
+            export GRIPPER_CLEAN_MAX_SIGMA="${GRIPPER_CLEAN_MAX_SIGMA:-0.75}"
+            export GRIPPER_BINARY_ACTION_LOSS_WEIGHT="${GRIPPER_BINARY_ACTION_LOSS_WEIGHT:-4.0}"
+            export GRIPPER_BINARY_CLOSE_ACTION_LOSS_WEIGHT="${GRIPPER_BINARY_CLOSE_ACTION_LOSS_WEIGHT:-6.0}"
+            export GRIPPER_BINARY_LOGIT_SCALE="${GRIPPER_BINARY_LOGIT_SCALE:-4.0}"
+            export GRIPPER_BINARY_MAX_SIGMA="${GRIPPER_BINARY_MAX_SIGMA:-0.75}"
+            export ACTION_PREFIX_LOSS_WEIGHT="${ACTION_PREFIX_LOSS_WEIGHT:-2.0}"
+            export ACTION_PREFIX_LOSS_LEN="${ACTION_PREFIX_LOSS_LEN:-8}"
+            export REPORT_TO=wandb
+            export WANDB_PROJECT=dreamzero_robofactory
+            export WANDB_RUN_NAME="$RUN_NAME"
+            export WANDB_RUN_ID="$RUN_NAME"
+            export DATALOADER_NUM_WORKERS=4
+            export ROBOFACTORY_DATA_ROOT="$DATA_ROOT"
+            export OUTPUT_DIR="/workspace/outputs/robofactory_liftbarrier_shared_global_binary"
+            export WAN_CKPT_DIR
+            export TOKENIZER_DIR
+            export PRETRAINED_DIR
+            mkdir -p "$OUTPUT_DIR"
+
+            stage_checkpoints_for_upload() {
+              stage_root="/workspace/rf_checkpoint_upload"
+              stage_dir="${stage_root}/${RUN_NAME}"
+              rm -rf "$stage_dir"
+              mkdir -p "$stage_dir"
+
+              for top_file in wandb_config.json loss_log.jsonl; do
+                if [ -f "${OUTPUT_DIR}/${top_file}" ]; then
+                  cp -a "${OUTPUT_DIR}/${top_file}" "$stage_dir/"
+                fi
+              done
+              if [ -d "${OUTPUT_DIR}/experiment_cfg" ]; then
+                cp -a "${OUTPUT_DIR}/experiment_cfg" "$stage_dir/"
+              fi
+
+              found=0
+              while IFS= read -r ckpt_dir; do
+                [ -n "$ckpt_dir" ] || continue
+                if [ -f "${ckpt_dir}/trainer_state.json" ] && \
+                   { [ -f "${ckpt_dir}/model.safetensors" ] || [ -f "${ckpt_dir}/model.safetensors.index.json" ]; }; then
+                  ckpt_name="$(basename "$ckpt_dir")"
+                  mkdir -p "${stage_dir}/${ckpt_name}"
+                  cp -a "${ckpt_dir}/." "${stage_dir}/${ckpt_name}/"
+                  found=1
+                else
+                  echo "Skipping incomplete checkpoint ${ckpt_dir}; need model weights plus trainer_state.json."
+                fi
+              done < <(find "$OUTPUT_DIR" -maxdepth 1 -type d -name 'checkpoint-*' | sort)
+
+              if [ "$found" -eq 0 ]; then
+                echo "No complete checkpoints ready for upload." >&2
+                return 1
+              fi
+              echo "$stage_dir"
+              return 0
+            }
+
+            upload_checkpoints_once() {
+              stage_dir="$(stage_checkpoints_for_upload || true)"
+              if [ -n "$stage_dir" ] && [ -d "$stage_dir" ]; then
+                osmo data upload "${OUTPUT_S3_URI}/" "$stage_dir"
+                osmo data upload "${CACHE_OUTPUT_S3_URI}/" "$stage_dir"
+              fi
+            }
+
+            periodic_checkpoint_upload() {
+              while true; do
+                sleep "$CHECKPOINT_UPLOAD_INTERVAL_SECONDS" || break
+                echo "Periodic checkpoint upload tick: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+                osmo data upload "${LOG_S3_URI}/" /tmp/train_liftbarrier_shared_global.log || true
+                upload_checkpoints_once || true
+              done
+            }
+
+            is_complete_resume_checkpoint() {
+              ckpt_dir="$1"
+              [ -f "${ckpt_dir}/trainer_state.json" ] && \
+                { [ -f "${ckpt_dir}/model.safetensors" ] || [ -f "${ckpt_dir}/model.safetensors.index.json" ]; }
+            }
+
+            restore_checkpoints_from_s3() {
+              src_uri="$1"
+              label="$2"
+              if [ -z "$src_uri" ]; then
+                return 1
+              fi
+              import_dir="/workspace/restore_import/${label}"
+              rm -rf "$import_dir"
+              mkdir -p "$import_dir"
+              echo "Restoring candidate checkpoints from ${src_uri}/ into ${import_dir}"
+              set +e
+              osmo data download --resume "${src_uri}/" "$import_dir"
+              restore_status=$?
+              set -e
+              if [ "$restore_status" -ne 0 ]; then
+                echo "Checkpoint restore from ${src_uri}/ failed with status=${restore_status}."
+                return 1
+              fi
+              found=0
+              while IFS= read -r ckpt_dir; do
+                [ -n "$ckpt_dir" ] || continue
+                ckpt_name="$(basename "$ckpt_dir")"
+                if is_complete_resume_checkpoint "$ckpt_dir"; then
+                  echo "Promoting restored checkpoint ${ckpt_dir} -> ${OUTPUT_DIR}/${ckpt_name}"
+                  mkdir -p "${OUTPUT_DIR}/${ckpt_name}"
+                  cp -an "${ckpt_dir}/." "${OUTPUT_DIR}/${ckpt_name}/"
+                  found=1
+                else
+                  echo "Skipping incomplete restored checkpoint ${ckpt_dir}; need model weights plus trainer_state.json."
+                fi
+              done < <(find "$import_dir" -type d -name 'checkpoint-*' | sort)
+              if [ "$found" -eq 0 ]; then
+                echo "No usable complete checkpoint-* directories found under ${src_uri}/."
+                return 1
+              fi
+              return 0
+            }
+
+            restore_checkpoints_from_s3 "$RESTORE_CACHE_S3_URI" "restore_cache" || \
+              restore_checkpoints_from_s3 "$RESTORE_S3_URI" "restore_primary" || \
+              echo "No previous checkpoints restored; training will start fresh."
+            echo "Checkpoints available before training:"
+            find "$OUTPUT_DIR" -maxdepth 1 -type d -name 'checkpoint-*' -print | sort || true
+
+            periodic_checkpoint_upload &
+            PERIODIC_UPLOADER_PID=$!
+            echo "Started periodic checkpoint uploader pid=${PERIODIC_UPLOADER_PID}, interval=${CHECKPOINT_UPLOAD_INTERVAL_SECONDS}s"
+
+            require_wandb
+
+            echo "Launching DreamZero RoboFactory LiftBarrier shared-global binary-gripper training"
+            echo "DATA_VARIANT=$DATA_VARIANT"
+            echo "DATA_ROOT=$DATA_ROOT"
+            echo "DATASET_SHARD_SAMPLING_RATE=$DATASET_SHARD_SAMPLING_RATE"
+            echo "OUTPUT_DIR=$OUTPUT_DIR"
+            echo "OUTPUT_S3_URI=$OUTPUT_S3_URI"
+            echo "CACHE_OUTPUT_S3_URI=$CACHE_OUTPUT_S3_URI"
+            echo "RESTORE_RUN_NAME=$RESTORE_RUN_NAME"
+            echo "GRIPPER_ACTION_DIMS=$GRIPPER_ACTION_DIMS"
+            echo "GRIPPER_BINARY_ACTION_LOSS_WEIGHT=$GRIPPER_BINARY_ACTION_LOSS_WEIGHT"
+            echo "GRIPPER_BINARY_CLOSE_ACTION_LOSS_WEIGHT=$GRIPPER_BINARY_CLOSE_ACTION_LOSS_WEIGHT"
+            echo "GRIPPER_BINARY_LOGIT_SCALE=$GRIPPER_BINARY_LOGIT_SCALE"
+            echo "GRIPPER_BINARY_MAX_SIGMA=$GRIPPER_BINARY_MAX_SIGMA"
+            bash scripts/train/robofactory_bimanual_training.sh
+
+default-values:
+  workflow_name: dz-rf-sg-bingrip-liftbarrier500-xianzhef-20260604
+  run_name: dz-rf-sg-bingrip-liftbarrier500-xianzhef-20260604
+  restore_run_name: dz-rf-sg-gripperfix-500data-fullsample-v2-xianzhef-20260603
+  code_s3_uri: swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_gripperconv_evalshape_20260604
+  expected_code_commit: ""
+  data_variant: LiftBarrier-rf-500
+  expected_data_episodes: "500"
+  data_s3_uri: s3://GearHome/users/xianzhef/oci-migration/data/robofactory_lerobot_v2/LiftBarrier-rf-500
+  max_steps: "50000"
+  save_steps: "500"
+  save_total_limit: "4"
+  learning_rate: "1e-5"
