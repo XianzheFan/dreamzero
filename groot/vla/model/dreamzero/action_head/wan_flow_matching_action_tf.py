@@ -270,6 +270,8 @@ class WANPolicyHead(ActionHead):
         self.ys = None
         self.current_start_frame = 0
         self.language = None
+        self._ma_cached_token_agent_id = None
+        self._ma_cached_token_agent_id_neg = None
 
         self.ip_rank = 0
         self.ip_size = 1
@@ -880,6 +882,24 @@ class WANPolicyHead(ActionHead):
 
     def prepare_input(self, batch: dict) -> BatchFeature:
         return BatchFeature(data=batch)
+
+    def _reset_cached_video_state(self) -> None:
+        self.kv_cache1 = None
+        self.kv_cache_neg = None
+        self.crossattn_cache = None
+        self.crossattn_cache_neg = None
+        self.clip_feas = None
+        self.ys = None
+        self.current_start_frame = 0
+        self._ma_cached_token_agent_id = None
+        self._ma_cached_token_agent_id_neg = None
+        if hasattr(self.model, "_cached_token_agent_id"):
+            self.model._cached_token_agent_id = None
+
+    def reset_causal_state(self) -> None:
+        """Reset stateful causal video/action inference between episodes."""
+        self._reset_cached_video_state()
+        self.language = None
 
     def preprocess_image(self, image):
         image = (image * (2 / 255) - 1).permute(0, 1, 4, 2, 3)
@@ -1505,6 +1525,364 @@ class WANPolicyHead(ActionHead):
         }
         return BatchFeature(data=output_dict)
 
+    def _get_action_multi_agent_causal(
+        self,
+        backbone_output: BatchFeature,
+        action_input: BatchFeature,
+        num_agents: int,
+    ) -> BatchFeature:
+        """Multi-agent DreamZero causal inference.
+
+        This mirrors the original single-agent ``lazy_joint_video_action``
+        sampling semantics for P-agent shared-global checkpoints: prime a
+        persistent KV cache with clean observed video, denoise future video
+        and action jointly with CFG + UniPC, and keep latent video state via
+        ``current_start_frame``.
+        """
+        del backbone_output
+        self.set_frozen_modules_to_eval_mode()
+        data = action_input
+
+        embodiment_id = action_input.embodiment_id
+        state_features = action_input.state             # [B, P, T_s, D_s]
+        actions = action_input.action                   # [B, P, T_a, D_a]
+        assert actions.dim() == 4 and actions.shape[1] == num_agents
+        B, P = actions.shape[0], actions.shape[1]
+        T_a, D_a = actions.shape[2], actions.shape[3]
+
+        videos = data["images"]                         # [B, P, T, H, W, C]
+        assert videos.dim() == 6 and videos.shape[1] == P
+        raw_num_video_frames = videos.shape[2]
+        videos = rearrange(videos, "b p t h w c -> b p c t h w")
+        if videos.dtype == torch.uint8:
+            videos = videos.float() / 255.0
+            b, p, c, t, h, w = videos.shape
+            videos = videos.permute(0, 1, 3, 2, 4, 5)
+            videos = videos.reshape(b * p * t, c, h, w)
+            videos = self.normalize_video(videos)
+            videos = videos.reshape(b, p, t, c, h, w).permute(0, 1, 3, 2, 4, 5)
+            assert videos.min() >= -1.0 and videos.max() <= 1.0
+            videos = videos.to(dtype=self.dtype)
+
+        reset_needed = False
+        if self.language is None:
+            reset_needed = True
+        elif not torch.equal(self.language, data["text"]):
+            reset_needed = True
+        elif raw_num_video_frames == 1:
+            reset_needed = True
+        elif self.current_start_frame >= getattr(self.model, "local_attn_size", 10**9):
+            reset_needed = True
+        if reset_needed:
+            self._reset_cached_video_state()
+            self.language = data["text"].detach().clone()
+
+        text_inputs = self._prepare_text_inputs(data)
+        prompt_embs = [
+            self.encode_prompt(text, attention_mask).to(self._device)
+            for text, attention_mask in text_inputs
+        ]
+
+        target_h = getattr(self.config, "target_video_height", None)
+        target_w = getattr(self.config, "target_video_width", None)
+        if target_h is None or target_w is None:
+            if getattr(self.model, "frame_seqlen", None) in (50, 55):
+                target_h, target_w = 176, 320
+            else:
+                target_h, target_w = None, None
+        if target_h is not None and target_w is not None:
+            _, _, _, _, h, w = videos.shape
+            if (h, w) != (target_h, target_w):
+                b, p, c, t, _, _ = videos.shape
+                videos = torch.nn.functional.interpolate(
+                    videos.reshape(b * p * t, c, h, w),
+                    size=(target_h, target_w),
+                    mode="bilinear",
+                    align_corners=False,
+                ).reshape(b, p, c, t, target_h, target_w)
+
+        # VAE encode per-agent current/repeated observation windows.
+        b, p, c, t, h, w = videos.shape
+        videos_bp = videos.reshape(b * p, c, t, h, w)
+        latents_bp = self.encode_video(
+            videos_bp,
+            self.tiled,
+            (self.tile_size_height, self.tile_size_width),
+            (self.tile_stride_height, self.tile_stride_width),
+        )
+        _, c_lat, F_lat, h_lat, w_lat = latents_bp.shape
+        latents = latents_bp.reshape(b, p, c_lat, F_lat, h_lat, w_lat).to(
+            self._device
+        )
+
+        if isinstance(data, dict):
+            video_global_raw = data.get("video_global", None)
+        else:
+            video_global_raw = getattr(data, "video_global", None)
+        condition_frame_index = 0 if video_global_raw is not None else -1
+        clip_features, ys, clean_latents = self._prepare_multi_agent_i2v_conditioning(
+            videos=videos,
+            latents=latents,
+            condition_frame_index=condition_frame_index,
+        )
+        if ys is not None:
+            ys = ys.to(dtype=latents.dtype)
+        if clean_latents is not None:
+            clean_latents = clean_latents.to(dtype=latents.dtype)
+        if self.current_start_frame == 0:
+            self.clip_feas = (
+                clip_features.to(dtype=latents.dtype) if clip_features is not None else None
+            )
+            self.ys = ys
+        assert self.clip_feas is not None and self.ys is not None, (
+            "multi-agent causal I2V inference requires clip/y conditioning"
+        )
+        self._last_clean_video_cond = (
+            clean_latents.detach() if clean_latents is not None else None
+        )
+        self._last_y_video_cond = ys.detach() if ys is not None else None
+
+        if video_global_raw is not None:
+            global_latents = self._encode_global_video(video_global_raw).to(
+                dtype=latents.dtype
+            )
+        else:
+            global_latents = None
+
+        block = self.num_frame_per_block
+        assert block >= 1
+        H_g = h_lat // 2
+        W_g = w_lat // 2
+        seq_len = P * block * H_g * W_g
+        frame_seqlen = P * H_g * W_g
+        current_image = (
+            clean_latents[:, :, :, :1] if clean_latents is not None else latents[:, :, :, :1]
+        )
+        current_image = current_image.to(dtype=latents.dtype)
+
+        def _slice_latent_frames(
+            tensor: torch.Tensor | None,
+            start: int,
+            length: int,
+        ) -> torch.Tensor | None:
+            if tensor is None:
+                return None
+            frame_dim = 3 if tensor.dim() == 6 else 2
+            total = tensor.shape[frame_dim]
+            if total == length:
+                return tensor
+            start = max(min(start, max(total - length, 0)), 0)
+            return tensor.narrow(frame_dim, start, length)
+
+        def _repeat_current_to_block(image: torch.Tensor) -> torch.Tensor:
+            if block == 1:
+                return image
+            return image.expand(-1, -1, -1, block, -1, -1).contiguous()
+
+        if self.current_start_frame == 0:
+            self.kv_cache1, self.kv_cache_neg = self._create_kv_caches(
+                batch_size=B,
+                dtype=latents.dtype,
+                device=latents.device,
+                frame_seqlen=frame_seqlen,
+            )
+            self.crossattn_cache, self.crossattn_cache_neg = self._create_crossattn_caches(
+                batch_size=B,
+                dtype=latents.dtype,
+                device=latents.device,
+            )
+            self._ma_cached_token_agent_id = None
+            self._ma_cached_token_agent_id_neg = None
+
+        assert self.kv_cache1 is not None and self.kv_cache_neg is not None
+        assert self.crossattn_cache is not None and self.crossattn_cache_neg is not None
+        kv_caches = self._get_caches([self.kv_cache1, self.kv_cache_neg])
+        crossattn_caches = self._get_caches(
+            [self.crossattn_cache, self.crossattn_cache_neg]
+        )
+
+        zero_step = torch.zeros([B, 1], device=latents.device, dtype=torch.int64)
+        if self.current_start_frame == 0:
+            self._run_multi_agent_diffusion_steps(
+                noisy_input=current_image,
+                timestep=zero_step,
+                action=None,
+                timestep_action=None,
+                state=None,
+                embodiment_id=None,
+                context=prompt_embs,
+                seq_len=P * H_g * W_g,
+                y=_slice_latent_frames(self.ys, 0, 1),
+                clip_feature=self.clip_feas,
+                kv_caches=kv_caches,
+                crossattn_caches=crossattn_caches,
+                kv_cache_metadata=dict(start_frame=0, update_kv_cache=True),
+                clean_x=None,
+                global_video=_slice_latent_frames(global_latents, 0, 1),
+            )
+            self.current_start_frame += 1
+
+        if self.current_start_frame != 1:
+            ref_block = _repeat_current_to_block(current_image)
+            ref_start = self.current_start_frame - block
+            self._run_multi_agent_diffusion_steps(
+                noisy_input=ref_block,
+                timestep=torch.zeros([B, block], device=latents.device, dtype=torch.int64),
+                action=None,
+                timestep_action=None,
+                state=None,
+                embodiment_id=None,
+                context=prompt_embs,
+                seq_len=seq_len,
+                y=_slice_latent_frames(self.ys, ref_start, block),
+                clip_feature=self.clip_feas,
+                kv_caches=kv_caches,
+                crossattn_caches=crossattn_caches,
+                kv_cache_metadata=dict(
+                    start_frame=ref_start,
+                    update_kv_cache=True,
+                ),
+                clean_x=None,
+                global_video=_slice_latent_frames(global_latents, ref_start, block),
+            )
+
+        noisy_video = self.generate_noise(
+            (B, P, c_lat, block, h_lat, w_lat),
+            seed=self.seed,
+            device=self._device,
+            dtype=latents.dtype,
+        )
+        noisy_action = self.generate_noise(
+            (B, P, T_a, D_a),
+            seed=self.seed,
+            device=self._device,
+            dtype=latents.dtype,
+        )
+
+        sample_scheduler = FlowUniPCMultistepScheduler(
+            num_train_timesteps=self.scheduler.num_train_timesteps,
+            shift=1,
+            use_dynamic_shifting=False,
+        )
+        sample_scheduler_action = FlowUniPCMultistepScheduler(
+            num_train_timesteps=self.scheduler.num_train_timesteps,
+            shift=1,
+            use_dynamic_shifting=False,
+        )
+        num_inference_steps = int(
+            os.environ.get("MAI_NUM_INFERENCE_STEPS", self.num_inference_steps)
+        )
+        sample_scheduler.set_timesteps(
+            num_inference_steps, device=noisy_video.device, shift=self.sigma_shift
+        )
+        sample_scheduler_action.set_timesteps(
+            num_inference_steps, device=noisy_action.device, shift=self.sigma_shift
+        )
+        self._mai_num_inference_steps = num_inference_steps
+
+        if self.config.decouple_inference_noise:
+            video_final_noise = self.config.video_inference_final_noise
+            sigma_max = sample_scheduler.sigmas[0].item()
+            sample_scheduler.sigmas = (
+                sample_scheduler.sigmas * (sigma_max - video_final_noise) / sigma_max
+                + video_final_noise
+            )
+            sample_scheduler.timesteps = (
+                sample_scheduler.sigmas[:-1] * 1000
+            ).to(torch.int64)
+
+        prev_predictions = []
+        self.skip_countdown = 0
+        with torch.amp.autocast(
+            dtype=torch.bfloat16, device_type=torch.device(self._device).type
+        ):
+            for index, current_timestep in enumerate(sample_scheduler.timesteps):
+                action_timestep = sample_scheduler_action.timesteps[index]
+                video_timestep = sample_scheduler.timesteps[index]
+                timestep = (
+                    torch.ones([B, block], device=latents.device, dtype=torch.int64)
+                    * video_timestep
+                )
+                timestep_action = (
+                    torch.ones([B, T_a], device=latents.device, dtype=torch.int64)
+                    * action_timestep
+                )
+                should_run_model = self.should_run_model(
+                    index, current_timestep, prev_predictions
+                )
+                if should_run_model:
+                    predictions = self._run_multi_agent_diffusion_steps(
+                        noisy_input=noisy_video,
+                        timestep=timestep,
+                        action=noisy_action,
+                        timestep_action=timestep_action,
+                        state=state_features,
+                        embodiment_id=embodiment_id,
+                        context=prompt_embs,
+                        seq_len=seq_len,
+                        y=_slice_latent_frames(self.ys, self.current_start_frame, block),
+                        clip_feature=self.clip_feas,
+                        kv_caches=kv_caches,
+                        crossattn_caches=crossattn_caches,
+                        kv_cache_metadata=dict(
+                            start_frame=self.current_start_frame,
+                            update_kv_cache=False,
+                        ),
+                        clean_x=None,
+                        global_video=_slice_latent_frames(
+                            global_latents, self.current_start_frame, block
+                        ),
+                    )
+                    flow_pred_cond, flow_pred_cond_action = predictions[0]
+                    if len(predictions) > 1:
+                        flow_pred_uncond, _ = predictions[1]
+                        flow_pred = flow_pred_uncond + self.cfg_scale * (
+                            flow_pred_cond - flow_pred_uncond
+                        )
+                    else:
+                        flow_pred = flow_pred_cond
+                    prev_predictions.append(
+                        (current_timestep, flow_pred, flow_pred_cond_action)
+                    )
+                    if len(prev_predictions) > 2:
+                        prev_predictions.pop(0)
+                else:
+                    assert prev_predictions, (
+                        "prev_predictions must be set when skipping"
+                    )
+                    _, flow_pred, flow_pred_cond_action = prev_predictions[-1]
+
+                if flow_pred.shape != noisy_video.shape:
+                    noisy_video = noisy_video[
+                        ..., : flow_pred.shape[-2], : flow_pred.shape[-1]
+                    ]
+                noisy_video = sample_scheduler.step(
+                    model_output=flow_pred,
+                    timestep=video_timestep,
+                    sample=noisy_video,
+                    step_index=index,
+                    return_dict=False,
+                )[0]
+                noisy_action = sample_scheduler_action.step(
+                    model_output=flow_pred_cond_action,
+                    timestep=action_timestep,
+                    sample=noisy_action,
+                    step_index=index,
+                    return_dict=False,
+                )[0]
+
+        video_output = noisy_video
+        if self.current_start_frame == 1:
+            first_frame = current_image[
+                ..., : video_output.shape[-2], : video_output.shape[-1]
+            ]
+            video_output = torch.cat([first_frame, video_output], dim=3)
+        self.current_start_frame += block
+
+        self._last_video_pred = video_output.detach()
+        self._mai_anchor_i2v_first_frame = self.current_start_frame <= (1 + block)
+        return BatchFeature(data={"action_pred": noisy_action})
+
     def _get_action_multi_agent(
         self,
         backbone_output: BatchFeature,
@@ -1748,6 +2126,14 @@ class WANPolicyHead(ActionHead):
         # Single-agent batches keep the base behaviour (delegate to forward).
         num_agents = self._detect_multi_agent(action_input)
         if num_agents is not None and num_agents > 1:
+            use_causal = (
+                os.environ.get("MAI_USE_CAUSAL_INFERENCE", "1").lower()
+                in ("1", "true", "yes", "on")
+            )
+            if use_causal:
+                return self._get_action_multi_agent_causal(
+                    backbone_output, action_input, num_agents
+                )
             return self._get_action_multi_agent(
                 backbone_output, action_input, num_agents
             )
@@ -2147,6 +2533,101 @@ class WANPolicyHead(ActionHead):
             else:
                 action_noise_pred = torch.tensor(0.0, device=obs_noise_pred.device) # dummy action noise prediction
             predictions.append((obs_noise_pred, action_noise_pred))
+        return self._exchange_predictions(predictions)
+
+    def _run_multi_agent_diffusion_steps(
+        self,
+        noisy_input: torch.Tensor,
+        timestep: torch.Tensor,
+        action: torch.Tensor | None,
+        timestep_action: torch.Tensor | None,
+        state: torch.Tensor | None,
+        embodiment_id: torch.Tensor | None,
+        context: list[torch.Tensor],
+        seq_len: int,
+        y: torch.Tensor | None,
+        clip_feature: torch.Tensor | None,
+        kv_caches: list[KVCacheType],
+        crossattn_caches: list[KVCacheType],
+        kv_cache_metadata: dict[str, bool | int],
+        clean_x: torch.Tensor | None = None,
+        global_video: torch.Tensor | None = None,
+    ) -> list[tuple[torch.Tensor, torch.Tensor]]:
+        """Run multi-agent cached inference without mixing CFG cache metadata.
+
+        ``CausalWanModel._forward_inference_multi_agent`` stores its
+        cached token-agent ids on the model instance. CFG calls the model
+        twice (cond/uncond) with separate K/V caches, so the token-agent id
+        tracker must also be kept separately per branch.
+        """
+        saved_model_cached_ids = getattr(self.model, "_cached_token_agent_id", None)
+        branch_cached_ids = [
+            self._ma_cached_token_agent_id,
+            self._ma_cached_token_agent_id_neg,
+        ]
+        if self.ip_size > 1:
+            branch_indices = [0 if self.ip_rank == 0 else 1]
+        else:
+            branch_indices = list(range(len(context)))
+
+        predictions = []
+        update_kv_cache = bool(kv_cache_metadata["update_kv_cache"])
+        start_frame = int(kv_cache_metadata["start_frame"])
+        try:
+            for local_index, prompt_emb in enumerate(context):
+                branch_index = branch_indices[local_index]
+                kv_cache = kv_caches[local_index]
+                crossattn_cache = crossattn_caches[local_index]
+                if hasattr(self.model, "_cached_token_agent_id"):
+                    self.model._cached_token_agent_id = (
+                        None if start_frame == 0 else branch_cached_ids[branch_index]
+                    )
+                obs_noise_pred, action_noise_pred, updated_kv_caches = self.model(
+                    noisy_input,
+                    timestep,
+                    action=action,
+                    timestep_action=timestep_action,
+                    state=state,
+                    embodiment_id=embodiment_id,
+                    context=prompt_emb,
+                    seq_len=seq_len,
+                    y=y,
+                    clip_feature=clip_feature,
+                    kv_cache=kv_cache,
+                    crossattn_cache=crossattn_cache,
+                    current_start_frame=start_frame,
+                    clean_x=clean_x,
+                    global_video=global_video,
+                )
+                if update_kv_cache:
+                    for block_index, updated_kv_cache in enumerate(updated_kv_caches):
+                        kv_cache[block_index] = updated_kv_cache.clone()
+                    new_cached_ids = getattr(
+                        self.model, "_cached_token_agent_id", None
+                    )
+                    branch_cached_ids[branch_index] = (
+                        new_cached_ids.detach().cpu().clone()
+                        if new_cached_ids is not None
+                        else None
+                    )
+                elif hasattr(self.model, "_cached_token_agent_id"):
+                    self.model._cached_token_agent_id = branch_cached_ids[branch_index]
+
+                obs_noise_pred = obs_noise_pred.clone()
+                if action_noise_pred is not None:
+                    action_noise_pred = action_noise_pred.clone()
+                else:
+                    action_noise_pred = torch.tensor(
+                        0.0, device=obs_noise_pred.device
+                    )
+                predictions.append((obs_noise_pred, action_noise_pred))
+        finally:
+            if hasattr(self.model, "_cached_token_agent_id"):
+                self.model._cached_token_agent_id = saved_model_cached_ids
+
+        if update_kv_cache:
+            self._ma_cached_token_agent_id = branch_cached_ids[0]
+            self._ma_cached_token_agent_id_neg = branch_cached_ids[1]
         return self._exchange_predictions(predictions)
 
     def _exchange_predictions(

@@ -452,6 +452,9 @@ class BimanualPolicy:
         sess["history"].clear()
         sess["prompt"] = prompt
         sess["infer_idx"] = 0
+        action_head = getattr(self._model, "action_head", None)
+        if action_head is not None and hasattr(action_head, "reset_causal_state"):
+            action_head.reset_causal_state()
         return "reset successful"
 
     def _uses_shared_global(self) -> bool:
