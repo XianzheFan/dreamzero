@@ -112,6 +112,26 @@ def _make_packer():
         )
 
 
+def _configure_torch_dynamo_for_serving(torch_module) -> None:
+    """Avoid default torch.compile recompile caps during long VLA serving."""
+    dynamo = getattr(torch_module, "_dynamo", None)
+    config = getattr(dynamo, "config", None)
+    if config is None:
+        return
+    if hasattr(config, "cache_size_limit"):
+        config.cache_size_limit = max(int(config.cache_size_limit), 1000)
+    if hasattr(config, "recompile_limit"):
+        config.recompile_limit = max(int(config.recompile_limit), 800)
+    if hasattr(config, "accumulated_cache_size_limit"):
+        config.accumulated_cache_size_limit = max(
+            int(config.accumulated_cache_size_limit), 1000
+        )
+    if hasattr(config, "accumulated_recompile_limit"):
+        config.accumulated_recompile_limit = max(
+            int(config.accumulated_recompile_limit), 2000
+        )
+
+
 class BimanualPolicy:
     """Loads the LoRA-fine-tuned VLA + the bimanual_cotrain transform,
     exposes ``infer(obs)`` and ``reset(info)``.
@@ -255,6 +275,8 @@ class BimanualPolicy:
         from omegaconf import OmegaConf
         from hydra.utils import instantiate
         from safetensors.torch import load_file
+
+        _configure_torch_dynamo_for_serving(torch)
 
         exp_cfg_dir = self.ckpt_dir / self.ckpt_setting / "experiment_cfg"
         if not (exp_cfg_dir / "conf.yaml").is_file():
