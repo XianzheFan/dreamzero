@@ -1649,8 +1649,11 @@ class WANPolicyHead(ActionHead):
         else:
             global_latents = None
 
+        # Keep the I2V condition frame fixed by default in multi-agent
+        # inference. Without this, the diagnostic predicted video starts
+        # from pure noise even though the conditioning VAE path is valid.
         anchor_i2v_first_frame = (
-            _os.environ.get("MAI_ANCHOR_I2V_FIRST_FRAME", "0").lower()
+            _os.environ.get("MAI_ANCHOR_I2V_FIRST_FRAME", "1").lower()
             in ("1", "true", "yes", "on")
         )
         if anchor_i2v_first_frame and clean_latents is not None:
