@@ -278,28 +278,53 @@ class BimanualPolicy:
         if not disable_hub:
             return
 
-        if "action_head_cfg" in self._cfg:
-            diffusion_cfg = self._cfg.action_head_cfg.config.diffusion_model_cfg
-        elif "action_head_cfg" in self._cfg.get("model", {}):
-            diffusion_cfg = (
-                self._cfg.model.action_head_cfg.config.diffusion_model_cfg
-            )
-        else:
+        diffusion_cfgs = []
+        try:
+            if "action_head_cfg" in self._cfg:
+                diffusion_cfgs.append(
+                    self._cfg.action_head_cfg.config.diffusion_model_cfg
+                )
+        except Exception:
+            pass
+        try:
+            if "action_head_cfg" in self._cfg.get("model", {}):
+                diffusion_cfgs.append(
+                    self._cfg.model.action_head_cfg.config.diffusion_model_cfg
+                )
+        except Exception:
+            pass
+        try:
+            model_config = self._cfg.get("model", {}).get("config", {})
+            if "action_head_cfg" in model_config:
+                diffusion_cfgs.append(
+                    model_config.action_head_cfg.config.diffusion_model_cfg
+                )
+        except Exception:
+            pass
+
+        if not diffusion_cfgs:
             logging.warning(
                 "DREAMZERO_DISABLE_MULTI_AGENT_HUB=1 requested, but no "
                 "action_head_cfg was found in the resolved checkpoint config"
             )
             return
-        old_num_hub = diffusion_cfg.get("num_hub_tokens", None)
-        old_use_sparse = diffusion_cfg.get("use_sparse_hub_attention", None)
-        diffusion_cfg.num_hub_tokens = 0
-        diffusion_cfg.use_sparse_hub_attention = False
+
+        old_values = []
+        for diffusion_cfg in diffusion_cfgs:
+            old_values.append(
+                (
+                    diffusion_cfg.get("num_hub_tokens", None),
+                    diffusion_cfg.get("use_sparse_hub_attention", None),
+                )
+            )
+            diffusion_cfg.num_hub_tokens = 0
+            diffusion_cfg.use_sparse_hub_attention = False
         logging.warning(
             "DREAMZERO_DISABLE_MULTI_AGENT_HUB=1: overriding "
-            "diffusion_model_cfg.num_hub_tokens %s -> 0 and "
-            "use_sparse_hub_attention %s -> False for eval",
-            old_num_hub,
-            old_use_sparse,
+            "%d diffusion_model_cfg copy/copies to num_hub_tokens=0 and "
+            "use_sparse_hub_attention=False for eval; old values=%s",
+            len(diffusion_cfgs),
+            old_values,
         )
 
     def _load(self) -> None:
