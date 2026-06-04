@@ -1,0 +1,396 @@
+workflow:
+  timeout:
+    queue_timeout: 2h
+    exec_timeout: 12h
+  name: "{{workflow_name}}"
+  resources:
+    default:
+      cpu: 84
+      gpu: 8
+      memory: 1681Gi
+      storage: 803Gi
+      platform: dgx-h100
+  tasks:
+    - name: offline-eval
+      image: nvcr.io/nvidian/gear-h100-train:latest
+      credentials:
+        gear-aws-cred:
+          AWS_ACCESS_KEY_ID: aws_access_key_id
+          AWS_SECRET_ACCESS_KEY: aws_secret_access_key
+          AWS_DEFAULT_REGION: aws_default_region
+          AWS_ENDPOINT_URL: aws_endpoint_url
+        gear-data-credentials:
+          GEAR_DATA_CREDENTIALS: data_credentials
+      command: ["bash"]
+      environment:
+        ACCEPT_EULA: "Y"
+        NO_NUCLEUS: "Y"
+      args: ["/tmp/offline_eval_liftbarrier.sh"]
+      files:
+        - path: /tmp/offline_eval_liftbarrier.sh
+          contents: |
+            #!/usr/bin/env bash
+            set -euo pipefail
+
+            exec > >(tee /tmp/offline_eval_liftbarrier.log) 2>&1
+
+            RUN_NAME="${RUN_NAME:-{{workflow_name}}}"
+            SOURCE_TRAIN_RUN_NAME="${SOURCE_TRAIN_RUN_NAME:-{{source_train_run_name}}}"
+            CODE_S3_URI="${CODE_S3_URI:-{{code_s3_uri}}}"
+            EXPECTED_CODE_COMMIT="${EXPECTED_CODE_COMMIT:-{{expected_code_commit}}}"
+            DATA_S3_URI="${DATA_S3_URI:-{{data_s3_uri}}}"
+            DATA_VARIANT="${DATA_VARIANT:-{{data_variant}}}"
+            CKPT_SETTING="${CKPT_SETTING:-{{ckpt_setting}}}"
+            MIN_MODEL_BYTES="${MIN_MODEL_BYTES:-{{min_model_bytes}}}"
+            NUM_BATCHES="${NUM_BATCHES:-{{num_batches}}}"
+            MODEL_CACHE_S3_URI="s3://GearHome/users/xianzhef/oci-migration/checkpoints"
+            EVAL_CKPT_S3_URI="${EVAL_CKPT_S3_URI:-s3://GearHome/users/xianzhef/oci-migration/dreamzero_s3cache/bootstrap_checkpoints/${SOURCE_TRAIN_RUN_NAME}}"
+            EVAL_CKPT_FALLBACK_S3_URI="${EVAL_CKPT_FALLBACK_S3_URI:-s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/${SOURCE_TRAIN_RUN_NAME}/checkpoints}"
+            RUN_S3_ROOT="s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/${RUN_NAME}"
+            OUT_S3_URI="${RUN_S3_ROOT}/offline_eval_${CKPT_SETTING}"
+
+            for uri in "$CODE_S3_URI" "$DATA_S3_URI" "$MODEL_CACHE_S3_URI" "$EVAL_CKPT_S3_URI" "$EVAL_CKPT_FALLBACK_S3_URI" "$RUN_S3_ROOT" "$OUT_S3_URI"; do
+              case "$uri" in
+                s3://GearHome/users/xianzhef/*) ;;
+                swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/*) ;;
+                *)
+                  echo "Refusing non-xianzhef URI: $uri" >&2
+                  exit 64
+                  ;;
+              esac
+            done
+
+            upload_artifacts() {
+              status=$?
+              set +e
+              mkdir -p /workspace/offline_eval_outputs
+              cp -f /tmp/offline_eval_liftbarrier.log /workspace/offline_eval_outputs/offline_eval_liftbarrier.log
+              if [ -f /workspace/offline_eval_outputs/summary.txt ]; then
+                :
+              else
+                {
+                  echo "workflow=${RUN_NAME}"
+                  echo "source_train_run=${SOURCE_TRAIN_RUN_NAME}"
+                  echo "ckpt_setting=${CKPT_SETTING}"
+                  echo "status=${status}"
+                  echo "eval_ckpt_s3_uri=${EVAL_CKPT_S3_URI}"
+                  echo "eval_ckpt_fallback_s3_uri=${EVAL_CKPT_FALLBACK_S3_URI}"
+                } > /workspace/offline_eval_outputs/summary.txt
+              fi
+              osmo data upload "${OUT_S3_URI}/" /workspace/offline_eval_outputs || true
+              exit "$status"
+            }
+            trap upload_artifacts EXIT
+
+            export PYTHONUNBUFFERED=1
+            export HYDRA_FULL_ERROR=1
+            export CUDA_VISIBLE_DEVICES=0
+            export MUJOCO_GL=egl
+            export GIT_LFS_SKIP_SMUDGE=1
+            export ATTENTION_BACKEND=flex
+            export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+            export HF_HOME=/workspace/hf
+            export HF_HUB_CACHE=/workspace/hf/hub
+            export TRANSFORMERS_CACHE=/workspace/hf/transformers
+
+            mkdir -p \
+              /workspace/code/dreamzero \
+              /workspace/data/LiftBarrier-rf-500 \
+              /workspace/checkpoints \
+              /workspace/eval_ckpts \
+              /workspace/offline_eval_outputs \
+              "$HF_HOME"
+
+            dir_has_files() {
+              [ -d "$1" ] && [ -n "$(find "$1" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]
+            }
+
+            model_dir_is_usable() {
+              cache_name="$1"
+              dest="$2"
+              case "$cache_name" in
+                Wan2.1-I2V-14B-480P)
+                  [ -f "$dest/Wan2.1_VAE.pth" ] &&
+                    [ -f "$dest/models_t5_umt5-xxl-enc-bf16.pth" ] &&
+                    [ -f "$dest/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth" ]
+                  ;;
+                DreamZero-DROID)
+                  [ -f "$dest/model.safetensors" ] || [ -f "$dest/model.safetensors.index.json" ]
+                  ;;
+                *)
+                  dir_has_files "$dest"
+                  ;;
+              esac
+            }
+
+            resolve_model_root() {
+              cache_name="$1"
+              dest="$2"
+              if model_dir_is_usable "$cache_name" "$dest"; then
+                printf '%s\n' "$dest"
+                return 0
+              fi
+              case "$cache_name" in
+                Wan2.1-I2V-14B-480P)
+                  root="$(find "$dest" -maxdepth 3 -name Wan2.1_VAE.pth -print -quit 2>/dev/null || true)"
+                  ;;
+                DreamZero-DROID)
+                  root="$(find "$dest" -maxdepth 3 \( -name model.safetensors -o -name model.safetensors.index.json \) -print -quit 2>/dev/null || true)"
+                  ;;
+                *)
+                  root=""
+                  ;;
+              esac
+              if [ -n "${root:-}" ]; then
+                dirname "$root"
+                return 0
+              fi
+              return 1
+            }
+
+            promote_model_root() {
+              resolved="$1"
+              dest="$2"
+              if [ "$resolved" = "$dest" ]; then
+                return 0
+              fi
+              echo "Promoting nested model cache from ${resolved} into ${dest}."
+              find "$resolved" -mindepth 1 -maxdepth 1 -exec mv -n -t "$dest" {} +
+            }
+
+            hf_download() {
+              repo="$1"
+              repo_type="$2"
+              dest="$3"
+              mkdir -p "$dest"
+              if command -v hf >/dev/null 2>&1; then
+                hf download "$repo" --repo-type "$repo_type" --local-dir "$dest"
+              else
+                huggingface-cli download "$repo" --repo-type "$repo_type" --local-dir "$dest"
+              fi
+            }
+
+            download_or_restore_model() {
+              cache_name="$1"
+              repo="$2"
+              repo_type="$3"
+              dest="$4"
+              mkdir -p "$dest"
+              if model_dir_is_usable "$cache_name" "$dest"; then
+                echo "Model already present locally: $dest"
+                return 0
+              fi
+              echo "Trying xianzhef S3 model cache: ${MODEL_CACHE_S3_URI}/${cache_name}/"
+              set +e
+              osmo data download --resume "${MODEL_CACHE_S3_URI}/${cache_name}/" "$dest"
+              cache_status=$?
+              set -e
+              resolved_cache_root="$(resolve_model_root "$cache_name" "$dest" || true)"
+              if [ "$cache_status" -eq 0 ] && [ -n "$resolved_cache_root" ]; then
+                promote_model_root "$resolved_cache_root" "$dest"
+                echo "Restored ${cache_name} from xianzhef S3 cache."
+                return 0
+              fi
+              if ! command -v huggingface-cli >/dev/null 2>&1 && ! command -v hf >/dev/null 2>&1; then
+                python -m pip install -q "huggingface_hub[cli]"
+              fi
+              echo "No usable S3 cache for ${cache_name}; downloading from Hugging Face repo ${repo}."
+              hf_download "$repo" "$repo_type" "$dest"
+              resolved_download_root="$(resolve_model_root "$cache_name" "$dest" || true)"
+              if [ -n "$resolved_download_root" ]; then
+                promote_model_root "$resolved_download_root" "$dest"
+              fi
+              if ! model_dir_is_usable "$cache_name" "$dest"; then
+                echo "ERROR: downloaded ${cache_name}, but required checkpoint files are still missing." >&2
+                exit 8
+              fi
+            }
+
+            valid_tokenizer_dir() {
+              [ -f "$1/tokenizer_config.json" ] && { [ -f "$1/tokenizer.json" ] || [ -f "$1/spiece.model" ]; }
+            }
+
+            download_or_restore_tokenizer() {
+              cache_name="$1"
+              repo="$2"
+              dest="$3"
+              mkdir -p "$dest"
+              if valid_tokenizer_dir "$dest"; then
+                echo "Tokenizer already present locally: $dest"
+                return 0
+              fi
+              echo "Trying xianzhef S3 tokenizer cache: ${MODEL_CACHE_S3_URI}/${cache_name}/"
+              set +e
+              osmo data download --resume "${MODEL_CACHE_S3_URI}/${cache_name}/" "$dest"
+              cache_status=$?
+              set -e
+              if [ "$cache_status" -eq 0 ] && valid_tokenizer_dir "$dest"; then
+                echo "Restored ${cache_name} from xianzhef S3 cache."
+                return 0
+              fi
+              if ! command -v huggingface-cli >/dev/null 2>&1 && ! command -v hf >/dev/null 2>&1; then
+                python -m pip install -q "huggingface_hub[cli]"
+              fi
+              hf_download "$repo" "model" "$dest"
+              if ! valid_tokenizer_dir "$dest"; then
+                echo "ERROR: tokenizer cache ${dest} is still missing tokenizer files." >&2
+                exit 7
+              fi
+            }
+
+            has_complete_checkpoint() {
+              ckpt_dir="$1"
+              [ -f "${ckpt_dir}/trainer_state.json" ] || return 1
+              if [ -f "${ckpt_dir}/model.safetensors" ]; then
+                size="$(stat -c%s "${ckpt_dir}/model.safetensors")"
+                [ "$size" -ge "$MIN_MODEL_BYTES" ] || {
+                  echo "Checkpoint model.safetensors is too small: ${size} < ${MIN_MODEL_BYTES}" >&2
+                  return 1
+                }
+                return 0
+              fi
+              [ -f "${ckpt_dir}/model.safetensors.index.json" ]
+            }
+
+            restore_checkpoint_from_uri() {
+              src_uri="$1"
+              label="$2"
+              echo "Trying ${label} checkpoint source: ${src_uri}/"
+              set +e
+              osmo data download --resume "${src_uri}/" "$EVAL_CKPT_ROOT"
+              download_status=$?
+              set -e
+              if [ "$download_status" -ne 0 ]; then
+                echo "${label} checkpoint download failed with status=${download_status}"
+                return 1
+              fi
+              found="$(find "$EVAL_CKPT_ROOT" -type d -name "$CKPT_SETTING" | sort | tail -n 1)"
+              if [ -z "$found" ]; then
+                echo "No ${CKPT_SETTING} directory found under ${EVAL_CKPT_ROOT}"
+                return 1
+              fi
+              if ! has_complete_checkpoint "$found"; then
+                echo "Found ${found}, but it is not complete."
+                return 1
+              fi
+              if [ "$found" != "${EVAL_CKPT_ROOT}/${CKPT_SETTING}" ]; then
+                mkdir -p "${EVAL_CKPT_ROOT}/${CKPT_SETTING}"
+                cp -an "${found}/." "${EVAL_CKPT_ROOT}/${CKPT_SETTING}/"
+              fi
+              echo "Using checkpoint: ${EVAL_CKPT_ROOT}/${CKPT_SETTING}"
+              return 0
+            }
+
+            echo "Downloading DreamZero code from ${CODE_S3_URI}/"
+            osmo data download --resume "${CODE_S3_URI}/" /workspace/code/dreamzero
+            CODE_ROOT="/workspace/code/dreamzero"
+            LATEST_CODE_ROOT="${CODE_ROOT}/dreamzero_gripperfix_upload_latest"
+            if [ -f "${LATEST_CODE_ROOT}/pyproject.toml" ]; then
+              CODE_ROOT="$LATEST_CODE_ROOT"
+            elif [ ! -f "$CODE_ROOT/pyproject.toml" ]; then
+              found_pyproject="$(find /workspace/code -maxdepth 4 -name pyproject.toml -print | sort | tail -n 1)"
+              if [ -n "$found_pyproject" ]; then
+                CODE_ROOT="$(dirname "$found_pyproject")"
+              fi
+            fi
+            if [ ! -f "$CODE_ROOT/pyproject.toml" ]; then
+              echo "ERROR: did not find DreamZero pyproject.toml after code download." >&2
+              exit 3
+            fi
+            if [ -f "$CODE_ROOT/OSMO_CODE_COMMIT" ]; then
+              actual_code_commit="$(cat "$CODE_ROOT/OSMO_CODE_COMMIT")"
+              echo "DreamZero code cache commit: ${actual_code_commit}"
+              if [ -n "$EXPECTED_CODE_COMMIT" ] && [ "$EXPECTED_CODE_COMMIT" != "$actual_code_commit" ]; then
+                echo "ERROR: expected code commit ${EXPECTED_CODE_COMMIT}, got ${actual_code_commit}" >&2
+                exit 8
+              fi
+            else
+              echo "ERROR: code cache is missing OSMO_CODE_COMMIT marker." >&2
+              exit 8
+            fi
+            grep -Fq "gripper_binary_action_loss_weight" "$CODE_ROOT/groot/vla/model/dreamzero/action_head/wan_flow_matching_action_tf.py"
+            grep -Fq "_sync_runtime_shape_from_config" "$CODE_ROOT/eval_utils/bimanual_policy_server.py"
+
+            echo "Downloading RoboFactory ${DATA_VARIANT} data from ${DATA_S3_URI}/"
+            osmo data download --resume "${DATA_S3_URI}/" /workspace/data/LiftBarrier-rf-500
+            DATA_ROOT="/workspace/data/LiftBarrier-rf-500"
+            if [ ! -d "$DATA_ROOT/meta" ]; then
+              found_meta="$(find /workspace/data -type d -path "*/${DATA_VARIANT}/meta" -print -quit)"
+              if [ -n "$found_meta" ]; then
+                DATA_ROOT="$(dirname "$found_meta")"
+              fi
+            fi
+            if [ ! -d "$DATA_ROOT/meta" ]; then
+              echo "ERROR: did not find LeRobot metadata after data download." >&2
+              find /workspace/data -maxdepth 4 -type d | head -100
+              exit 4
+            fi
+
+            cd "$CODE_ROOT"
+            python -m pip install -q pandas pyarrow numpy safetensors omegaconf hydra-core
+            python scripts/data/inspect_robotwin_lerobot.py \
+              --root "$DATA_ROOT" \
+              --expected-episodes 500 \
+              --expected-action-dim 16 \
+              --expected-state-dim 16 \
+              --gripper-dims 7,15 \
+              --close-threshold 0.0 \
+              --gripper-min -1.0 \
+              --gripper-max 1.0 \
+              --expected-embodiment-tag robofactory \
+              --legacy-embodiment-tags ""
+
+            echo "Installing DreamZero package from $CODE_ROOT"
+            if command -v uv >/dev/null 2>&1; then
+              uv pip install --system -e . --no-deps || uv pip install -e . --no-deps || python -m pip install -e . --no-deps
+            else
+              python -m pip install -e . --no-deps
+            fi
+
+            WAN_CKPT_DIR="/workspace/checkpoints/Wan2.1-I2V-14B-480P"
+            TOKENIZER_DIR="/workspace/checkpoints/umt5-xxl-tokenizer"
+            PRETRAINED_DIR="/workspace/checkpoints/DreamZero-DROID"
+            download_or_restore_model "Wan2.1-I2V-14B-480P" "Wan-AI/Wan2.1-I2V-14B-480P" "model" "$WAN_CKPT_DIR"
+            download_or_restore_tokenizer "umt5-xxl-tokenizer" "google/umt5-xxl" "$TOKENIZER_DIR"
+            download_or_restore_model "DreamZero-DROID" "GEAR-Dreams/DreamZero-DROID" "model" "$PRETRAINED_DIR"
+
+            EVAL_CKPT_ROOT="/workspace/eval_ckpts/${SOURCE_TRAIN_RUN_NAME}"
+            rm -rf "$EVAL_CKPT_ROOT"
+            mkdir -p "$EVAL_CKPT_ROOT"
+            restore_checkpoint_from_uri "$EVAL_CKPT_S3_URI" "s3cache" || \
+              restore_checkpoint_from_uri "$EVAL_CKPT_FALLBACK_S3_URI" "primary" || {
+                echo "ERROR: failed to restore a complete ${CKPT_SETTING}." >&2
+                exit 9
+              }
+
+            echo "Running offline action-prediction eval"
+            python -m eval_utils.offline_eval_bimanual \
+              --ckpt-dir "$EVAL_CKPT_ROOT" \
+              --ckpt-setting "$CKPT_SETTING" \
+              --num-batches "$NUM_BATCHES" \
+              --batch-size 1 \
+              --num-workers 0 \
+              --device cuda | tee /workspace/offline_eval_outputs/offline_eval_stdout.txt
+
+            {
+              echo "workflow=${RUN_NAME}"
+              echo "source_train_run=${SOURCE_TRAIN_RUN_NAME}"
+              echo "ckpt_setting=${CKPT_SETTING}"
+              echo "num_batches=${NUM_BATCHES}"
+              echo "min_model_bytes=${MIN_MODEL_BYTES}"
+              echo "data_root=${DATA_ROOT}"
+              echo "code_commit=$(cat "$CODE_ROOT/OSMO_CODE_COMMIT")"
+              echo
+              grep -E "Overall|Joints|Gripper|L1 mean|\\|err\\|" /workspace/offline_eval_outputs/offline_eval_stdout.txt || true
+            } > /workspace/offline_eval_outputs/summary.txt
+
+default-values:
+  workflow_name: dz-rf-sg-offline-eval-ckpt500-xianzhef-20260604
+  source_train_run_name: dz-rf-sg-gripperfix-500data-fullsample-v2-xianzhef-20260603
+  code_s3_uri: swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_gripperconv_evalshape_20260604
+  expected_code_commit: ""
+  data_variant: LiftBarrier-rf-500
+  data_s3_uri: s3://GearHome/users/xianzhef/oci-migration/data/robofactory_lerobot_v2/LiftBarrier-rf-500
+  ckpt_setting: checkpoint-500
+  min_model_bytes: "80000000000"
+  num_batches: "4"
