@@ -77,6 +77,8 @@ def test_liftbarrier_offline_eval_workflow_checks_robofactory_data_and_runs_eval
         "--include tokenizer_config.json",
         "resolve_tokenizer_root",
         'promote_model_root "$resolved_cache_root" "$dest"',
+        "Keeping existing promoted cache entry",
+        "Skipping self-referential cache entry",
         "python scripts/data/inspect_robotwin_lerobot.py",
         "--expected-episodes 500",
         "--expected-action-dim 16",

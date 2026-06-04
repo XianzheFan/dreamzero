@@ -156,7 +156,21 @@ workflow:
                 return 0
               fi
               echo "Promoting nested model cache from ${resolved} into ${dest}."
-              find "$resolved" -mindepth 1 -maxdepth 1 -exec mv -n -t "$dest" {} +
+              shopt -s dotglob nullglob
+              for item in "$resolved"/*; do
+                base="$(basename "$item")"
+                target="${dest}/${base}"
+                if [ "$item" = "$target" ]; then
+                  echo "Skipping self-referential cache entry: ${item}"
+                  continue
+                fi
+                if [ -e "$target" ]; then
+                  echo "Keeping existing promoted cache entry: ${target}"
+                  continue
+                fi
+                mv "$item" "$dest/"
+              done
+              shopt -u dotglob nullglob
             }
 
             hf_download() {
