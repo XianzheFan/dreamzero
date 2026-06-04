@@ -117,6 +117,41 @@ def test_state_split_shapes(yam_post_dream):
     assert action.shape == (2, 24, 7)
 
 
+def test_eight_dim_per_arm_split_preserves_gripper_values_and_masks():
+    Cls = _maybe_load_bimanual_transform()
+    inst = _make_inst(
+        Cls,
+        state_dims=((0, 8), (8, 16)),
+        action_dims=((0, 8), (8, 16)),
+    )
+    state = np.zeros((1, 16), dtype=np.float32)
+    state[0, 0:7] = np.arange(7, dtype=np.float32)
+    state[0, 7] = 0.25
+    state[0, 8:15] = np.arange(10, 17, dtype=np.float32)
+    state[0, 15] = 0.75
+    action = np.zeros((24, 16), dtype=np.float32)
+    action[:, 0:7] = 0.1
+    action[:, 7] = 0.0
+    action[:, 8:15] = 0.2
+    action[:, 15] = 1.0
+    state_mask = np.ones_like(state, dtype=bool)
+    action_mask = np.ones_like(action, dtype=bool)
+
+    split_state = inst._split_dense(state, inst.agent_state_dims)
+    split_action = inst._split_dense(action, inst.agent_action_dims)
+    split_state_mask = inst._split_dense(state_mask, inst.agent_state_dims)
+    split_action_mask = inst._split_dense(action_mask, inst.agent_action_dims)
+
+    assert split_state.shape == (2, 1, 8)
+    assert split_action.shape == (2, 24, 8)
+    np.testing.assert_allclose(split_state[0, 0, 7], 0.25)
+    np.testing.assert_allclose(split_state[1, 0, 7], 0.75)
+    np.testing.assert_allclose(split_action[0, :, 7], np.zeros(24))
+    np.testing.assert_allclose(split_action[1, :, 7], np.ones(24))
+    assert split_state_mask[:, :, 7].all()
+    assert split_action_mask[:, :, 7].all()
+
+
 def test_per_arm_state_values(yam_post_dream):
     Cls = _maybe_load_bimanual_transform()
     inst = _make_inst(Cls)
