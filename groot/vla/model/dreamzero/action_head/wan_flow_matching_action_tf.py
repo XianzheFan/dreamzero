@@ -2475,6 +2475,16 @@ class WANPolicyHead(ActionHead):
                 text_inputs.append((data["text_negative"], data["text_attention_mask_negative"]))
         return text_inputs
 
+    def _get_cache_state_model(self):
+        """Return the module that owns causal inference cache metadata."""
+        model = self.model
+        get_base_model = getattr(model, "get_base_model", None)
+        if callable(get_base_model):
+            try:
+                return get_base_model()
+            except Exception:
+                pass
+        return model
 
     def _run_diffusion_steps(
         self,
@@ -2560,7 +2570,10 @@ class WANPolicyHead(ActionHead):
         twice (cond/uncond) with separate K/V caches, so the token-agent id
         tracker must also be kept separately per branch.
         """
-        saved_model_cached_ids = getattr(self.model, "_cached_token_agent_id", None)
+        cache_state_model = self._get_cache_state_model()
+        saved_model_cached_ids = getattr(
+            cache_state_model, "_cached_token_agent_id", None
+        )
         branch_cached_ids = [
             self._ma_cached_token_agent_id,
             self._ma_cached_token_agent_id_neg,
@@ -2578,8 +2591,8 @@ class WANPolicyHead(ActionHead):
                 branch_index = branch_indices[local_index]
                 kv_cache = kv_caches[local_index]
                 crossattn_cache = crossattn_caches[local_index]
-                if hasattr(self.model, "_cached_token_agent_id"):
-                    self.model._cached_token_agent_id = (
+                if hasattr(cache_state_model, "_cached_token_agent_id"):
+                    cache_state_model._cached_token_agent_id = (
                         None if start_frame == 0 else branch_cached_ids[branch_index]
                     )
                 obs_noise_pred, action_noise_pred, updated_kv_caches = self.model(
@@ -2603,15 +2616,17 @@ class WANPolicyHead(ActionHead):
                     for block_index, updated_kv_cache in enumerate(updated_kv_caches):
                         kv_cache[block_index] = updated_kv_cache.clone()
                     new_cached_ids = getattr(
-                        self.model, "_cached_token_agent_id", None
+                        cache_state_model, "_cached_token_agent_id", None
                     )
                     branch_cached_ids[branch_index] = (
                         new_cached_ids.detach().cpu().clone()
                         if new_cached_ids is not None
                         else None
                     )
-                elif hasattr(self.model, "_cached_token_agent_id"):
-                    self.model._cached_token_agent_id = branch_cached_ids[branch_index]
+                elif hasattr(cache_state_model, "_cached_token_agent_id"):
+                    cache_state_model._cached_token_agent_id = (
+                        branch_cached_ids[branch_index]
+                    )
 
                 obs_noise_pred = obs_noise_pred.clone()
                 if action_noise_pred is not None:
@@ -2622,8 +2637,8 @@ class WANPolicyHead(ActionHead):
                     )
                 predictions.append((obs_noise_pred, action_noise_pred))
         finally:
-            if hasattr(self.model, "_cached_token_agent_id"):
-                self.model._cached_token_agent_id = saved_model_cached_ids
+            if hasattr(cache_state_model, "_cached_token_agent_id"):
+                cache_state_model._cached_token_agent_id = saved_model_cached_ids
 
         if update_kv_cache:
             self._ma_cached_token_agent_id = branch_cached_ids[0]
