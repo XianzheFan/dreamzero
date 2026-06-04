@@ -25,6 +25,14 @@ def test_liftbarrier_offline_eval_workflow_defaults_to_ckpt500_and_cached_code()
     assert defaults["data_s3_uri"] == (
         "s3://GearHome/users/xianzhef/oci-migration/data/robofactory_lerobot_v2/LiftBarrier-rf-500"
     )
+    assert defaults["eval_ckpt_s3_uri"] == (
+        "s3://GearHome/users/xianzhef/oci-migration/dreamzero_s3cache/bootstrap_checkpoints/"
+        "dz-rf-sg-gripperfix-500data-fullsample-v2-xianzhef-20260603"
+    )
+    assert defaults["eval_ckpt_fallback_s3_uri"] == (
+        "s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/"
+        "dz-rf-sg-gripperfix-500data-fullsample-v2-xianzhef-20260603/checkpoints"
+    )
     assert defaults["ckpt_setting"] == "checkpoint-500"
     assert defaults["min_model_bytes"] == "80000000000"
     assert defaults["num_batches"] == "4"
@@ -43,8 +51,8 @@ def test_liftbarrier_offline_eval_workflow_restores_complete_checkpoint_safely()
 
     script = _task_by_name(workflow, "offline-eval")["files"][0]["contents"]
 
-    assert 'EVAL_CKPT_S3_URI="${EVAL_CKPT_S3_URI:-s3://GearHome/users/xianzhef/oci-migration/dreamzero_s3cache/bootstrap_checkpoints/${SOURCE_TRAIN_RUN_NAME}}"' in script
-    assert 'EVAL_CKPT_FALLBACK_S3_URI="${EVAL_CKPT_FALLBACK_S3_URI:-s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/${SOURCE_TRAIN_RUN_NAME}/checkpoints}"' in script
+    assert 'EVAL_CKPT_S3_URI="${EVAL_CKPT_S3_URI:-{{eval_ckpt_s3_uri}}}"' in script
+    assert 'EVAL_CKPT_FALLBACK_S3_URI="${EVAL_CKPT_FALLBACK_S3_URI:-{{eval_ckpt_fallback_s3_uri}}}"' in script
     assert 'restore_checkpoint_from_uri "$EVAL_CKPT_S3_URI" "s3cache"' in script
     assert 'restore_checkpoint_from_uri "$EVAL_CKPT_FALLBACK_S3_URI" "primary"' in script
     assert "MIN_MODEL_BYTES" in script
