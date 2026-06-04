@@ -859,7 +859,7 @@ workflow:
 
 default-values:
   workflow_name: robotwin-stack-blocks-two-dataset500-l40-xianzhef-20260603
-  code_s3_uri: swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_gripperconv_20260604
+  code_s3_uri: swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_gripperconv_evalshape_20260604
   data_variant: stack_blocks_two-rt-500
   target_episodes: "500"
   raw_data_s3_uri: s3://GearHome/users/xianzhef/oci-migration/RoboTwin/data/stack_blocks_two/demo_full_franka

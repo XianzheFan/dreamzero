@@ -6,7 +6,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW_PATH = REPO_ROOT / "osmo_workflows/robotwin/eval_stack_blocks_two_ckpt7000_l40.yaml"
-CODE_CACHE_URI = "swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_gripperconv_20260604"
+CODE_CACHE_URI = "swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_gripperconv_evalshape_20260604"
 
 
 def _python_heredocs(script: str) -> list[str]:

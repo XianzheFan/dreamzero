@@ -5,7 +5,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW_PATH = REPO_ROOT / "osmo_workflows/robotwin/probe_dreamzero_gripperfix_code.yaml"
-CODE_CACHE_URI = "swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_gripperconv_20260604"
+CODE_CACHE_URI = "swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_gripperconv_evalshape_20260604"
 
 
 def test_robotwin_code_probe_checks_s3_gripperfix_markers_and_patch_points():
