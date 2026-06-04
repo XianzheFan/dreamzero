@@ -333,6 +333,21 @@ def test_prompt_override_wins_over_client_prompt():
     assert policy._sessions["episode-0"]["prompt"] == "stack the two blocks"
 
 
+def test_runtime_action_shapes_follow_checkpoint_config(caplog):
+    policy = _make_policy(_metadata_with_action_stats())
+    policy.action_horizon = 8
+    policy.num_frames = 9
+    policy._cfg = {"action_horizon": 24, "num_frames": 33}
+
+    with caplog.at_level("WARNING"):
+        policy._sync_runtime_shape_from_config()
+
+    assert policy.action_horizon == 24
+    assert policy.num_frames == 33
+    assert "Overriding eval action_horizon=8" in caplog.text
+    assert "Overriding eval num_frames=9" in caplog.text
+
+
 def test_inference_transform_modes_only_enable_dream_action_path():
     policy = _make_policy(_metadata_with_action_stats())
     video_transform = _DummyTransform(training=True)

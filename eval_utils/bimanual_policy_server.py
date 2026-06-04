@@ -229,6 +229,27 @@ class BimanualPolicy:
             return self.prompt_override
         return prompt or ""
 
+    def _sync_runtime_shape_from_config(self) -> None:
+        """Keep eval request shapes aligned with the checkpoint config."""
+        for attr, cfg_key in (
+            ("action_horizon", "action_horizon"),
+            ("num_frames", "num_frames"),
+        ):
+            cfg_value = self._cfg.get(cfg_key, None)
+            if cfg_value is None:
+                continue
+            cfg_value = int(cfg_value)
+            current = int(getattr(self, attr))
+            if current != cfg_value:
+                logging.warning(
+                    "Overriding eval %s=%d from checkpoint config %s=%d",
+                    attr,
+                    current,
+                    cfg_key,
+                    cfg_value,
+                )
+                setattr(self, attr, cfg_value)
+
     def _load(self) -> None:
         import torch
         from omegaconf import OmegaConf
@@ -245,6 +266,7 @@ class BimanualPolicy:
                 f"{cfg_path} or {self.ckpt_dir / 'experiment_cfg' / 'conf.yaml'}"
             )
         self._cfg = OmegaConf.load(str(cfg_path))
+        self._sync_runtime_shape_from_config()
         rel_keys = self._cfg.get("relative_action_keys", []) or []
         self._relative_action = bool(self._cfg.get("relative_action", False))
         self._relative_action_per_horizon = bool(
