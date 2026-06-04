@@ -270,6 +270,29 @@ class BimanualPolicy:
                 )
                 setattr(self, attr, cfg_value)
 
+    def _apply_eval_config_overrides(self) -> None:
+        """Apply diagnostic-only config overrides before model instantiation."""
+        disable_hub = os.environ.get(
+            "DREAMZERO_DISABLE_MULTI_AGENT_HUB", "0"
+        ).lower() in ("1", "true", "yes", "on")
+        if not disable_hub:
+            return
+
+        diffusion_cfg = (
+            self._cfg.model.action_head_cfg.config.diffusion_model_cfg
+        )
+        old_num_hub = diffusion_cfg.get("num_hub_tokens", None)
+        old_use_sparse = diffusion_cfg.get("use_sparse_hub_attention", None)
+        diffusion_cfg.num_hub_tokens = 0
+        diffusion_cfg.use_sparse_hub_attention = False
+        logging.warning(
+            "DREAMZERO_DISABLE_MULTI_AGENT_HUB=1: overriding "
+            "diffusion_model_cfg.num_hub_tokens %s -> 0 and "
+            "use_sparse_hub_attention %s -> False for eval",
+            old_num_hub,
+            old_use_sparse,
+        )
+
     def _load(self) -> None:
         import torch
         from omegaconf import OmegaConf
@@ -288,6 +311,7 @@ class BimanualPolicy:
                 f"{cfg_path} or {self.ckpt_dir / 'experiment_cfg' / 'conf.yaml'}"
             )
         self._cfg = OmegaConf.load(str(cfg_path))
+        self._apply_eval_config_overrides()
         self._sync_runtime_shape_from_config()
         rel_keys = self._cfg.get("relative_action_keys", []) or []
         self._relative_action = bool(self._cfg.get("relative_action", False))

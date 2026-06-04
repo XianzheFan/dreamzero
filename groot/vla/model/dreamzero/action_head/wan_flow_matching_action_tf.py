@@ -433,6 +433,7 @@ class WANPolicyHead(ActionHead):
             self.model.state_encoder.requires_grad_(True)
             self.model.action_encoder.requires_grad_(True)
             self.model.action_decoder.requires_grad_(True)
+            self._enable_multi_agent_aux_trainable()
         elif self.train_architecture == "lora" and self.defer_lora_injection:
             print("Deferring LoRA injection until after pretrained weights are loaded")
         else:
@@ -481,8 +482,7 @@ class WANPolicyHead(ActionHead):
             self.model.state_encoder.requires_grad_(True)
             self.model.action_encoder.requires_grad_(True)
             self.model.action_decoder.requires_grad_(True)
-            # self.model.registers.requires_grad_(True)
-            # self.model.time_modality_projection.requires_grad_(True)
+            self._enable_multi_agent_aux_trainable()
             
             self.text_encoder.requires_grad_(False)
             self.image_encoder.requires_grad_(False)
@@ -490,6 +490,25 @@ class WANPolicyHead(ActionHead):
             self.print_trainable_params()
         else:
             print("LoRA injection not needed (train_architecture != 'lora')")
+
+    def _enable_multi_agent_aux_trainable(self) -> None:
+        """Train and save multi-agent parameters that are not part of DROID."""
+        enabled: list[str] = []
+        hub_tokens = getattr(self.model, "hub_tokens", None)
+        if hub_tokens is not None:
+            hub_tokens.requires_grad_(True)
+            enabled.append("hub_tokens")
+
+        role_embedding = getattr(self.model, "role_embedding", None)
+        if role_embedding is not None:
+            role_embedding.requires_grad_(True)
+            enabled.append("role_embedding")
+
+        if enabled:
+            print(
+                "Trainable multi-agent auxiliary parameters: "
+                + ", ".join(enabled)
+            )
 
     def _apply_action_loss_weights(
         self,
