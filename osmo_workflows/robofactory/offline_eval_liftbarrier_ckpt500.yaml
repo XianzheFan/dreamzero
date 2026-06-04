@@ -171,6 +171,23 @@ workflow:
               fi
             }
 
+            hf_download_tokenizer() {
+              repo="$1"
+              dest="$2"
+              mkdir -p "$dest"
+              include_args=(
+                --include tokenizer_config.json
+                --include tokenizer.json
+                --include spiece.model
+                --include special_tokens_map.json
+              )
+              if command -v hf >/dev/null 2>&1; then
+                hf download "$repo" --repo-type model "${include_args[@]}" --local-dir "$dest"
+              else
+                huggingface-cli download "$repo" --repo-type model "${include_args[@]}" --local-dir "$dest"
+              fi
+            }
+
             download_or_restore_model() {
               cache_name="$1"
               repo="$2"
@@ -211,6 +228,23 @@ workflow:
               [ -f "$1/tokenizer_config.json" ] && { [ -f "$1/tokenizer.json" ] || [ -f "$1/spiece.model" ]; }
             }
 
+            resolve_tokenizer_root() {
+              dest="$1"
+              if valid_tokenizer_dir "$dest"; then
+                printf '%s\n' "$dest"
+                return 0
+              fi
+              config_path="$(find "$dest" -maxdepth 4 -name tokenizer_config.json -print -quit 2>/dev/null || true)"
+              if [ -n "${config_path:-}" ]; then
+                candidate="$(dirname "$config_path")"
+                if valid_tokenizer_dir "$candidate"; then
+                  printf '%s\n' "$candidate"
+                  return 0
+                fi
+              fi
+              return 1
+            }
+
             download_or_restore_tokenizer() {
               cache_name="$1"
               repo="$2"
@@ -225,14 +259,20 @@ workflow:
               osmo data download --resume "${MODEL_CACHE_S3_URI}/${cache_name}/" "$dest"
               cache_status=$?
               set -e
-              if [ "$cache_status" -eq 0 ] && valid_tokenizer_dir "$dest"; then
+              resolved_cache_root="$(resolve_tokenizer_root "$dest" || true)"
+              if [ "$cache_status" -eq 0 ] && [ -n "$resolved_cache_root" ]; then
+                promote_model_root "$resolved_cache_root" "$dest"
                 echo "Restored ${cache_name} from xianzhef S3 cache."
                 return 0
               fi
               if ! command -v huggingface-cli >/dev/null 2>&1 && ! command -v hf >/dev/null 2>&1; then
                 python -m pip install -q "huggingface_hub[cli]"
               fi
-              hf_download "$repo" "model" "$dest"
+              hf_download_tokenizer "$repo" "$dest"
+              resolved_download_root="$(resolve_tokenizer_root "$dest" || true)"
+              if [ -n "$resolved_download_root" ]; then
+                promote_model_root "$resolved_download_root" "$dest"
+              fi
               if ! valid_tokenizer_dir "$dest"; then
                 echo "ERROR: tokenizer cache ${dest} is still missing tokenizer files." >&2
                 exit 7
