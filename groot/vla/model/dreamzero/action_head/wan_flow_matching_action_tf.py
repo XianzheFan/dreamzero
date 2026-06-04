@@ -1717,7 +1717,7 @@ class WANPolicyHead(ActionHead):
                 kv_caches=kv_caches,
                 crossattn_caches=crossattn_caches,
                 kv_cache_metadata=dict(start_frame=0, update_kv_cache=True),
-                clean_x=None,
+                clean_x=_slice_latent_frames(clean_latents, 0, 1),
                 global_video=_slice_latent_frames(global_latents, 0, 1),
             )
             self.current_start_frame += 1
@@ -1742,7 +1742,7 @@ class WANPolicyHead(ActionHead):
                     start_frame=ref_start,
                     update_kv_cache=True,
                 ),
-                clean_x=None,
+                clean_x=_slice_latent_frames(clean_latents, ref_start, block),
                 global_video=_slice_latent_frames(global_latents, ref_start, block),
             )
 
@@ -1828,7 +1828,9 @@ class WANPolicyHead(ActionHead):
                             start_frame=self.current_start_frame,
                             update_kv_cache=False,
                         ),
-                        clean_x=None,
+                        clean_x=_slice_latent_frames(
+                            clean_latents, self.current_start_frame, block
+                        ),
                         global_video=_slice_latent_frames(
                             global_latents, self.current_start_frame, block
                         ),
