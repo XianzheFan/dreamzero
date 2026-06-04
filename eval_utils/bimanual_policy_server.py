@@ -278,9 +278,18 @@ class BimanualPolicy:
         if not disable_hub:
             return
 
-        diffusion_cfg = (
-            self._cfg.model.action_head_cfg.config.diffusion_model_cfg
-        )
+        if "action_head_cfg" in self._cfg:
+            diffusion_cfg = self._cfg.action_head_cfg.config.diffusion_model_cfg
+        elif "action_head_cfg" in self._cfg.get("model", {}):
+            diffusion_cfg = (
+                self._cfg.model.action_head_cfg.config.diffusion_model_cfg
+            )
+        else:
+            logging.warning(
+                "DREAMZERO_DISABLE_MULTI_AGENT_HUB=1 requested, but no "
+                "action_head_cfg was found in the resolved checkpoint config"
+            )
+            return
         old_num_hub = diffusion_cfg.get("num_hub_tokens", None)
         old_use_sparse = diffusion_cfg.get("use_sparse_hub_attention", None)
         diffusion_cfg.num_hub_tokens = 0
