@@ -1,20 +1,34 @@
-import pytest
+import ast
+from pathlib import Path
+from typing import Sequence
+
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_HELPER_NAMES = {
+    "_normalize_relative_action_key",
+    "_normalize_relative_action_keys",
+    "_relative_action_key_matches",
+}
 
 
 def _load_helpers():
-    for dep in ("numpy", "pandas", "pydantic", "torch", "yaml"):
-        pytest.importorskip(dep)
+    module_path = _REPO_ROOT / "groot" / "vla" / "data" / "dataset" / "lerobot.py"
+    tree = ast.parse(module_path.read_text())
+    helper_defs = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name in _HELPER_NAMES
+    ]
+    assert {node.name for node in helper_defs} == _HELPER_NAMES
 
-    from groot.vla.data.dataset.lerobot import (
-        _normalize_relative_action_key,
-        _normalize_relative_action_keys,
-        _relative_action_key_matches,
-    )
-
+    namespace = {"Sequence": Sequence}
+    helper_module = ast.Module(body=helper_defs, type_ignores=[])
+    ast.fix_missing_locations(helper_module)
+    exec(compile(helper_module, str(module_path), "exec"), namespace)
     return (
-        _normalize_relative_action_key,
-        _normalize_relative_action_keys,
-        _relative_action_key_matches,
+        namespace["_normalize_relative_action_key"],
+        namespace["_normalize_relative_action_keys"],
+        namespace["_relative_action_key_matches"],
     )
 
 
