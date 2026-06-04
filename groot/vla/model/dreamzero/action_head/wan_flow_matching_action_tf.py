@@ -1536,7 +1536,7 @@ class WANPolicyHead(ActionHead):
         This mirrors the original single-agent ``lazy_joint_video_action``
         sampling semantics for P-agent shared-global checkpoints: prime a
         persistent KV cache with clean observed video, denoise future video
-        and action jointly with CFG + UniPC, and keep latent video state via
+        and action jointly with CFG + FlowMatch Euler steps, and keep latent video state via
         ``current_start_frame``.
         """
         del backbone_output
@@ -1759,25 +1759,28 @@ class WANPolicyHead(ActionHead):
             dtype=latents.dtype,
         )
 
-        sample_scheduler = FlowUniPCMultistepScheduler(
+        # Match the non-causal multi-agent path. UniPC keeps multistep
+        # history internally, which is fragile when video and action streams
+        # have different tensor ranks; the stateless multi-agent path already
+        # uses the training scheduler's Euler-style FlowMatch update to avoid
+        # corrupting the video rollout.
+        sample_scheduler = FlowMatchScheduler(
             num_train_timesteps=self.scheduler.num_train_timesteps,
-            shift=1,
-            use_dynamic_shifting=False,
+            shift=self.sigma_shift,
+            sigma_min=0.0,
+            extra_one_step=True,
         )
-        sample_scheduler_action = FlowUniPCMultistepScheduler(
+        sample_scheduler_action = FlowMatchScheduler(
             num_train_timesteps=self.scheduler.num_train_timesteps,
-            shift=1,
-            use_dynamic_shifting=False,
+            shift=self.sigma_shift,
+            sigma_min=0.0,
+            extra_one_step=True,
         )
         num_inference_steps = int(
             os.environ.get("MAI_NUM_INFERENCE_STEPS", self.num_inference_steps)
         )
-        sample_scheduler.set_timesteps(
-            num_inference_steps, device=noisy_video.device, shift=self.sigma_shift
-        )
-        sample_scheduler_action.set_timesteps(
-            num_inference_steps, device=noisy_action.device, shift=self.sigma_shift
-        )
+        sample_scheduler.set_timesteps(num_inference_steps, training=False)
+        sample_scheduler_action.set_timesteps(num_inference_steps, training=False)
         self._mai_num_inference_steps = num_inference_steps
 
         if self.config.decouple_inference_noise:
@@ -1862,16 +1865,14 @@ class WANPolicyHead(ActionHead):
                     model_output=flow_pred,
                     timestep=video_timestep,
                     sample=noisy_video,
-                    step_index=index,
-                    return_dict=False,
-                )[0]
+                    to_final=(index == self._mai_num_inference_steps - 1),
+                )
                 noisy_action = sample_scheduler_action.step(
                     model_output=flow_pred_cond_action,
                     timestep=action_timestep,
                     sample=noisy_action,
-                    step_index=index,
-                    return_dict=False,
-                )[0]
+                    to_final=(index == self._mai_num_inference_steps - 1),
+                )
 
         video_output = noisy_video
         if self.current_start_frame == 1:
