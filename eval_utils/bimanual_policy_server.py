@@ -414,8 +414,27 @@ class BimanualPolicy:
 
         try:
             transforms = instantiate(self._cfg.transforms)
-            transform_tag = "robotwin" if "robotwin" in transforms else "robofactory"
             metadata_tag = self._metadata_tag()
+            if metadata_tag in transforms:
+                transform_tag = metadata_tag
+            elif "robofactory" in transforms:
+                transform_tag = "robofactory"
+                if metadata_tag is not None:
+                    logging.warning(
+                        "metadata tag %s has no matching transform; falling back to robofactory",
+                        metadata_tag,
+                    )
+            elif "robotwin" in transforms:
+                transform_tag = "robotwin"
+                if metadata_tag is not None:
+                    logging.warning(
+                        "metadata tag %s has no matching transform; falling back to robotwin",
+                        metadata_tag,
+                    )
+            else:
+                raise KeyError(
+                    f"No supported bimanual transform found. Available transforms: {list(transforms.keys())}"
+                )
             self._transform = transforms[transform_tag]
             # The transform pipeline needs normalization stats + modality
             # metadata before it can be applied. Mirrors sim_policy.py:365.
