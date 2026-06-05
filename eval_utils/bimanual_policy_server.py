@@ -184,6 +184,8 @@ class BimanualPolicy:
         # in-chain Resize handles downsampling to the model's target.
         image_h: int = 240,
         image_w: int = 320,
+        model_image_h: int | None = None,
+        model_image_w: int | None = None,
         num_frames: int = 33,
         action_horizon: int = 24,
         action_dim: int = 16,
@@ -202,6 +204,8 @@ class BimanualPolicy:
         self.ckpt_setting = ckpt_setting
         self.image_h = image_h
         self.image_w = image_w
+        self.model_image_h = model_image_h
+        self.model_image_w = model_image_w
         self.num_frames = num_frames
         self.action_horizon = action_horizon
         self.action_dim = action_dim
@@ -359,6 +363,101 @@ class BimanualPolicy:
             old_values,
         )
 
+    def _model_resize_resolution(self) -> tuple[int, int] | None:
+        if self.model_image_h is None and self.model_image_w is None:
+            return None
+        if self.model_image_h is None or self.model_image_w is None:
+            raise ValueError(
+                "model_image_h and model_image_w must be set together; "
+                f"got {self.model_image_h=} {self.model_image_w=}"
+            )
+        return int(self.model_image_h), int(self.model_image_w)
+
+    def _apply_model_resolution_overrides(self) -> None:
+        """Optionally override model-side resize while preserving raw metadata.
+
+        ``image_h``/``image_w`` are the raw simulator/client/server image
+        contract and should match the checkpoint metadata. This optional
+        model-side override only changes the checkpoint's in-chain resize
+        target, leaving VideoToTensor's raw-resolution check untouched.
+        """
+        from omegaconf import OmegaConf
+
+        resolution = self._model_resize_resolution()
+        if resolution is None:
+            return
+        target_h, target_w = resolution
+        updates: list[tuple[str, object, object]] = []
+
+        def _update_existing(path: str, value: int, *, skip_none: bool = False) -> None:
+            old = OmegaConf.select(self._cfg, path, default=None)
+            if old is None and skip_none:
+                return
+            if old is None and path not in ("image_resolution_height", "image_resolution_width"):
+                return
+            try:
+                old_int = None if old is None else int(old)
+            except (TypeError, ValueError):
+                old_int = old
+            if old_int == value:
+                return
+            OmegaConf.update(self._cfg, path, value, merge=False, force_add=False)
+            updates.append((path, old, value))
+
+        _update_existing("image_resolution_height", target_h)
+        _update_existing("image_resolution_width", target_w)
+
+        # Only sync action-head explicit target fields when the checkpoint
+        # already has them; adding new fields can change older checkpoints in
+        # ways that are harder to reason about.
+        for prefix in (
+            "action_head_cfg.config",
+            "model.action_head_cfg.config",
+            "model.config.action_head_cfg.config",
+        ):
+            _update_existing(
+                f"{prefix}.target_video_height", target_h, skip_none=True
+            )
+            _update_existing(
+                f"{prefix}.target_video_width", target_w, skip_none=True
+            )
+
+        if updates:
+            logging.warning(
+                "Applying model-side eval resize override HxW=%dx%d: %s",
+                target_h,
+                target_w,
+                ", ".join(f"{path}:{old}->{new}" for path, old, new in updates),
+            )
+
+    def _set_transform_resize_resolution(self, transform: object) -> None:
+        resolution = self._model_resize_resolution()
+        if resolution is None:
+            return
+        target_h, target_w = resolution
+        changed = []
+        stack = [transform]
+        while stack:
+            t = stack.pop(0)
+            if t is None:
+                continue
+            stack[0:0] = list(getattr(t, "transforms", []))
+            if t.__class__.__name__ != "VideoResize":
+                continue
+            old = (getattr(t, "height", None), getattr(t, "width", None))
+            if old == (target_h, target_w):
+                continue
+            setattr(t, "height", target_h)
+            setattr(t, "width", target_w)
+            changed.append((old, (target_h, target_w)))
+        if changed:
+            logging.warning(
+                "Overriding %d VideoResize transform(s) to HxW=%dx%d",
+                len(changed),
+                target_h,
+                target_w,
+            )
+
     def _load(self) -> None:
         import torch
         from omegaconf import OmegaConf
@@ -379,6 +478,7 @@ class BimanualPolicy:
         self._cfg = OmegaConf.load(str(cfg_path))
         self._apply_eval_config_overrides()
         self._sync_runtime_shape_from_config()
+        self._apply_model_resolution_overrides()
         rel_keys = self._cfg.get("relative_action_keys", []) or []
         self._relative_action = bool(self._cfg.get("relative_action", False))
         self._relative_action_per_horizon = bool(
@@ -552,20 +652,13 @@ class BimanualPolicy:
                     f"No supported bimanual transform found. Available transforms: {list(transforms.keys())}"
                 )
             self._transform = transforms[transform_tag]
+            self._set_transform_resize_resolution(self._transform)
             # The transform pipeline needs normalization stats + modality
             # metadata before it can be applied. Mirrors sim_policy.py:365.
             from groot.vla.data.schema.lerobot import DatasetMetadata
 
             if metadata_tag is not None:
                 metadata = DatasetMetadata.model_validate(self._metadata[metadata_tag])
-                # If the action head specifies a target video resolution, propagate it.
-                ah_cfg = getattr(getattr(self._model, "action_head", None), "config", None)
-                if ah_cfg is not None:
-                    target_h = getattr(ah_cfg, "target_video_height", None)
-                    target_w = getattr(ah_cfg, "target_video_width", None)
-                    if target_h is not None and target_w is not None and metadata.modalities.video:
-                        for key in metadata.modalities.video.keys():
-                            metadata.modalities.video[key].resolution = (int(target_w), int(target_h))
                 self._transform.set_metadata(metadata)
                 logging.info(
                     "Bimanual transform ready (transform=%s metadata=%s)",
@@ -609,7 +702,8 @@ class BimanualPolicy:
         sess["history"].clear()
         sess["prompt"] = prompt
         sess["infer_idx"] = 0
-        action_head = getattr(self._model, "action_head", None)
+        model = getattr(self, "_model", None)
+        action_head = getattr(model, "action_head", None)
         if action_head is not None and hasattr(action_head, "reset_causal_state"):
             action_head.reset_causal_state()
         return "reset successful"
@@ -1392,6 +1486,20 @@ def main():
     # to the model target afterwards.
     parser.add_argument("--image-h", type=int, default=240)
     parser.add_argument("--image-w", type=int, default=320)
+    parser.add_argument(
+        "--model-image-h",
+        type=int,
+        default=None,
+        help="Optional model-side resize height. Leave unset to use the "
+             "checkpoint's training config.",
+    )
+    parser.add_argument(
+        "--model-image-w",
+        type=int,
+        default=None,
+        help="Optional model-side resize width. Must be set with "
+             "--model-image-h. Leave unset to use the checkpoint's training config.",
+    )
     parser.add_argument("--num-frames", type=int, default=33)
     parser.add_argument("--action-horizon", type=int, default=24)
     parser.add_argument(
@@ -1476,6 +1584,8 @@ def main():
         ckpt_setting=args.ckpt_setting,
         image_h=args.image_h,
         image_w=args.image_w,
+        model_image_h=args.model_image_h,
+        model_image_w=args.model_image_w,
         num_frames=args.num_frames,
         action_horizon=args.action_horizon,
         save_video_pred=args.save_video_pred,

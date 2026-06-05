@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+from types import SimpleNamespace
 
 
 def _load_server_module():
@@ -13,6 +14,10 @@ def _stats(q01, q99):
 def _make_policy(metadata):
     mod = _load_server_module()
     policy = mod.BimanualPolicy.__new__(mod.BimanualPolicy)
+    policy.image_h = 240
+    policy.image_w = 320
+    policy.model_image_h = None
+    policy.model_image_w = None
     policy.action_horizon = 2
     policy.action_dim = 16
     policy.num_frames = 3
@@ -346,6 +351,68 @@ def test_runtime_action_shapes_follow_checkpoint_config(caplog):
     assert policy.num_frames == 33
     assert "Overriding eval action_horizon=8" in caplog.text
     assert "Overriding eval num_frames=9" in caplog.text
+
+
+def test_default_eval_resolution_keeps_checkpoint_config():
+    OmegaConf = pytest.importorskip("omegaconf").OmegaConf
+    policy = _make_policy(_metadata_with_action_stats())
+    policy._cfg = OmegaConf.create(
+        {
+            "image_resolution_height": 176,
+            "image_resolution_width": 320,
+            "action_head_cfg": {"config": {"target_video_height": None, "target_video_width": None}},
+        }
+    )
+
+    policy._apply_model_resolution_overrides()
+
+    assert policy._cfg.image_resolution_height == 176
+    assert policy._cfg.image_resolution_width == 320
+    assert policy._cfg.action_head_cfg.config.target_video_height is None
+    assert policy._cfg.action_head_cfg.config.target_video_width is None
+
+
+def test_model_resolution_override_updates_config_and_resize_transform(caplog):
+    OmegaConf = pytest.importorskip("omegaconf").OmegaConf
+    policy = _make_policy(_metadata_with_action_stats())
+    policy.model_image_h = 160
+    policy.model_image_w = 320
+    policy._cfg = OmegaConf.create(
+        {
+            "image_resolution_height": 176,
+            "image_resolution_width": 320,
+            "action_head_cfg": {"config": {"target_video_height": 176, "target_video_width": 320}},
+            "model": {
+                "config": {
+                    "action_head_cfg": {
+                        "config": {
+                            "target_video_height": None,
+                            "target_video_width": None,
+                        }
+                    }
+                }
+            },
+        }
+    )
+
+    with caplog.at_level("WARNING"):
+        policy._apply_model_resolution_overrides()
+
+    assert policy._cfg.image_resolution_height == 160
+    assert policy._cfg.image_resolution_width == 320
+    assert policy._cfg.action_head_cfg.config.target_video_height == 160
+    assert policy._cfg.action_head_cfg.config.target_video_width == 320
+    assert policy._cfg.model.config.action_head_cfg.config.target_video_height is None
+    assert "Applying model-side eval resize override HxW=160x320" in caplog.text
+
+    resize = type("VideoResize", (), {"height": 176, "width": 320, "transforms": []})()
+
+    with caplog.at_level("WARNING"):
+        policy._set_transform_resize_resolution(SimpleNamespace(transforms=[resize]))
+
+    assert resize.height == 160
+    assert resize.width == 320
+    assert "Overriding 1 VideoResize transform(s) to HxW=160x320" in caplog.text
 
 
 def test_inference_transform_modes_only_enable_dream_action_path():
