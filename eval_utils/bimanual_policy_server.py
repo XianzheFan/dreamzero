@@ -132,6 +132,38 @@ def _configure_torch_dynamo_for_serving(torch_module) -> None:
         )
 
 
+SLICE_COMPATIBLE_PRETRAINED_KEYS = frozenset(
+    {
+        "action_head.model.action_decoder.layer2.W",
+        "action_head.model.action_decoder.layer2.b",
+        "action_head.model.action_encoder.W1.W",
+        "action_head.model.patch_embedding.weight",
+        "action_head.model.state_encoder.layer1.W",
+    }
+)
+
+
+def _slice_copy_pretrained_tensor(key: str, ckpt_tensor, model_tensor):
+    """Match training-time partial-load for known architecture deltas."""
+    if key not in SLICE_COMPATIBLE_PRETRAINED_KEYS:
+        return None
+    if ckpt_tensor.ndim != model_tensor.ndim:
+        return None
+
+    adapted_tensor = model_tensor.detach().clone()
+    copy_slices = tuple(
+        slice(0, min(ckpt_size, model_size))
+        for ckpt_size, model_size in zip(ckpt_tensor.shape, model_tensor.shape)
+    )
+    adapted_tensor[copy_slices].copy_(
+        ckpt_tensor[copy_slices].to(
+            device=adapted_tensor.device,
+            dtype=adapted_tensor.dtype,
+        )
+    )
+    return adapted_tensor
+
+
 class BimanualPolicy:
     """Loads the LoRA-fine-tuned VLA + the bimanual_cotrain transform,
     exposes ``infer(obs)`` and ``reset(info)``.
@@ -389,13 +421,19 @@ class BimanualPolicy:
         )
         model_state = model.state_dict()
         dropped_mismatched: dict[str, tuple] = {}
+        sliced_mismatched: dict[str, tuple] = {}
 
         def _filter_shape_mismatches(sd: dict) -> dict:
             kept = {}
             for k, v in sd.items():
                 ref = model_state.get(k)
                 if ref is not None and tuple(ref.shape) != tuple(v.shape):
-                    dropped_mismatched[k] = (tuple(v.shape), tuple(ref.shape))
+                    adapted = _slice_copy_pretrained_tensor(k, v, ref)
+                    if adapted is not None:
+                        sliced_mismatched[k] = (tuple(v.shape), tuple(ref.shape))
+                        kept[k] = adapted
+                    else:
+                        dropped_mismatched[k] = (tuple(v.shape), tuple(ref.shape))
                     continue
                 kept[k] = v
             return kept
@@ -418,12 +456,32 @@ class BimanualPolicy:
                 )
             sd = _filter_shape_mismatches(load_file(str(pretrained_safe)))
             model.load_state_dict(sd, strict=False)
+        if sliced_mismatched:
+            logging.info(
+                "Step 2/4: slice-copied %d shape-mismatched tensor(s) "
+                "from overlapping pretrained dimensions.",
+                len(sliced_mismatched),
+            )
+            for k, (ckpt_shape, model_shape) in list(sliced_mismatched.items())[:10]:
+                logging.info(
+                    "Step 2/4: slice-copied %s ckpt=%s -> model=%s",
+                    k,
+                    ckpt_shape,
+                    model_shape,
+                )
         if dropped_mismatched:
             logging.info(
                 "Step 2/4: dropped %d shape-mismatched tensor(s) "
                 "(expected for multi-agent deltas vs DROID).",
                 len(dropped_mismatched),
             )
+            for k, (ckpt_shape, model_shape) in list(dropped_mismatched.items())[:10]:
+                logging.info(
+                    "Step 2/4: dropped %s ckpt=%s -> model=%s",
+                    k,
+                    ckpt_shape,
+                    model_shape,
+                )
 
         if (
             hasattr(model, "action_head")
@@ -823,6 +881,17 @@ class BimanualPolicy:
             logging.warning("action_head._last_video_pred missing; "
                             "make sure _get_action_multi_agent stashes it")
             return
+        logging.info(
+            "video_pred runtime: latent_shape=%s current_start_frame=%s "
+            "num_frame_per_block=%s num_inference_steps=%s causal=%s "
+            "anchor_i2v=%s",
+            tuple(latents.shape),
+            getattr(action_head, "current_start_frame", None),
+            getattr(action_head, "num_frame_per_block", None),
+            getattr(action_head, "_mai_num_inference_steps", None),
+            os.environ.get("MAI_USE_CAUSAL_INFERENCE", "1"),
+            getattr(action_head, "_mai_anchor_i2v_first_frame", None),
+        )
         # latents: [B=1, P, C_lat, F_lat, H_lat, W_lat] in self._dtype
         B, P, C_lat, F_lat, H_lat, W_lat = latents.shape
         # VAE.decode expects [B, C, T, H, W]; fold P into batch.

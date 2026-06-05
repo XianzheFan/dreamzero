@@ -51,6 +51,37 @@ ARM_SLICES = [(0, 8), (8, 16)]              # left, right
 JOINT_THRESHOLDS = [0.02, 0.05, 0.1]        # normalized-action units
 GRIPPER_THRESHOLDS = [0.05, 0.1, 0.2]
 
+SLICE_COMPATIBLE_PRETRAINED_KEYS = frozenset(
+    {
+        "action_head.model.action_decoder.layer2.W",
+        "action_head.model.action_decoder.layer2.b",
+        "action_head.model.action_encoder.W1.W",
+        "action_head.model.patch_embedding.weight",
+        "action_head.model.state_encoder.layer1.W",
+    }
+)
+
+
+def _slice_copy_pretrained_tensor(key: str, ckpt_tensor, model_tensor):
+    """Match training-time partial-load for known architecture deltas."""
+    if key not in SLICE_COMPATIBLE_PRETRAINED_KEYS:
+        return None
+    if ckpt_tensor.ndim != model_tensor.ndim:
+        return None
+
+    adapted_tensor = model_tensor.detach().clone()
+    copy_slices = tuple(
+        slice(0, min(ckpt_size, model_size))
+        for ckpt_size, model_size in zip(ckpt_tensor.shape, model_tensor.shape)
+    )
+    adapted_tensor[copy_slices].copy_(
+        ckpt_tensor[copy_slices].to(
+            device=adapted_tensor.device,
+            dtype=adapted_tensor.dtype,
+        )
+    )
+    return adapted_tensor
+
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
@@ -129,13 +160,19 @@ def load_model(ckpt_dir: Path, ckpt_setting: str, cfg, device: str):
 
     model_state = model.state_dict()
     dropped_mismatched: dict[str, tuple] = {}
+    sliced_mismatched: dict[str, tuple] = {}
 
     def _filter_shape_mismatches(sd: dict) -> dict:
         kept = {}
         for k, v in sd.items():
             ref = model_state.get(k)
             if ref is not None and tuple(ref.shape) != tuple(v.shape):
-                dropped_mismatched[k] = (tuple(v.shape), tuple(ref.shape))
+                adapted = _slice_copy_pretrained_tensor(k, v, ref)
+                if adapted is not None:
+                    sliced_mismatched[k] = (tuple(v.shape), tuple(ref.shape))
+                    kept[k] = adapted
+                else:
+                    dropped_mismatched[k] = (tuple(v.shape), tuple(ref.shape))
                 continue
             kept[k] = v
         return kept
@@ -163,11 +200,20 @@ def load_model(ckpt_dir: Path, ckpt_setting: str, cfg, device: str):
         sd = _filter_shape_mismatches(load_file(str(pretrained_safe)))
         model.load_state_dict(sd, strict=False)
         print(f"[load_model]   loaded {len(sd)} pretrained tensors (single file)")
+    if sliced_mismatched:
+        print(
+            f"[load_model]   slice-copied {len(sliced_mismatched)} "
+            "shape-mismatched tensor(s) from overlapping pretrained dimensions."
+        )
+        for k, (ckpt_shape, model_shape) in list(sliced_mismatched.items())[:10]:
+            print(f"[load_model]     slice-copied {k}: {ckpt_shape} -> {model_shape}")
     if dropped_mismatched:
         print(
             f"[load_model]   dropped {len(dropped_mismatched)} shape-mismatched tensor(s); "
             "they re-init from scratch (expected for multi-agent deltas vs DROID)."
         )
+        for k, (ckpt_shape, model_shape) in list(dropped_mismatched.items())[:10]:
+            print(f"[load_model]     dropped {k}: {ckpt_shape} -> {model_shape}")
 
     # Step 3: LoRA inject BEFORE loading the fine-tune ckpt so its wrapped
     # keys (``base_model.model.*``) land on the new wrapper.
