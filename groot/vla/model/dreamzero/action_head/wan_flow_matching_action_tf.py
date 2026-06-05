@@ -1555,7 +1555,7 @@ class WANPolicyHead(ActionHead):
         This mirrors the original single-agent ``lazy_joint_video_action``
         sampling semantics for P-agent shared-global checkpoints: prime a
         persistent KV cache with clean observed video, denoise future video
-        and action jointly with CFG + FlowMatch Euler steps, and keep latent video state via
+        and action jointly with CFG + UniPC, and keep latent video state via
         ``current_start_frame``.
         """
         del backbone_output
@@ -1778,29 +1778,51 @@ class WANPolicyHead(ActionHead):
             dtype=latents.dtype,
         )
 
-        # Match the non-causal multi-agent path. UniPC keeps multistep
-        # history internally, which is fragile when video and action streams
-        # have different tensor ranks; the stateless multi-agent path already
-        # uses the training scheduler's Euler-style FlowMatch update to avoid
-        # corrupting the video rollout.
-        sample_scheduler = FlowMatchScheduler(
-            num_train_timesteps=self.scheduler.num_train_timesteps,
-            shift=self.sigma_shift,
-            sigma_min=0.0,
-            extra_one_step=True,
-        )
-        sample_scheduler_action = FlowMatchScheduler(
-            num_train_timesteps=self.scheduler.num_train_timesteps,
-            shift=self.sigma_shift,
-            sigma_min=0.0,
-            extra_one_step=True,
-        )
+        causal_scheduler = os.environ.get("MAI_CAUSAL_SCHEDULER", "unipc").lower()
+        if causal_scheduler == "unipc":
+            sample_scheduler = FlowUniPCMultistepScheduler(
+                num_train_timesteps=self.scheduler.num_train_timesteps,
+                shift=1,
+                use_dynamic_shifting=False,
+            )
+            sample_scheduler_action = FlowUniPCMultistepScheduler(
+                num_train_timesteps=self.scheduler.num_train_timesteps,
+                shift=1,
+                use_dynamic_shifting=False,
+            )
+        elif causal_scheduler == "flowmatch":
+            sample_scheduler = FlowMatchScheduler(
+                num_train_timesteps=self.scheduler.num_train_timesteps,
+                shift=self.sigma_shift,
+                sigma_min=0.0,
+                extra_one_step=True,
+            )
+            sample_scheduler_action = FlowMatchScheduler(
+                num_train_timesteps=self.scheduler.num_train_timesteps,
+                shift=self.sigma_shift,
+                sigma_min=0.0,
+                extra_one_step=True,
+            )
+        else:
+            raise ValueError(
+                "MAI_CAUSAL_SCHEDULER must be 'unipc' or 'flowmatch', "
+                f"got {causal_scheduler!r}"
+            )
         num_inference_steps = int(
             os.environ.get("MAI_NUM_INFERENCE_STEPS", self.num_inference_steps)
         )
-        sample_scheduler.set_timesteps(num_inference_steps, training=False)
-        sample_scheduler_action.set_timesteps(num_inference_steps, training=False)
+        if causal_scheduler == "unipc":
+            sample_scheduler.set_timesteps(
+                num_inference_steps, device=noisy_video.device, shift=self.sigma_shift
+            )
+            sample_scheduler_action.set_timesteps(
+                num_inference_steps, device=noisy_action.device, shift=self.sigma_shift
+            )
+        else:
+            sample_scheduler.set_timesteps(num_inference_steps, training=False)
+            sample_scheduler_action.set_timesteps(num_inference_steps, training=False)
         self._mai_num_inference_steps = num_inference_steps
+        self._mai_causal_scheduler = causal_scheduler
 
         if self.config.decouple_inference_noise:
             video_final_noise = self.config.video_inference_final_noise
@@ -1880,18 +1902,34 @@ class WANPolicyHead(ActionHead):
                     noisy_video = noisy_video[
                         ..., : flow_pred.shape[-2], : flow_pred.shape[-1]
                     ]
-                noisy_video = sample_scheduler.step(
-                    model_output=flow_pred,
-                    timestep=video_timestep,
-                    sample=noisy_video,
-                    to_final=(index == self._mai_num_inference_steps - 1),
-                )
-                noisy_action = sample_scheduler_action.step(
-                    model_output=flow_pred_cond_action,
-                    timestep=action_timestep,
-                    sample=noisy_action,
-                    to_final=(index == self._mai_num_inference_steps - 1),
-                )
+                if causal_scheduler == "unipc":
+                    noisy_video = sample_scheduler.step(
+                        model_output=flow_pred,
+                        timestep=video_timestep,
+                        sample=noisy_video,
+                        step_index=index,
+                        return_dict=False,
+                    )[0]
+                    noisy_action = sample_scheduler_action.step(
+                        model_output=flow_pred_cond_action,
+                        timestep=action_timestep,
+                        sample=noisy_action,
+                        step_index=index,
+                        return_dict=False,
+                    )[0]
+                else:
+                    noisy_video = sample_scheduler.step(
+                        model_output=flow_pred,
+                        timestep=video_timestep,
+                        sample=noisy_video,
+                        to_final=(index == self._mai_num_inference_steps - 1),
+                    )
+                    noisy_action = sample_scheduler_action.step(
+                        model_output=flow_pred_cond_action,
+                        timestep=action_timestep,
+                        sample=noisy_action,
+                        to_final=(index == self._mai_num_inference_steps - 1),
+                    )
 
         video_output = noisy_video
         if self.current_start_frame == 1:
