@@ -23,6 +23,7 @@ os.environ.setdefault("ATTENTION_BACKEND", "torch")
 
 import pytest
 import torch
+import torch.nn.functional as F
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_REPO_ROOT))
@@ -72,6 +73,57 @@ def _make_model(num_agents: int, device="cuda"):
     # rest of the model along so all Linear / Norm ops share that dtype.
     model = model.to(dtype=torch.bfloat16)
     return model
+
+
+def test_shared_global_latent_uses_patch_embedding_latent_slice():
+    pytest.importorskip("einops")
+    pytest.importorskip("diffusers")
+    from groot.vla.model.dreamzero.modules.wan_video_dit_action_casual_chunk import (
+        CausalWanModel,
+    )
+
+    model = CausalWanModel(
+        model_type="i2v",
+        patch_size=(1, 2, 2),
+        frame_seqlen=4,
+        text_len=8,
+        in_dim=12,
+        dim=96,
+        ffn_dim=192,
+        freq_dim=32,
+        text_dim=32,
+        out_dim=8,
+        num_heads=4,
+        num_layers=1,
+        num_frame_per_block=1,
+        action_dim=4,
+        num_registers=2,
+        max_state_dim=8,
+        max_num_embodiments=1,
+        hidden_size=64,
+        num_action_per_block=1,
+        num_state_per_block=1,
+        concat_first_frame_latent=True,
+        num_agents=2,
+        agent_dim=4,
+        simplex_pool_size=2,
+    ).eval()
+    model.init_weights()
+    x = torch.randn(1, 8, 2, 4, 4)
+
+    projected = model._patch_embedding_latent_channels(x)
+    expected = F.conv3d(
+        x,
+        model.patch_embedding.weight[:, : x.shape[1]],
+        bias=model.patch_embedding.bias,
+        stride=model.patch_embedding.stride,
+        padding=model.patch_embedding.padding,
+        dilation=model.patch_embedding.dilation,
+        groups=model.patch_embedding.groups,
+    )
+
+    assert projected.shape == (1, model.dim, 2, 2, 2)
+    torch.testing.assert_close(projected, expected)
 
 
 def test_p1_keeps_3d_path(cuda_available):

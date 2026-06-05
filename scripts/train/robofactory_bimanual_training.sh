@@ -38,6 +38,13 @@ NUM_ARMS=${NUM_ARMS:-2}
 # a separate ``video_global`` stream + per-agent wrist-only video (no
 # duplicated global view).
 SHARED_GLOBAL=${SHARED_GLOBAL:-0}
+# Wan2.1/DROID I2V was pretrained with [latent; first-frame mask/latent]
+# patch-embedding channels (16 + 20 = 36). Keep that structure by default
+# so video denoising sees the same conditioning path as the base model.
+# Set CONCAT_FIRST_FRAME_LATENT=false DIFFUSION_IN_DIM=16 only for
+# latent-only ablations.
+CONCAT_FIRST_FRAME_LATENT=${CONCAT_FIRST_FRAME_LATENT:-true}
+DIFFUSION_IN_DIM=${DIFFUSION_IN_DIM:-36}
 case "$NUM_ARMS" in
     2)
         if [ "$SHARED_GLOBAL" = "1" ]; then
@@ -92,7 +99,7 @@ fi
 # Allocator fragmentation hint (PyTorch's own OOM message suggests this).
 export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
 
-echo "NUM_ARMS=$NUM_ARMS  SHARED_GLOBAL=$SHARED_GLOBAL  data=$DATA_CFG  gradient_checkpointing=$GRAD_CKPT  deepspeed=$DEEPSPEED_CFG"
+echo "NUM_ARMS=$NUM_ARMS  SHARED_GLOBAL=$SHARED_GLOBAL  data=$DATA_CFG  gradient_checkpointing=$GRAD_CKPT  deepspeed=$DEEPSPEED_CFG  concat_first_frame_latent=$CONCAT_FIRST_FRAME_LATENT  diffusion_in_dim=$DIFFUSION_IN_DIM"
 
 ROBOFACTORY_DATA_ROOT=${ROBOFACTORY_DATA_ROOT:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/data/robofactory_lerobot_v2/LiftBarrier-rf"}
 OUTPUT_DIR=${OUTPUT_DIR:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/robofactory_bimanual_smoke"}
@@ -211,5 +218,5 @@ torchrun --nproc_per_node $NUM_GPUS --standalone groot/vla/experiment/experiment
     ++action_head_cfg.config.diffusion_model_cfg.num_agents=$NUM_ARMS \
     ++action_head_cfg.config.diffusion_model_cfg.max_state_dim=8 \
     ++action_head_cfg.config.diffusion_model_cfg.action_dim=8 \
-    ++action_head_cfg.config.diffusion_model_cfg.concat_first_frame_latent=false \
-    ++action_head_cfg.config.diffusion_model_cfg.in_dim=16
+    ++action_head_cfg.config.diffusion_model_cfg.concat_first_frame_latent=$CONCAT_FIRST_FRAME_LATENT \
+    ++action_head_cfg.config.diffusion_model_cfg.in_dim=$DIFFUSION_IN_DIM

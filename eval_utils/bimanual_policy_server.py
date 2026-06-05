@@ -308,12 +308,70 @@ class BimanualPolicy:
 
     def _apply_eval_config_overrides(self) -> None:
         """Apply diagnostic-only config overrides before model instantiation."""
-        disable_hub = os.environ.get(
-            "DREAMZERO_DISABLE_MULTI_AGENT_HUB", "0"
-        ).lower() in ("1", "true", "yes", "on")
-        if not disable_hub:
+        diffusion_cfgs = self._diffusion_model_cfgs()
+
+        disable_hub = self._env_bool("DREAMZERO_DISABLE_MULTI_AGENT_HUB")
+        if disable_hub:
+            if not diffusion_cfgs:
+                logging.warning(
+                    "DREAMZERO_DISABLE_MULTI_AGENT_HUB=1 requested, but no "
+                    "action_head_cfg was found in the resolved checkpoint config"
+                )
+            else:
+                old_values = []
+                for diffusion_cfg in diffusion_cfgs:
+                    old_values.append(
+                        (
+                            diffusion_cfg.get("num_hub_tokens", None),
+                            diffusion_cfg.get("use_sparse_hub_attention", None),
+                        )
+                    )
+                    diffusion_cfg.num_hub_tokens = 0
+                    diffusion_cfg.use_sparse_hub_attention = False
+                logging.warning(
+                    "DREAMZERO_DISABLE_MULTI_AGENT_HUB=1: overriding "
+                    "%d diffusion_model_cfg copy/copies to num_hub_tokens=0 and "
+                    "use_sparse_hub_attention=False for eval; old values=%s",
+                    len(diffusion_cfgs),
+                    old_values,
+                )
+
+        eval_in_dim = os.environ.get("DREAMZERO_EVAL_DIFFUSION_IN_DIM", "").strip()
+        eval_concat = os.environ.get(
+            "DREAMZERO_EVAL_CONCAT_FIRST_FRAME_LATENT", ""
+        ).strip()
+        if not eval_in_dim and not eval_concat:
+            return
+        if not diffusion_cfgs:
+            logging.warning(
+                "DreamZero eval diffusion-structure override requested, but no "
+                "action_head_cfg was found in the resolved checkpoint config"
+            )
             return
 
+        updates = []
+        for diffusion_cfg in diffusion_cfgs:
+            if eval_in_dim:
+                old = diffusion_cfg.get("in_dim", None)
+                new = int(eval_in_dim)
+                if old != new:
+                    diffusion_cfg.in_dim = new
+                    updates.append(("in_dim", old, new))
+            if eval_concat:
+                old = diffusion_cfg.get("concat_first_frame_latent", None)
+                new = self._parse_bool(eval_concat)
+                if old != new:
+                    diffusion_cfg.concat_first_frame_latent = new
+                    updates.append(("concat_first_frame_latent", old, new))
+        if updates:
+            logging.warning(
+                "Applying DreamZero eval diffusion-structure override to %d "
+                "config copy/copies: %s",
+                len(diffusion_cfgs),
+                ", ".join(f"{name}:{old}->{new}" for name, old, new in updates),
+            )
+
+    def _diffusion_model_cfgs(self) -> list:
         diffusion_cfgs = []
         try:
             if "action_head_cfg" in self._cfg:
@@ -337,31 +395,21 @@ class BimanualPolicy:
                 )
         except Exception:
             pass
+        return diffusion_cfgs
 
-        if not diffusion_cfgs:
-            logging.warning(
-                "DREAMZERO_DISABLE_MULTI_AGENT_HUB=1 requested, but no "
-                "action_head_cfg was found in the resolved checkpoint config"
-            )
-            return
+    @staticmethod
+    def _parse_bool(value: str) -> bool:
+        lowered = value.strip().lower()
+        if lowered in ("1", "true", "yes", "on"):
+            return True
+        if lowered in ("0", "false", "no", "off"):
+            return False
+        raise ValueError(f"invalid boolean value: {value!r}")
 
-        old_values = []
-        for diffusion_cfg in diffusion_cfgs:
-            old_values.append(
-                (
-                    diffusion_cfg.get("num_hub_tokens", None),
-                    diffusion_cfg.get("use_sparse_hub_attention", None),
-                )
-            )
-            diffusion_cfg.num_hub_tokens = 0
-            diffusion_cfg.use_sparse_hub_attention = False
-        logging.warning(
-            "DREAMZERO_DISABLE_MULTI_AGENT_HUB=1: overriding "
-            "%d diffusion_model_cfg copy/copies to num_hub_tokens=0 and "
-            "use_sparse_hub_attention=False for eval; old values=%s",
-            len(diffusion_cfgs),
-            old_values,
-        )
+    @classmethod
+    def _env_bool(cls, name: str) -> bool:
+        value = os.environ.get(name, "0")
+        return cls._parse_bool(value)
 
     def _model_resize_resolution(self) -> tuple[int, int] | None:
         if self.model_image_h is None and self.model_image_w is None:
@@ -978,13 +1026,14 @@ class BimanualPolicy:
         logging.info(
             "video_pred runtime: latent_shape=%s current_start_frame=%s "
             "num_frame_per_block=%s num_inference_steps=%s causal=%s "
-            "anchor_i2v=%s",
+            "anchor_i2v=%s scheduler=%s",
             tuple(latents.shape),
             getattr(action_head, "current_start_frame", None),
             getattr(action_head, "num_frame_per_block", None),
             getattr(action_head, "_mai_num_inference_steps", None),
             os.environ.get("MAI_USE_CAUSAL_INFERENCE", "1"),
             getattr(action_head, "_mai_anchor_i2v_first_frame", None),
+            getattr(action_head, "_mai_causal_scheduler", None),
         )
         # latents: [B=1, P, C_lat, F_lat, H_lat, W_lat] in self._dtype
         B, P, C_lat, F_lat, H_lat, W_lat = latents.shape

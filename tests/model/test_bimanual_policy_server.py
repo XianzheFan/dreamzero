@@ -415,6 +415,51 @@ def test_model_resolution_override_updates_config_and_resize_transform(caplog):
     assert "Overriding 1 VideoResize transform(s) to HxW=160x320" in caplog.text
 
 
+def test_eval_diffusion_structure_override_updates_all_config_copies(monkeypatch, caplog):
+    OmegaConf = pytest.importorskip("omegaconf").OmegaConf
+    policy = _make_policy(_metadata_with_action_stats())
+    policy._cfg = OmegaConf.create(
+        {
+            "action_head_cfg": {
+                "config": {
+                    "diffusion_model_cfg": {
+                        "in_dim": 16,
+                        "concat_first_frame_latent": False,
+                    }
+                }
+            },
+            "model": {
+                "config": {
+                    "action_head_cfg": {
+                        "config": {
+                            "diffusion_model_cfg": {
+                                "in_dim": 16,
+                                "concat_first_frame_latent": False,
+                            }
+                        }
+                    }
+                }
+            },
+        }
+    )
+    monkeypatch.setenv("DREAMZERO_EVAL_DIFFUSION_IN_DIM", "36")
+    monkeypatch.setenv("DREAMZERO_EVAL_CONCAT_FIRST_FRAME_LATENT", "true")
+    monkeypatch.delenv("DREAMZERO_DISABLE_MULTI_AGENT_HUB", raising=False)
+
+    with caplog.at_level("WARNING"):
+        policy._apply_eval_config_overrides()
+
+    assert policy._cfg.action_head_cfg.config.diffusion_model_cfg.in_dim == 36
+    assert (
+        policy._cfg.action_head_cfg.config.diffusion_model_cfg.concat_first_frame_latent
+        is True
+    )
+    embedded = policy._cfg.model.config.action_head_cfg.config.diffusion_model_cfg
+    assert embedded.in_dim == 36
+    assert embedded.concat_first_frame_latent is True
+    assert "DreamZero eval diffusion-structure override" in caplog.text
+
+
 def test_inference_transform_modes_only_enable_dream_action_path():
     policy = _make_policy(_metadata_with_action_stats())
     video_transform = _DummyTransform(training=True)

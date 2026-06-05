@@ -39,5 +39,19 @@ def test_robofactory_training_script_uses_full_dataset_sampling_by_default():
     assert "dataset_shard_sampling_rate=$DATASET_SHARD_SAMPLING_RATE \\" in script
 
 
+def test_robofactory_training_script_preserves_droid_i2v_patch_embedding_by_default():
+    script = SCRIPT_PATH.read_text()
+
+    assert "CONCAT_FIRST_FRAME_LATENT=${CONCAT_FIRST_FRAME_LATENT:-true}" in script
+    assert "DIFFUSION_IN_DIM=${DIFFUSION_IN_DIM:-36}" in script
+    assert (
+        "++action_head_cfg.config.diffusion_model_cfg.concat_first_frame_latent="
+        "$CONCAT_FIRST_FRAME_LATENT"
+    ) in script
+    assert "++action_head_cfg.config.diffusion_model_cfg.in_dim=$DIFFUSION_IN_DIM" in script
+    assert "++action_head_cfg.config.diffusion_model_cfg.concat_first_frame_latent=false" not in script
+    assert "++action_head_cfg.config.diffusion_model_cfg.in_dim=16" not in script
+
+
 def test_robofactory_training_script_is_valid_bash():
     subprocess.run(["bash", "-n", str(SCRIPT_PATH)], check=True)

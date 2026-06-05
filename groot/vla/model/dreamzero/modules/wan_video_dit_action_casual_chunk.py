@@ -1541,6 +1541,34 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         self.gradient_checkpointing = True
         self.independent_first_frame = False if self.num_frame_per_block == 1 else True
 
+    def _patch_embedding_latent_channels(self, x: torch.Tensor) -> torch.Tensor:
+        """Patchify latent-only conditioning with the latent slice of I2V weights.
+
+        Shared-global camera tokens are clean VAE latents with no per-agent
+        I2V mask/first-frame ``y`` channels. In a 14B I2V model
+        ``patch_embedding`` expects ``[latent; y]`` channels (36 for Wan2.1:
+        16 latent + 20 I2V condition). Use the leading latent-channel slice
+        of the same projection for P-less global tokens instead of forcing
+        the whole shared-global model down to latent-only ``in_dim=16``.
+        """
+        in_channels = self.patch_embedding.weight.shape[1]
+        if x.shape[1] == in_channels:
+            return self.patch_embedding(x)
+        if x.shape[1] > in_channels:
+            raise AssertionError(
+                f"latent input has {x.shape[1]} channels, but patch_embedding "
+                f"only accepts {in_channels}"
+            )
+        weight = self.patch_embedding.weight[:, : x.shape[1]]
+        return F.conv3d(
+            x,
+            weight,
+            bias=self.patch_embedding.bias,
+            stride=self.patch_embedding.stride,
+            padding=self.patch_embedding.padding,
+            dilation=self.patch_embedding.dilation,
+            groups=self.patch_embedding.groups,
+        )
 
     def _set_gradient_checkpointing(self, module, value=False):
         self.gradient_checkpointing = value
@@ -2533,7 +2561,9 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             assert global_video.shape[0] == B, (
                 f"global_video batch mismatch: B={B}, got {global_video.shape[0]}"
             )
-            global_flat = self.patch_embedding(global_video.to(x.dtype))
+            global_flat = self._patch_embedding_latent_channels(
+                global_video.to(x.dtype)
+            )
             _, _, F_g_global, H_g_global, W_g_global = global_flat.shape
             global_flat = global_flat.flatten(start_dim=2).transpose(1, 2)  # [B, L_g, dim]
             global_seq = global_flat
