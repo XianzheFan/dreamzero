@@ -142,6 +142,12 @@ SLICE_COMPATIBLE_PRETRAINED_KEYS = frozenset(
     }
 )
 
+FINETUNE_PATCH_EMBEDDING_KEYS = frozenset(
+    {
+        "action_head.model.patch_embedding.weight",
+    }
+)
+
 
 def _slice_copy_pretrained_tensor(key: str, ckpt_tensor, model_tensor):
     """Match training-time partial-load for known architecture deltas."""
@@ -162,6 +168,70 @@ def _slice_copy_pretrained_tensor(key: str, ckpt_tensor, model_tensor):
         )
     )
     return adapted_tensor
+
+
+def _log_shape_mismatches(
+    stage: str,
+    sliced_mismatched: dict[str, tuple],
+    dropped_mismatched: dict[str, tuple],
+    *,
+    dropped_reason: str,
+) -> None:
+    if sliced_mismatched:
+        logging.info(
+            "%s: slice-copied %d shape-mismatched tensor(s) from overlapping dimensions.",
+            stage,
+            len(sliced_mismatched),
+        )
+        for k, (ckpt_shape, model_shape) in list(sliced_mismatched.items())[:10]:
+            logging.info(
+                "%s: slice-copied %s ckpt=%s -> model=%s",
+                stage,
+                k,
+                ckpt_shape,
+                model_shape,
+            )
+    if dropped_mismatched:
+        logging.info(
+            "%s: dropped %d shape-mismatched tensor(s) (%s).",
+            stage,
+            len(dropped_mismatched),
+            dropped_reason,
+        )
+        for k, (ckpt_shape, model_shape) in list(dropped_mismatched.items())[:10]:
+            logging.info(
+                "%s: dropped %s ckpt=%s -> model=%s",
+                stage,
+                k,
+                ckpt_shape,
+                model_shape,
+            )
+
+
+def _filter_shape_mismatches_for_load(
+    sd: dict,
+    model_state: dict,
+    *,
+    drop_mismatched_keys: frozenset[str] = frozenset(),
+) -> tuple[dict, dict[str, tuple], dict[str, tuple]]:
+    kept = {}
+    dropped_mismatched: dict[str, tuple] = {}
+    sliced_mismatched: dict[str, tuple] = {}
+    for k, v in sd.items():
+        ref = model_state.get(k)
+        if ref is not None and tuple(ref.shape) != tuple(v.shape):
+            if k in drop_mismatched_keys:
+                dropped_mismatched[k] = (tuple(v.shape), tuple(ref.shape))
+                continue
+            adapted = _slice_copy_pretrained_tensor(k, v, ref)
+            if adapted is not None:
+                sliced_mismatched[k] = (tuple(v.shape), tuple(ref.shape))
+                kept[k] = adapted
+            else:
+                dropped_mismatched[k] = (tuple(v.shape), tuple(ref.shape))
+            continue
+        kept[k] = v
+    return kept, sliced_mismatched, dropped_mismatched
 
 
 class BimanualPolicy:
@@ -568,23 +638,9 @@ class BimanualPolicy:
             "Step 2/4: load pretrained base shards from %s", pretrained_dir
         )
         model_state = model.state_dict()
-        dropped_mismatched: dict[str, tuple] = {}
-        sliced_mismatched: dict[str, tuple] = {}
 
-        def _filter_shape_mismatches(sd: dict) -> dict:
-            kept = {}
-            for k, v in sd.items():
-                ref = model_state.get(k)
-                if ref is not None and tuple(ref.shape) != tuple(v.shape):
-                    adapted = _slice_copy_pretrained_tensor(k, v, ref)
-                    if adapted is not None:
-                        sliced_mismatched[k] = (tuple(v.shape), tuple(ref.shape))
-                        kept[k] = adapted
-                    else:
-                        dropped_mismatched[k] = (tuple(v.shape), tuple(ref.shape))
-                    continue
-                kept[k] = v
-            return kept
+        step2_sliced: dict[str, tuple] = {}
+        step2_dropped: dict[str, tuple] = {}
 
         pretrained_index = pretrained_dir / "model.safetensors.index.json"
         if pretrained_index.is_file():
@@ -592,7 +648,11 @@ class BimanualPolicy:
                 p_index = json.load(f)
             for shard_file in sorted(set(p_index["weight_map"].values())):
                 shard_sd = load_file(str(pretrained_dir / shard_file))
-                shard_sd = _filter_shape_mismatches(shard_sd)
+                shard_sd, sliced, dropped = _filter_shape_mismatches_for_load(
+                    shard_sd, model_state
+                )
+                step2_sliced.update(sliced)
+                step2_dropped.update(dropped)
                 model.load_state_dict(shard_sd, strict=False)
                 del shard_sd
                 gc.collect()
@@ -602,34 +662,17 @@ class BimanualPolicy:
                 raise FileNotFoundError(
                     f"No model.safetensors[.index.json] under {pretrained_dir}"
                 )
-            sd = _filter_shape_mismatches(load_file(str(pretrained_safe)))
+            sd, step2_sliced, step2_dropped = _filter_shape_mismatches_for_load(
+                load_file(str(pretrained_safe)),
+                model_state,
+            )
             model.load_state_dict(sd, strict=False)
-        if sliced_mismatched:
-            logging.info(
-                "Step 2/4: slice-copied %d shape-mismatched tensor(s) "
-                "from overlapping pretrained dimensions.",
-                len(sliced_mismatched),
-            )
-            for k, (ckpt_shape, model_shape) in list(sliced_mismatched.items())[:10]:
-                logging.info(
-                    "Step 2/4: slice-copied %s ckpt=%s -> model=%s",
-                    k,
-                    ckpt_shape,
-                    model_shape,
-                )
-        if dropped_mismatched:
-            logging.info(
-                "Step 2/4: dropped %d shape-mismatched tensor(s) "
-                "(expected for multi-agent deltas vs DROID).",
-                len(dropped_mismatched),
-            )
-            for k, (ckpt_shape, model_shape) in list(dropped_mismatched.items())[:10]:
-                logging.info(
-                    "Step 2/4: dropped %s ckpt=%s -> model=%s",
-                    k,
-                    ckpt_shape,
-                    model_shape,
-                )
+        _log_shape_mismatches(
+            "Step 2/4",
+            step2_sliced,
+            step2_dropped,
+            dropped_reason="expected for multi-agent deltas vs DROID",
+        )
 
         if (
             hasattr(model, "action_head")
@@ -643,6 +686,17 @@ class BimanualPolicy:
             "Step 4/4: load fine-tune LoRA ckpt from %s/%s",
             self.ckpt_dir, self.ckpt_setting,
         )
+        drop_finetune_mismatched_keys = frozenset()
+        if self._env_bool("DREAMZERO_EVAL_SKIP_FINETUNE_PATCH_EMBEDDING_MISMATCH"):
+            drop_finetune_mismatched_keys = FINETUNE_PATCH_EMBEDDING_KEYS
+            logging.warning(
+                "DREAMZERO_EVAL_SKIP_FINETUNE_PATCH_EMBEDDING_MISMATCH=1: "
+                "dropping mismatched fine-tune patch_embedding tensors so the "
+                "DROID I2V 36-channel patch embedding stays intact."
+            )
+        finetune_model_state = model.state_dict()
+        step4_sliced: dict[str, tuple] = {}
+        step4_dropped: dict[str, tuple] = {}
         weight_path = self.ckpt_dir / self.ckpt_setting / "model.safetensors"
         index_path = (
             self.ckpt_dir / self.ckpt_setting / "model.safetensors.index.json"
@@ -654,19 +708,35 @@ class BimanualPolicy:
                 shard_state_dict = load_file(
                     str(self.ckpt_dir / self.ckpt_setting / shard_file)
                 )
-                shard_state_dict = _filter_shape_mismatches(shard_state_dict)
+                shard_state_dict, sliced, dropped = _filter_shape_mismatches_for_load(
+                    shard_state_dict,
+                    finetune_model_state,
+                    drop_mismatched_keys=drop_finetune_mismatched_keys,
+                )
+                step4_sliced.update(sliced)
+                step4_dropped.update(dropped)
                 model.load_state_dict(shard_state_dict, strict=False)
                 del shard_state_dict
                 gc.collect()
         elif weight_path.is_file():
             state_dict = load_file(str(weight_path))
-            state_dict = _filter_shape_mismatches(state_dict)
+            state_dict, step4_sliced, step4_dropped = _filter_shape_mismatches_for_load(
+                state_dict,
+                finetune_model_state,
+                drop_mismatched_keys=drop_finetune_mismatched_keys,
+            )
             model.load_state_dict(state_dict, strict=False)
         else:
             raise FileNotFoundError(
                 f"No model.safetensors[.index.json] under "
                 f"{self.ckpt_dir / self.ckpt_setting}"
             )
+        _log_shape_mismatches(
+            "Step 4/4",
+            step4_sliced,
+            step4_dropped,
+            dropped_reason="fine-tune checkpoint architecture differs from eval model",
+        )
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
         self._device = device

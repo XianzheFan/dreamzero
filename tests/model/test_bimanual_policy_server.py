@@ -460,6 +460,36 @@ def test_eval_diffusion_structure_override_updates_all_config_copies(monkeypatch
     assert "DreamZero eval diffusion-structure override" in caplog.text
 
 
+def test_shape_mismatch_filter_can_drop_finetune_patch_embedding():
+    torch = pytest.importorskip("torch")
+    mod = _load_server_module()
+    key = "action_head.model.patch_embedding.weight"
+    ckpt = torch.ones((4, 16, 1, 2, 2))
+    model = torch.zeros((4, 36, 1, 2, 2))
+
+    kept, sliced, dropped = mod._filter_shape_mismatches_for_load(
+        {key: ckpt},
+        {key: model},
+    )
+
+    assert key in kept
+    assert sliced == {key: ((4, 16, 1, 2, 2), (4, 36, 1, 2, 2))}
+    assert dropped == {}
+    assert tuple(kept[key].shape) == tuple(model.shape)
+    torch.testing.assert_close(kept[key][:, :16], torch.ones_like(kept[key][:, :16]))
+    torch.testing.assert_close(kept[key][:, 16:], torch.zeros_like(kept[key][:, 16:]))
+
+    kept, sliced, dropped = mod._filter_shape_mismatches_for_load(
+        {key: ckpt},
+        {key: model},
+        drop_mismatched_keys=mod.FINETUNE_PATCH_EMBEDDING_KEYS,
+    )
+
+    assert kept == {}
+    assert sliced == {}
+    assert dropped == {key: ((4, 16, 1, 2, 2), (4, 36, 1, 2, 2))}
+
+
 def test_inference_transform_modes_only_enable_dream_action_path():
     policy = _make_policy(_metadata_with_action_stats())
     video_transform = _DummyTransform(training=True)
