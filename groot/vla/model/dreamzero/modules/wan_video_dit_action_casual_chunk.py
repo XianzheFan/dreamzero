@@ -802,9 +802,9 @@ class CausalWanSelfAttention(nn.Module):
             freqs(Tensor): Rope freqs, shape [1024, C / num_heads / 2]
             attn_mask: Optional ``[B, n_heads, Lq, Lk]`` (or broadcastable) bool
                 mask used by the multi-agent / sparse-hub path. When set the
-                self-attention bypasses the block-causal flash code path and
-                does a single masked attention call instead. Defaults to
-                ``None`` to preserve single-agent behaviour.
+                self-attention does a single masked attention call instead
+                of the default backend path. Defaults to ``None`` to preserve
+                single-agent behaviour.
         """
         b, s, n, d = *x.shape[:2], self.num_heads, self.head_dim
 
@@ -821,8 +821,8 @@ class CausalWanSelfAttention(nn.Module):
 
         if attn_mask is not None:
             # Multi-agent sparse-hub-attention path. The mask encodes the
-            # desired token-routing topology (same-agent OR hub-mediated)
-            # composed with any block-causal logic the caller wanted.
+            # desired token-routing topology: same-agent, hub-mediated, and
+            # shared-global context.
             assert action_register_length is None, (
                 "attn_mask path does not yet plumb action/state registers"
             )
@@ -2493,11 +2493,9 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         Limitations of this branch:
           * Polar (default) RoPE only. ENABLE_TENSORRT (no-polar) for
             multi-agent register tokens is not wired up yet.
-          * The block-causal mask is NOT composed with the hub mask in
-            this branch yet (the attention is dense within the hub
-            topology).
-          * The inference / serving path (:meth:`_forward_inference`) is
-            unaffected.
+          * No extra block-causal time mask is composed with the hub mask;
+            attention is bidirectional within the current denoise chunk,
+            matching DreamZero's single-agent training path.
 
         Args:
             x: ``[B, P, C_in, F, H, W]`` -- per-agent latent video.
@@ -2641,7 +2639,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                 f"expected [B={B}, L_g={global_token_count}, dim={dim}]"
             )
             # Sanity: temporal grid must match the per-agent video so the
-            # block-causal frame ids line up.
+            # shared scene stream lines up with per-agent RoPE/timesteps.
             assert F_g_global == F_g, (
                 f"global_video temporal grid F_g_global={F_g_global} must "
                 f"equal per-agent F_g={F_g}; resize/encode upstream so the "
@@ -2811,7 +2809,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
 
         # PR 23: global token freqs use real F/H/W positions but identity
         # rotation on the simplex (agent) band -- they share the temporal
-        # phase with the per-agent video so block-causal stays consistent.
+        # phase with the per-agent video while remaining P-less shared tokens.
         if global_token_count > 0:
             assert polar, (
                 "Multi-agent shared-global tokens currently only support "
@@ -2887,8 +2885,8 @@ class CausalWanModel(ModelMixin, ConfigMixin):
 
         # PR 23: shared-global tokens reuse the per-frame timestep so that
         # AdaLN modulation along F matches the per-agent video stream.
-        # They're clean (not noisy), but reusing timestep keeps the
-        # block-causal frame schedule consistent across the sequence.
+        # They're clean (not noisy), but reusing timestep keeps temporal
+        # modulation consistent across the sequence.
         if global_token_count > 0:
             global_per_frame = H_g_global * W_g_global
             ts_per_frame = timestep.reshape(B, F_lat, L_per_agent // F_lat)[:, :, 0]
@@ -3037,93 +3035,13 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             [clean_ids, video_ids, global_ids, register_ids, hub_ids], dim=0
         )
 
-        # PR 8: per-token block_id for the block-causal composition.
-        # DreamZero's first latent frame is the observed conditioning frame.
-        # Future block 0 therefore covers frames 1..num_frame_per_block,
-        # and action/state registers are grouped by that same future-block
-        # index. The previous implementation assigned every register token
-        # to the last block, which prevented early video chunks from reading
-        # their corresponding action/state registers.
-        n_per_block = max(self.num_frame_per_block, 1)
-        video_frame_block = self._future_video_block_ids(
-            num_frames=F_g,
-            num_frame_per_block=n_per_block,
-            start_frame=start_frame,
-            device=x.device,
-        )
-        clean_frame_block = self._clean_context_block_ids(
-            num_frames=F_g,
-            num_frame_per_block=n_per_block,
-            start_frame=start_frame,
-            device=x.device,
-        )
-        video_block_ids = (
-            video_frame_block.repeat_interleave(H_g * W_g).repeat(P)
-        )  # [P*F*H*W]
-        clean_block_ids = (
-            clean_frame_block.repeat_interleave(H_g * W_g).repeat(P)
-            if clean_token_count > 0
-            else torch.empty(0, dtype=torch.long, device=x.device)
-        )
-        # PR 23: global tokens are shared-scene conditioning. Align them to
-        # the corresponding video frame block: in the RoboFactory
-        # ``current_repeat`` setup this opens the current global observation
-        # to the first future causal chunk, while still preventing historical
-        # ``full`` global clips from attending across future blocks.
-        global_block_ids = (
-            video_frame_block.repeat_interleave(H_g_global * W_g_global)
-            if global_token_count > 0
-            else torch.empty(0, dtype=torch.long, device=x.device)
-        )
-        per_agent_register_block_ids = self._register_block_ids(
-            num_action_tokens=T_a,
-            num_state_tokens=T_s,
-            num_action_per_block=self.num_action_per_block,
-            num_state_per_block=self.num_state_per_block,
-            start_frame=start_frame,
-            num_frame_per_block=n_per_block,
-            device=x.device,
-        )
-        if register_token_count > 0:
-            assert per_agent_register_block_ids.shape[0] == R_per_agent, (
-                f"register block ids length {per_agent_register_block_ids.shape[0]} "
-                f"must match R_per_agent={R_per_agent}"
-            )
-            register_block_ids = per_agent_register_block_ids.repeat(P)
-        else:
-            register_block_ids = torch.empty(0, dtype=torch.long, device=x.device)
-        hub_block_ids = video_frame_block.repeat_interleave(K_hub)  # [F*K]
-        new_token_block_id = torch.cat(
-            [
-                clean_block_ids,
-                video_block_ids,
-                global_block_ids,
-                register_block_ids,
-                hub_block_ids,
-            ],
-            dim=0,
-        )
-
         if use_hub or register_token_count > 0 or global_token_count > 0 or clean_token_count > 0 or cached_token_agent_id is not None:
             if cached_token_agent_id is not None:
                 key_agent = torch.cat(
                     [cached_token_agent_id.to(x.device), new_token_agent_id], dim=0
                 )
-                # Cached tokens are from past chunks -- assign a sentinel
-                # block id smaller than every new block so block_causal
-                # is automatically satisfied for them.
-                cached_block_ids = torch.full(
-                    (cached_token_agent_id.shape[0],),
-                    fill_value=-1,
-                    device=x.device,
-                    dtype=torch.long,
-                )
-                key_block_id = torch.cat(
-                    [cached_block_ids, new_token_block_id], dim=0
-                )
             else:
                 key_agent = new_token_agent_id
-                key_block_id = new_token_block_id
 
             # Build the sparse-hub-attention mask. Default is a BlockMask
             # consumed by FlexAttention; the dense [1,1,N,N] bool fallback
@@ -3142,24 +3060,25 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                 # with index tensors and we gather agent/block ids by indexing.
                 _agent_q = new_token_agent_id
                 _agent_k = key_agent
-                _block_q = new_token_block_id
-                _block_k = key_block_id
 
                 def _mask_mod(b, h, q_idx, kv_idx):
                     qa = _agent_q[q_idx]
                     ka = _agent_k[kv_idx]
-                    qb = _block_q[q_idx]
-                    kb = _block_k[kv_idx]
                     # Per-agent tokens see their own stream + hub + the
                     # shared scene; hub and shared tokens see everyone
                     # (each is permissive on the K side and the Q side).
-                    same_or_hub_or_shared = (
+                    #
+                    # Do not additionally compose a block-causal time mask
+                    # here. The original DreamZero training path is
+                    # bidirectional within the denoised video chunk, while
+                    # streaming inference gets past context from KV cache.
+                    # Adding ``qb >= kb`` in this shared-global path produced
+                    # a strong periodic grid artifact in predicted video.
+                    return (
                         (qa == ka)
                         | (qa == hub_id_local) | (ka == hub_id_local)
                         | (qa == shared_id_local) | (ka == shared_id_local)
                     )
-                    block_causal = qb >= kb
-                    return same_or_hub_or_shared & block_causal
 
                 Lq = int(new_token_agent_id.shape[0])
                 Lk = int(key_agent.shape[0])
@@ -3179,14 +3098,11 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                 same_agent = (
                     new_token_agent_id.unsqueeze(1) == key_agent.unsqueeze(0)
                 )
-                block_causal = (
-                    new_token_block_id.unsqueeze(1) >= key_block_id.unsqueeze(0)
-                )
                 mask_2d = (
                     same_agent
                     | q_is_hub | k_is_hub
                     | q_is_shared | k_is_shared
-                ) & block_causal
+                )
                 attn_mask = mask_2d.unsqueeze(0).unsqueeze(0)
         else:
             attn_mask = None

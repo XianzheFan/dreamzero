@@ -1,18 +1,17 @@
-"""Tests for the block-causal × hub mask composition (PR 8).
+"""Tests for the sparse-hub multi-agent attention mask.
 
-PR 8 ANDs the existing hub-mediated mask with a block-causal mask so
-that a query at temporal block ``B`` can only attend to keys at blocks
-``<=B`` (Gamma-World §3.1 + Self-Forcing). This aligns the multi-agent
-training path with what streaming inference will see at deployment.
+The production mask keeps the hub-mediated topology:
+same-agent tokens, hub tokens, and shared-global tokens are visible; direct
+agent-to-agent attention remains masked. We intentionally do not compose an
+extra block-causal time mask here. DreamZero's original training path is
+bidirectional within each denoised video chunk, and the block-causal variant
+introduced a strong periodic grid artifact in multi-agent predicted video.
 
 We exercise:
-  * single-block case (F * H * W fits inside one block) -> block-causal
-    is vacuous, output matches the baseline (no causal constraint
-    introduces new information loss);
-  * multi-block case -> swapping FUTURE frame tokens does NOT change
-    the prediction at the current frame (true causality);
-  * a query token in the FIRST block of the new chunk under streaming
-    is allowed to attend to all cached past tokens (cached_block sentinel);
+  * forward shape/finite smoke for a multi-frame sparse-hub input;
+  * same-agent future-frame changes can influence earlier frames inside the
+    same denoise chunk, matching the single-agent train path;
+  * cached streaming tokens participate in attention.
 """
 
 import os
@@ -31,7 +30,7 @@ sys.path.insert(0, str(_REPO_ROOT))
 @pytest.fixture(scope="module")
 def cuda_available():
     if not torch.cuda.is_available():
-        pytest.skip("CUDA required for block-causal mask smoke")
+        pytest.skip("CUDA required for sparse-hub mask smoke")
 
 
 def _make_model(num_agents=2, num_frame_per_block=1, device="cuda"):
@@ -83,7 +82,7 @@ def _make_inputs(B=1, P=2, T_a=4, D_a=4, F_lat=4, H=4, W=4, device="cuda"):
     )
 
 
-def test_forward_runs_with_block_causal(cuda_available):
+def test_forward_runs_with_sparse_hub_mask(cuda_available):
     """Sanity: forward still runs end-to-end with multi-block input
     (num_frame_per_block=1, F=4 -> 4 blocks)."""
     torch.manual_seed(0)
@@ -97,15 +96,12 @@ def test_forward_runs_with_block_causal(cuda_available):
     assert torch.isfinite(action).all()
 
 
-def test_future_frame_swap_does_not_leak(cuda_available):
-    """The block-causal constraint must prevent a frame-0 query from
-    attending to frame-3 keys. We verify this by swapping the future
-    frame content and checking that the frame-0 video prediction is
-    unchanged. We probe the prediction at the EARLIEST latent frame.
+def test_future_frame_swap_reaches_same_agent_current_frame(cuda_available):
+    """Sparse-hub masking should not impose extra temporal causality.
 
-    For this to be a strong signal we need F_lat with multiple blocks
-    so that block_causal is non-trivial. Use F_lat=4 with
-    num_frame_per_block=1 (4 blocks).
+    Swapping a later frame from the same agent is allowed to change the
+    earliest-frame prediction inside the same denoise chunk, matching the
+    original single-agent train path.
     """
     torch.manual_seed(0)
     device = "cuda"
@@ -125,15 +121,14 @@ def test_future_frame_swap_does_not_leak(cuda_available):
     with torch.no_grad():
         video_b, _ = model(**inputs_b)
 
-    # Frame-0 prediction should be IDENTICAL across (a) and (b) since
-    # nothing the frame-0 query is allowed to attend to changed.
+    # Frame-0 prediction should change because same-agent future tokens
+    # remain visible inside the current denoise chunk.
     frame0_a = video_a[:, :, :, 0]
     frame0_b = video_b[:, :, :, 0]
-    # bf16 precision: allow tiny but real tolerance.
-    diff = (frame0_a - frame0_b).abs().max().float().item()
-    assert diff < 1e-2, (
-        f"Frame-0 prediction changed under a future-frame perturbation "
-        f"(max diff {diff:.3e}). Block-causal mask is leaking future info."
+    diff = (frame0_a - frame0_b).abs().mean().float().item()
+    assert diff > 1e-3, (
+        f"Frame-0 prediction ignored a same-agent future-frame perturbation "
+        f"(mean diff {diff:.3e}). The mask may be imposing temporal causality."
     )
 
     # Sanity: the LAST frame's prediction should have changed (we
@@ -148,10 +143,7 @@ def test_future_frame_swap_does_not_leak(cuda_available):
 
 
 def test_single_block_case_is_unconstrained(cuda_available):
-    """When F_lat fits inside a single block, block_causal is vacuous
-    (all True). A future-frame perturbation now CAN reach the early
-    frame's prediction (since they're in the same block, bidirectional
-    attention is allowed within a block)."""
+    """A future-frame perturbation can reach the early frame prediction."""
     torch.manual_seed(0)
     device = "cuda"
     # F=2, num_frame_per_block=2 -> exactly 1 block.
@@ -174,11 +166,11 @@ def test_single_block_case_is_unconstrained(cuda_available):
 
 
 def test_streaming_cached_tokens_always_visible(cuda_available):
-    """Cached tokens from past chunks must always be block-causal-valid
-    (they encode strictly earlier frames). A streaming call with a
-    populated cache should produce a DIFFERENT output than the same call
-    with that cache replaced by zeros, proving the cache K/V actually
-    participated in attention.
+    """Cached tokens from past chunks must remain visible.
+
+    A streaming call with a populated cache should produce a DIFFERENT
+    output than the same call with that cache replaced by zeros, proving
+    the cache K/V actually participated in attention.
 
     We run the warm-up + streaming sequence twice on separate model
     instances so each has its own session-tracked
@@ -215,5 +207,5 @@ def test_streaming_cached_tokens_always_visible(cuda_available):
     diff = (video_with_cache - video_with_zero_cache).abs().mean().float().item()
     assert diff > 1e-3, (
         f"Streaming output ignored the populated cache (mean diff {diff:.3e}) "
-        "-- block-causal mask may be incorrectly blocking cached tokens."
+        "-- sparse-hub masking may be incorrectly blocking cached tokens."
     )
