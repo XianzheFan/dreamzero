@@ -253,3 +253,61 @@ def test_hub_mask_blocks_direct_cross_agent_path(cuda_available):
     # Self-attention is always open.
     diag = mask.diagonal()
     assert diag.all()
+
+
+def test_multi_agent_register_block_ids_align_with_future_video_blocks():
+    """Video chunk i must be able to read action/state register chunk i.
+
+    The first latent frame is an observed conditioning frame, so future
+    block 0 starts at latent frame 1. This catches the regression where all
+    registers were assigned to the last block and early video tokens could
+    not attend to their own action/state conditioning.
+    """
+    pytest.importorskip("einops")
+    from groot.vla.model.dreamzero.modules.wan_video_dit_action_casual_chunk import (
+        CausalWanModel,
+    )
+
+    device = torch.device("cpu")
+    video_ids = CausalWanModel._future_video_block_ids(
+        num_frames=9,
+        num_frame_per_block=2,
+        start_frame=0,
+        device=device,
+    )
+    clean_ids = CausalWanModel._clean_context_block_ids(
+        num_frames=9,
+        num_frame_per_block=2,
+        start_frame=0,
+        device=device,
+    )
+    register_ids = CausalWanModel._register_block_ids(
+        num_action_tokens=96,
+        num_state_tokens=4,
+        num_action_per_block=24,
+        num_state_per_block=1,
+        start_frame=0,
+        num_frame_per_block=2,
+        device=device,
+    )
+
+    assert video_ids.tolist() == [-1, 0, 0, 1, 1, 2, 2, 3, 3]
+    assert clean_ids.tolist() == [0, 1, 1, 2, 2, 3, 3, 4, 4]
+    assert register_ids[:96].reshape(4, 24)[:, 0].tolist() == [0, 1, 2, 3]
+    assert register_ids[96:].tolist() == [0, 1, 2, 3]
+
+    # Future video block 0 can see action/state block 0, but not future
+    # action/state blocks.
+    q_block0 = video_ids[1]
+    assert q_block0 >= register_ids[0]
+    assert q_block0 >= register_ids[96]
+    assert not bool(q_block0 >= register_ids[24])
+    assert not bool(q_block0 >= register_ids[97])
+
+    # Future video block 1 sees the first two clean-context chunks and its
+    # own action/state chunk.
+    q_block1 = video_ids[3]
+    assert q_block1 >= clean_ids[0]
+    assert q_block1 >= clean_ids[2]
+    assert not bool(q_block1 >= clean_ids[3])
+    assert q_block1 >= register_ids[24]

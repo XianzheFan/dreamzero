@@ -1570,6 +1570,70 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             groups=self.patch_embedding.groups,
         )
 
+    @staticmethod
+    def _future_video_block_ids(
+        num_frames: int,
+        num_frame_per_block: int,
+        start_frame: int,
+        device: torch.device,
+    ) -> torch.Tensor:
+        """Map latent frame ids to DreamZero future-video block ids."""
+        n = max(int(num_frame_per_block), 1)
+        frames = torch.arange(num_frames, device=device, dtype=torch.long) + int(
+            start_frame
+        )
+        first = torch.full_like(frames, -1)
+        return torch.where(
+            frames <= 0,
+            first,
+            torch.div(frames - 1, n, rounding_mode="floor"),
+        )
+
+    @staticmethod
+    def _clean_context_block_ids(
+        num_frames: int,
+        num_frame_per_block: int,
+        start_frame: int,
+        device: torch.device,
+    ) -> torch.Tensor:
+        """Map clean teacher-forcing frames to past-context block ids."""
+        n = max(int(num_frame_per_block), 1)
+        frames = torch.arange(num_frames, device=device, dtype=torch.long) + int(
+            start_frame
+        )
+        frames = torch.clamp(frames, min=0)
+        return torch.div(frames + n - 1, n, rounding_mode="floor")
+
+    @staticmethod
+    def _register_block_ids(
+        num_action_tokens: int,
+        num_state_tokens: int,
+        num_action_per_block: int,
+        num_state_per_block: int,
+        start_frame: int,
+        num_frame_per_block: int,
+        device: torch.device,
+    ) -> torch.Tensor:
+        """Return per-agent block ids for ``[actions, states]`` registers."""
+        offset = max(
+            (int(start_frame) - 1) // max(int(num_frame_per_block), 1),
+            0,
+        )
+        chunks: list[torch.Tensor] = []
+        if num_action_tokens > 0:
+            per = max(int(num_action_per_block), 1)
+            num_blocks = (int(num_action_tokens) + per - 1) // per
+            ids = torch.arange(num_blocks, device=device, dtype=torch.long)
+            chunks.append(ids.repeat_interleave(per)[:num_action_tokens] + offset)
+        if num_state_tokens > 0:
+            per = max(int(num_state_per_block), 1)
+            num_blocks = (int(num_state_tokens) + per - 1) // per
+            ids = torch.arange(num_blocks, device=device, dtype=torch.long)
+            chunks.append(ids.repeat_interleave(per)[:num_state_tokens] + offset)
+        if not chunks:
+            return torch.empty(0, dtype=torch.long, device=device)
+        return torch.cat(chunks, dim=0)
+
     def _set_gradient_checkpointing(self, module, value=False):
         self.gradient_checkpointing = value
 
@@ -2970,46 +3034,59 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         )
 
         # PR 8: per-token block_id for the block-causal composition.
-        # Video tokens for agent p at frame f live in block ``f // n``;
-        # register tokens encode the current chunk's noisy action so they
-        # sit in the LAST block of this chunk; hub tokens at frame f live
-        # in the same block as their frame. For streaming, the new
-        # chunk's block ids are offset by ``start_frame // n``.
+        # DreamZero's first latent frame is the observed conditioning frame.
+        # Future block 0 therefore covers frames 1..num_frame_per_block,
+        # and action/state registers are grouped by that same future-block
+        # index. The previous implementation assigned every register token
+        # to the last block, which prevented early video chunks from reading
+        # their corresponding action/state registers.
         n_per_block = max(self.num_frame_per_block, 1)
-        last_new_block = (start_frame + F_g - 1) // n_per_block
-        per_frame_block = (
-            (torch.arange(F_g, device=x.device) + start_frame) // n_per_block
-        )  # [F_g]
+        video_frame_block = self._future_video_block_ids(
+            num_frames=F_g,
+            num_frame_per_block=n_per_block,
+            start_frame=start_frame,
+            device=x.device,
+        )
+        clean_frame_block = self._clean_context_block_ids(
+            num_frames=F_g,
+            num_frame_per_block=n_per_block,
+            start_frame=start_frame,
+            device=x.device,
+        )
         video_block_ids = (
-            per_frame_block.repeat_interleave(H_g * W_g).repeat(P)
+            video_frame_block.repeat_interleave(H_g * W_g).repeat(P)
         )  # [P*F*H*W]
         clean_block_ids = (
-            torch.full(
-                (clean_token_count,),
-                fill_value=-1,
-                device=x.device,
-                dtype=torch.long,
-            )
+            clean_frame_block.repeat_interleave(H_g * W_g).repeat(P)
             if clean_token_count > 0
             else torch.empty(0, dtype=torch.long, device=x.device)
         )
-        # PR 23: global tokens at frame f live in block ``f // n``, same
-        # as the per-agent video tokens at that frame (block-causal stays
-        # consistent across the shared scene). They're not predicted, so
-        # the wrist queries' block_causal check (qb >= kb) lets them see
-        # global tokens at the current and past blocks.
+        # PR 23: global tokens are clean shared-scene context, so use the
+        # clean-context block ids rather than future-video ids. This keeps
+        # them causal with respect to the current future chunk.
         global_block_ids = (
-            per_frame_block.repeat_interleave(H_g_global * W_g_global)
+            clean_frame_block.repeat_interleave(H_g_global * W_g_global)
             if global_token_count > 0
             else torch.empty(0, dtype=torch.long, device=x.device)
         )
-        register_block_ids = torch.full(
-            (register_token_count,),
-            fill_value=last_new_block,
+        per_agent_register_block_ids = self._register_block_ids(
+            num_action_tokens=T_a,
+            num_state_tokens=T_s,
+            num_action_per_block=self.num_action_per_block,
+            num_state_per_block=self.num_state_per_block,
+            start_frame=start_frame,
+            num_frame_per_block=n_per_block,
             device=x.device,
-            dtype=torch.long,
         )
-        hub_block_ids = per_frame_block.repeat_interleave(K_hub)  # [F*K]
+        if register_token_count > 0:
+            assert per_agent_register_block_ids.shape[0] == R_per_agent, (
+                f"register block ids length {per_agent_register_block_ids.shape[0]} "
+                f"must match R_per_agent={R_per_agent}"
+            )
+            register_block_ids = per_agent_register_block_ids.repeat(P)
+        else:
+            register_block_ids = torch.empty(0, dtype=torch.long, device=x.device)
+        hub_block_ids = video_frame_block.repeat_interleave(K_hub)  # [F*K]
         new_token_block_id = torch.cat(
             [
                 clean_block_ids,
