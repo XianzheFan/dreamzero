@@ -1596,13 +1596,17 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         start_frame: int,
         device: torch.device,
     ) -> torch.Tensor:
-        """Map clean teacher-forcing frames to past-context block ids."""
-        n = max(int(num_frame_per_block), 1)
-        frames = torch.arange(num_frames, device=device, dtype=torch.long) + int(
-            start_frame
-        )
-        frames = torch.clamp(frames, min=0)
-        return torch.div(frames + n - 1, n, rounding_mode="floor")
+        """Map clean current-observation tokens to past-context block ids.
+
+        Multi-agent I2V builds ``clean_x`` by repeating the current observed
+        latent over the model's temporal window. Those tokens are conditioning
+        context, not future frames. Keep them in the same past bucket as the
+        first observed frame so every future video/action block can read the
+        current observation, including causal inference calls that start at
+        latent frame 1.
+        """
+        del num_frame_per_block, start_frame
+        return torch.full((num_frames,), -1, device=device, dtype=torch.long)
 
     @staticmethod
     def _register_block_ids(
@@ -3061,11 +3065,13 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             if clean_token_count > 0
             else torch.empty(0, dtype=torch.long, device=x.device)
         )
-        # PR 23: global tokens are clean shared-scene context, so use the
-        # clean-context block ids rather than future-video ids. This keeps
-        # them causal with respect to the current future chunk.
+        # PR 23: global tokens are shared-scene conditioning. Align them to
+        # the corresponding video frame block: in the RoboFactory
+        # ``current_repeat`` setup this opens the current global observation
+        # to the first future causal chunk, while still preventing historical
+        # ``full`` global clips from attending across future blocks.
         global_block_ids = (
-            clean_frame_block.repeat_interleave(H_g_global * W_g_global)
+            video_frame_block.repeat_interleave(H_g_global * W_g_global)
             if global_token_count > 0
             else torch.empty(0, dtype=torch.long, device=x.device)
         )

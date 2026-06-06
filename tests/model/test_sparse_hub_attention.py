@@ -292,7 +292,7 @@ def test_multi_agent_register_block_ids_align_with_future_video_blocks():
     )
 
     assert video_ids.tolist() == [-1, 0, 0, 1, 1, 2, 2, 3, 3]
-    assert clean_ids.tolist() == [0, 1, 1, 2, 2, 3, 3, 4, 4]
+    assert clean_ids.tolist() == [-1] * 9
     assert register_ids[:96].reshape(4, 24)[:, 0].tolist() == [0, 1, 2, 3]
     assert register_ids[96:].tolist() == [0, 1, 2, 3]
 
@@ -304,10 +304,41 @@ def test_multi_agent_register_block_ids_align_with_future_video_blocks():
     assert not bool(q_block0 >= register_ids[24])
     assert not bool(q_block0 >= register_ids[97])
 
-    # Future video block 1 sees the first two clean-context chunks and its
-    # own action/state chunk.
+    # Future video block 1 sees all clean current-observation context and
+    # its own action/state chunk.
     q_block1 = video_ids[3]
-    assert q_block1 >= clean_ids[0]
-    assert q_block1 >= clean_ids[2]
-    assert not bool(q_block1 >= clean_ids[3])
+    assert all(bool(q_block1 >= c) for c in clean_ids)
     assert q_block1 >= register_ids[24]
+
+
+def test_multi_agent_clean_context_is_visible_after_causal_priming():
+    """Causal start_frame=1 must still read the current observation.
+
+    Closed-loop multi-agent inference primes frame 0 into the KV cache, then
+    denoises future frames starting at latent frame 1. ``clean_x`` is the
+    current observed frame repeated over the temporal window, so assigning it
+    to future block 1 would make the first future block unable to attend to
+    the current image condition.
+    """
+    pytest.importorskip("einops")
+    from groot.vla.model.dreamzero.modules.wan_video_dit_action_casual_chunk import (
+        CausalWanModel,
+    )
+
+    device = torch.device("cpu")
+    video_ids = CausalWanModel._future_video_block_ids(
+        num_frames=2,
+        num_frame_per_block=2,
+        start_frame=1,
+        device=device,
+    )
+    clean_ids = CausalWanModel._clean_context_block_ids(
+        num_frames=2,
+        num_frame_per_block=2,
+        start_frame=1,
+        device=device,
+    )
+
+    assert video_ids.tolist() == [0, 0]
+    assert clean_ids.tolist() == [-1, -1]
+    assert all(bool(video_ids[0] >= c) for c in clean_ids)
