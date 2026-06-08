@@ -79,13 +79,18 @@ LAYERNORM_LAYERS = [
     torch.nn.SyncBatchNorm,
 ]
 
+_SLICE_COMPATIBLE_PRETRAINED_KEYS = {
+    "action_head.model.action_decoder.layer2.W",
+    "action_head.model.action_decoder.layer2.b",
+    "action_head.model.action_encoder.W1.W",
+    "action_head.model.patch_embedding.weight",
+    "action_head.model.state_encoder.layer1.W",
+}
 SLICE_COMPATIBLE_PRETRAINED_KEYS = frozenset(
-    {
-        "action_head.model.action_decoder.layer2.W",
-        "action_head.model.action_decoder.layer2.b",
-        "action_head.model.action_encoder.W1.W",
-        "action_head.model.patch_embedding.weight",
-        "action_head.model.state_encoder.layer1.W",
+    _SLICE_COMPATIBLE_PRETRAINED_KEYS
+    | {
+        key.replace("action_head.model.", "action_head.model.base_model.model.", 1)
+        for key in _SLICE_COMPATIBLE_PRETRAINED_KEYS
     }
 )
 
@@ -750,6 +755,9 @@ class BaseExperiment(ABC):
             safetensors_index_path = os.path.join(ckpt_dir, "model.safetensors.index.json")
             safetensors_path = os.path.join(ckpt_dir, "model.safetensors")
 
+            dropped_mismatched: dict[str, tuple] = {}
+            sliced_mismatched: dict[str, tuple] = {}
+
             # When partially loading across architecture variants (e.g.
             # single-agent -> multi-agent), some tensors have a different
             # shape even though their key matches. ``load_state_dict`` does
@@ -760,15 +768,20 @@ class BaseExperiment(ABC):
             # in name but not in shape are either slice-copied for known
             # embodiment-specific projections, or dropped (re-init from
             # ``init_weights``) and logged.
-            model_state = model.state_dict()
-            dropped_mismatched: dict[str, tuple] = {}
-            sliced_mismatched: dict[str, tuple] = {}
-
-            def _filter_shape_mismatches(sd: dict) -> dict:
+            def _filter_shape_mismatches(
+                sd: dict,
+                model_state: dict,
+                *,
+                drop_unexpected: bool = False,
+            ) -> dict:
                 kept = {}
                 for k, v in sd.items():
                     ref = model_state.get(k)
-                    if ref is not None and tuple(ref.shape) != tuple(v.shape):
+                    if ref is None:
+                        if not drop_unexpected:
+                            kept[k] = v
+                        continue
+                    if tuple(ref.shape) != tuple(v.shape):
                         adapted = _slice_copy_pretrained_tensor(k, v, ref)
                         if adapted is not None:
                             sliced_mismatched[k] = (tuple(v.shape), tuple(ref.shape))
@@ -776,29 +789,70 @@ class BaseExperiment(ABC):
                         else:
                             dropped_mismatched[k] = (tuple(v.shape), tuple(ref.shape))
                         continue
-                    kept[k] = v
+                    else:
+                        kept[k] = v
                 return kept
 
-            if os.path.exists(safetensors_index_path):
-                with open(safetensors_index_path, 'r') as f:
-                    index = json.load(f)
-                for shard_file in sorted(set(index["weight_map"].values())):
-                    shard_path = os.path.join(ckpt_dir, shard_file)
-                    mprint(f"Loading shard: {shard_path}")
-                    shard_state_dict = load_file(shard_path)
-                    shard_state_dict = _filter_shape_mismatches(shard_state_dict)
-                    model.load_state_dict(shard_state_dict, strict=False)
-                    del shard_state_dict
+            def _iter_checkpoint_state_dicts():
+                if os.path.exists(safetensors_index_path):
+                    with open(safetensors_index_path, 'r') as f:
+                        index = json.load(f)
+                    for shard_file in sorted(set(index["weight_map"].values())):
+                        shard_path = os.path.join(ckpt_dir, shard_file)
+                        mprint(f"Loading shard: {shard_path}")
+                        yield shard_path, load_file(shard_path)
+                elif os.path.exists(safetensors_path):
+                    yield safetensors_path, load_file(safetensors_path)
+                else:
+                    raise FileNotFoundError(
+                        f"No weights found at '{ckpt_dir}'. "
+                        "Expected 'model.safetensors' or 'model.safetensors.index.json'."
+                    )
+
+            def _load_checkpoint_pass(pass_name: str, *, drop_unexpected: bool = False):
+                model_state = model.state_dict()
+                loaded_count = 0
+                unexpected_count = 0
+                unexpected_examples = []
+                for _, state_dict in _iter_checkpoint_state_dicts():
+                    state_dict = _filter_shape_mismatches(
+                        state_dict,
+                        model_state,
+                        drop_unexpected=drop_unexpected,
+                    )
+                    _, unexpected_keys = model.load_state_dict(state_dict, strict=False)
+                    loaded_count += len(state_dict)
+                    unexpected_count += len(unexpected_keys)
+                    if unexpected_keys and len(unexpected_examples) < 10:
+                        unexpected_examples.extend(
+                            unexpected_keys[: max(0, 10 - len(unexpected_examples))]
+                        )
+                    del state_dict
                     gc.collect()
-            elif os.path.exists(safetensors_path):
-                state_dict = load_file(safetensors_path)
-                state_dict = _filter_shape_mismatches(state_dict)
-                model.load_state_dict(state_dict, strict=False)
-            else:
-                raise FileNotFoundError(
-                    f"No weights found at '{ckpt_dir}'. "
-                    "Expected 'model.safetensors' or 'model.safetensors.index.json'."
+                mprint(
+                    f"[partial-load] {pass_name}: loaded {loaded_count} tensor(s), "
+                    f"unexpected={unexpected_count}"
                 )
+                if unexpected_examples:
+                    for k in unexpected_examples:
+                        mprint(f"  - unexpected before deferred modules exist: {k}")
+                return unexpected_count
+
+            pre_inject_unexpected = _load_checkpoint_pass("pre-injection")
+
+            injected_lora = False
+            if (hasattr(model, 'action_head')
+                    and hasattr(model.action_head, 'inject_lora_after_loading')
+                    and model.action_head.config.defer_lora_injection):
+                model.action_head.inject_lora_after_loading()
+                injected_lora = True
+
+            if injected_lora and pre_inject_unexpected:
+                mprint(
+                    "[partial-load] Reloading checkpoint after deferred LoRA injection "
+                    "so wrapped adapter/action-head keys can be restored."
+                )
+                _load_checkpoint_pass("post-injection", drop_unexpected=True)
 
             if sliced_mismatched:
                 mprint(
@@ -819,11 +873,6 @@ class BaseExperiment(ABC):
                     mprint(f"  - {k}: ckpt={ckpt_shape} -> model={model_shape}")
                 if len(dropped_mismatched) > 10:
                     mprint(f"  ... and {len(dropped_mismatched) - 10} more")
-
-            if (hasattr(model, 'action_head')
-                    and hasattr(model.action_head, 'inject_lora_after_loading')
-                    and model.action_head.config.defer_lora_injection):
-                model.action_head.inject_lora_after_loading()
 
             mprint("Successfully loaded pretrained weights")
 
