@@ -110,6 +110,81 @@ def _slice_copy_pretrained_tensor(
     return adapted_tensor
 
 
+def _load_filtered_safetensors_dir(model, ckpt_dir: str | Path, label: str) -> int:
+    import gc
+
+    from safetensors.torch import load_file
+
+    ckpt_dir = Path(ckpt_dir)
+    safetensors_index_path = ckpt_dir / "model.safetensors.index.json"
+    safetensors_path = ckpt_dir / "model.safetensors"
+    model_state = model.state_dict()
+    dropped_mismatched: dict[str, tuple] = {}
+    sliced_mismatched: dict[str, tuple] = {}
+
+    def _filter_shape_mismatches(sd: dict) -> dict:
+        kept = {}
+        for k, v in sd.items():
+            ref = model_state.get(k)
+            if ref is not None and tuple(ref.shape) != tuple(v.shape):
+                adapted = _slice_copy_pretrained_tensor(k, v, ref)
+                if adapted is not None:
+                    sliced_mismatched[k] = (tuple(v.shape), tuple(ref.shape))
+                    kept[k] = adapted
+                else:
+                    dropped_mismatched[k] = (tuple(v.shape), tuple(ref.shape))
+                continue
+            kept[k] = v
+        return kept
+
+    loaded_tensors = 0
+    if safetensors_index_path.exists():
+        with open(safetensors_index_path, "r") as f:
+            index = json.load(f)
+        for shard_file in sorted(set(index["weight_map"].values())):
+            shard_path = ckpt_dir / shard_file
+            mprint(f"[{label}] Loading shard: {shard_path}")
+            shard_state_dict = load_file(str(shard_path))
+            shard_state_dict = _filter_shape_mismatches(shard_state_dict)
+            loaded_tensors += len(shard_state_dict)
+            model.load_state_dict(shard_state_dict, strict=False)
+            del shard_state_dict
+            gc.collect()
+    elif safetensors_path.exists():
+        mprint(f"[{label}] Loading weights from safetensors: {safetensors_path}")
+        state_dict = load_file(str(safetensors_path))
+        state_dict = _filter_shape_mismatches(state_dict)
+        loaded_tensors += len(state_dict)
+        model.load_state_dict(state_dict, strict=False)
+    else:
+        raise FileNotFoundError(
+            f"No weights found at '{ckpt_dir}'. "
+            "Expected 'model.safetensors' or 'model.safetensors.index.json'."
+        )
+
+    if sliced_mismatched:
+        mprint(
+            f"[{label}] Slice-copied {len(sliced_mismatched)} "
+            "shape-mismatched embodiment tensor(s) from overlapping dimensions."
+        )
+        for k, (ckpt_shape, model_shape) in list(sliced_mismatched.items())[:10]:
+            mprint(f"  - {k}: ckpt={ckpt_shape} -> model={model_shape}")
+        if len(sliced_mismatched) > 10:
+            mprint(f"  ... and {len(sliced_mismatched) - 10} more")
+
+    if dropped_mismatched:
+        mprint(
+            f"[{label}] Dropped {len(dropped_mismatched)} shape-mismatched "
+            f"tensor(s); kept the rest. The dropped ones re-init from scratch."
+        )
+        for k, (ckpt_shape, model_shape) in list(dropped_mismatched.items())[:10]:
+            mprint(f"  - {k}: ckpt={ckpt_shape} -> model={model_shape}")
+        if len(dropped_mismatched) > 10:
+            mprint(f"  ... and {len(dropped_mismatched) - 10} more")
+
+    return loaded_tensors
+
+
 class LossLoggerCallback(TrainerCallback):
     """Callback that writes per-step loss metrics to a JSONL file for offline analysis."""
 
@@ -740,6 +815,8 @@ class BaseExperiment(ABC):
 
     def create_model(self, cfg, training_args):
         model = instantiate(cfg.model)
+        lora_pretrained_model_path = cfg.get("lora_pretrained_model_path", None)
+        lora_injected_after_loading = False
 
         if cfg.pretrained_model_path is not None:
             mprint(f"Loading pretrained weights from: {cfg.pretrained_model_path}")
@@ -824,8 +901,25 @@ class BaseExperiment(ABC):
                     and hasattr(model.action_head, 'inject_lora_after_loading')
                     and model.action_head.config.defer_lora_injection):
                 model.action_head.inject_lora_after_loading()
+                lora_injected_after_loading = True
 
             mprint("Successfully loaded pretrained weights")
+
+        if lora_pretrained_model_path is not None:
+            if (hasattr(model, 'action_head')
+                    and hasattr(model.action_head, 'inject_lora_after_loading')
+                    and model.action_head.config.defer_lora_injection
+                    and not lora_injected_after_loading):
+                model.action_head.inject_lora_after_loading()
+                lora_injected_after_loading = True
+
+            mprint(f"Loading LoRA warm-start weights from: {lora_pretrained_model_path}")
+            loaded_tensors = _load_filtered_safetensors_dir(
+                model,
+                lora_pretrained_model_path,
+                label="lora-warmstart",
+            )
+            mprint(f"Successfully loaded {loaded_tensors} LoRA warm-start tensor(s)")
 
         model.config.resume_path = model.config._name_or_path = training_args.output_dir
         mprint(f"{model}\n")

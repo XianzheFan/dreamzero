@@ -136,6 +136,12 @@ echo "gripper_binary_action_loss_weight=$GRIPPER_BINARY_ACTION_LOSS_WEIGHT  grip
 WAN_CKPT_DIR=${WAN_CKPT_DIR:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/Wan2.1-I2V-14B-480P"}
 TOKENIZER_DIR=${TOKENIZER_DIR:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/umt5-xxl"}
 PRETRAINED_DIR=${PRETRAINED_DIR:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/DreamZero-DROID"}
+LORA_PRETRAINED_DIR=${LORA_PRETRAINED_DIR:-}
+LORA_PRETRAINED_MODEL_ARG=()
+if [ -n "$LORA_PRETRAINED_DIR" ]; then
+    LORA_PRETRAINED_MODEL_ARG=(lora_pretrained_model_path=$LORA_PRETRAINED_DIR)
+    echo "lora_pretrained_model_path=$LORA_PRETRAINED_DIR"
+fi
 
 if [ ! -d "$WAN_CKPT_DIR" ] || [ -z "$(ls -A "$WAN_CKPT_DIR" 2>/dev/null)" ]; then
     echo "Wan2.1-I2V-14B-480P not found at $WAN_CKPT_DIR. Downloading from HuggingFace..."
@@ -197,6 +203,7 @@ torchrun --nproc_per_node $NUM_GPUS --standalone groot/vla/experiment/experiment
     vae_pretrained_path=$WAN_CKPT_DIR/Wan2.1_VAE.pth \
     tokenizer_path=$TOKENIZER_DIR \
     pretrained_model_path=$PRETRAINED_DIR \
+    "${LORA_PRETRAINED_MODEL_ARG[@]}" \
     ++action_head_cfg.config.skip_component_loading=true \
     ++action_head_cfg.config.defer_lora_injection=true \
     ++action_head_cfg.config.action_loss_weight=$ACTION_LOSS_WEIGHT \
