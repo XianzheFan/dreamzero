@@ -114,6 +114,26 @@ def test_denorm_action_uses_metadata_and_adds_relative_joint_reference():
     assert "action_norm_clipped" in policy._last_action_debug
 
 
+def test_denorm_action_keeps_constant_gripper_stats_constant():
+    metadata = _metadata_with_action_stats()
+    action_stats = metadata["robofactory"]["statistics"]["action"]
+    action_stats["panda0_gripper_pos"] = _stats([1.0], [1.0])
+    action_stats["panda1_gripper_pos"] = _stats([-1.0], [-1.0])
+    policy = _make_policy(metadata)
+    pred = np.zeros((1, 2, 2, 8), dtype=np.float32)
+    pred[0, 0, :, 7] = np.array([-1.0, 1.0])
+    pred[0, 1, :, 7] = np.array([1.0, -1.0])
+
+    out = policy._denorm_action({"action_pred": pred}, np.zeros(16, dtype=np.float32))
+
+    np.testing.assert_allclose(out[:, 7], 1.0)
+    np.testing.assert_allclose(out[:, 15], -1.0)
+    np.testing.assert_allclose(
+        policy._last_action_debug["action_physical_pre_binarize"][:, [7, 15]],
+        np.array([[1.0, -1.0], [1.0, -1.0]], dtype=np.float32),
+    )
+
+
 def test_denorm_action_accepts_full_action_prefixed_metadata_keys():
     metadata = _metadata_with_action_stats()
     action_stats = metadata["robofactory"]["statistics"]["action"]

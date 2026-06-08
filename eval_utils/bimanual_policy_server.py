@@ -1498,9 +1498,14 @@ class BimanualPolicy:
         def _denorm(slice_pred: np.ndarray, key: str, lo: int, hi: int) -> None:
             q01, q99 = _stats_for_key(key, hi - lo)
             span = q99 - q01
-            span[span == 0] = 1.0
+            zero_span = span == 0
+            safe_span = span.copy()
+            safe_span[zero_span] = 1.0
             T = min(slice_pred.shape[0], self.action_horizon)
-            out[:T, lo:hi] = (slice_pred[:T] + 1.0) / 2.0 * span + q01
+            denormed = (slice_pred[:T] + 1.0) / 2.0 * safe_span + q01
+            if np.any(zero_span):
+                denormed[:, zero_span] = q01[zero_span]
+            out[:T, lo:hi] = denormed
 
         p0 = pred[0, 0]                                       # [T_a, 8]
         p1 = pred[0, 1]                                       # [T_a, 8]
