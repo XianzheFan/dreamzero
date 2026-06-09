@@ -31,12 +31,49 @@ from robofactory.tasks import *  # noqa: F401,F403
 ARM_DIM = 8
 JOINT_DIMS = np.asarray([0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14], dtype=np.int64)
 GRIPPER_DIMS = np.asarray([7, 15], dtype=np.int64)
+TASK_STATE_KEYS = (
+    "barrier_x",
+    "barrier_y",
+    "barrier_z",
+    "robot0_base_z",
+    "success_threshold_z",
+    "success_margin_z",
+    "info_success",
+)
 
 
 def _to_np(arr):
     if hasattr(arr, "cpu"):
         arr = arr.cpu().numpy()
     return np.asarray(arr).reshape(-1)
+
+
+def _task_env(env):
+    return getattr(env, "unwrapped", env)
+
+
+def extract_task_state(env, info=None) -> np.ndarray:
+    base = _task_env(env)
+    row = np.full((len(TASK_STATE_KEYS),), np.nan, dtype=np.float32)
+    barrier = getattr(base, "barrier", None)
+    agent = getattr(base, "agent", None)
+    if barrier is not None:
+        barrier_p = _to_np(barrier.pose.p).astype(np.float32)
+        if barrier_p.size >= 3:
+            row[0:3] = barrier_p[:3]
+    if agent is not None:
+        try:
+            robot_p = _to_np(agent.agents[0].robot.pose.p).astype(np.float32)
+            if robot_p.size >= 3:
+                row[3] = robot_p[2]
+        except Exception:
+            pass
+    if np.isfinite(row[2]) and np.isfinite(row[3]):
+        row[4] = row[3] + 0.15
+        row[5] = row[2] - row[4]
+    if info is not None:
+        row[6] = 1.0 if _bool_from(info.get("success", False)) else 0.0
+    return row
 
 
 def extract_qpos(obs) -> np.ndarray:
@@ -110,6 +147,7 @@ def replay_episode(
     actions, states = load_episode(root, episode_index)
     raw_obs, _ = env.reset(seed=seed)
     reset_qpos = extract_qpos(raw_obs)
+    reset_task_state = extract_task_state(env)
     reset_err = np.abs(reset_qpos - states[0])
 
     n_steps = min(max_steps, actions.shape[0])
@@ -120,6 +158,9 @@ def replay_episode(
     cmd_delta_l1: list[float] = []
     actual_delta_l1: list[float] = []
     movement_ratio: list[float] = []
+    barrier_z_values: list[float] = []
+    success_margin_values: list[float] = []
+    info_success_steps = 0
     success = False
     first_success_step = None
     final_qpos = reset_qpos.copy()
@@ -129,7 +170,14 @@ def replay_episode(
         action = actions[t].astype(np.float32, copy=False)
         raw_obs, reward, term, trunc, info = env.step(env_action_dict(action))
         post_qpos = extract_qpos(raw_obs)
+        task_state = extract_task_state(env, info)
         final_qpos = post_qpos
+        if np.isfinite(task_state[2]):
+            barrier_z_values.append(float(task_state[2]))
+        if np.isfinite(task_state[5]):
+            success_margin_values.append(float(task_state[5]))
+        if task_state[6] > 0.5:
+            info_success_steps += 1
 
         target_err = np.abs(post_qpos[JOINT_DIMS] - action[JOINT_DIMS])
         joint_target_err.append(float(target_err.mean()))
@@ -156,6 +204,7 @@ def replay_episode(
             break
 
     close_mask = actions[:n_steps, GRIPPER_DIMS] < 0.0
+    success_margin_arr = np.asarray(success_margin_values, dtype=np.float32)
     episode = {
         "episode_index": int(episode_index),
         "seed": seed,
@@ -166,6 +215,8 @@ def replay_episode(
         "reset_l1_mean": float(reset_err.mean()),
         "reset_l1_max": float(reset_err.max()),
         "reset_joint_l1_mean": float(reset_err[JOINT_DIMS].mean()),
+        "task_state_keys": list(TASK_STATE_KEYS),
+        "reset_task_state": reset_task_state.tolist(),
         "final_qpos": final_qpos.tolist(),
         "joint_target_l1": _safe_stats(joint_target_err),
         "joint_target_linf": _safe_stats(joint_target_err_max),
@@ -174,6 +225,18 @@ def replay_episode(
         "cmd_joint_delta_l1": _safe_stats(cmd_delta_l1),
         "actual_joint_delta_l1": _safe_stats(actual_delta_l1),
         "actual_to_cmd_joint_delta_ratio": _safe_stats(movement_ratio),
+        "barrier_z": _safe_stats(barrier_z_values),
+        "success_margin_z": _safe_stats(success_margin_values),
+        "max_success_margin_z": (
+            float(success_margin_arr.max()) if success_margin_arr.size else None
+        ),
+        "final_success_margin_z": (
+            float(success_margin_arr[-1]) if success_margin_arr.size else None
+        ),
+        "first_positive_success_margin_step": (
+            _first_index(success_margin_arr > 0.0) if success_margin_arr.size else None
+        ),
+        "info_success_step_count": int(info_success_steps),
         "left_first_close_step": _first_index(close_mask[:, 0]) if close_mask.size else None,
         "right_first_close_step": _first_index(close_mask[:, 1]) if close_mask.size else None,
         "left_frac_close": float(close_mask[:, 0].mean()) if close_mask.size else 0.0,
@@ -193,7 +256,8 @@ def aggregate(episodes: list[dict[str, Any]]) -> dict[str, Any]:
             cur: Any = ep
             for key in path:
                 cur = cur[key]
-            out.append(float(cur))
+            if cur is not None:
+                out.append(float(cur))
         return out
 
     return {
@@ -208,6 +272,8 @@ def aggregate(episodes: list[dict[str, Any]]) -> dict[str, Any]:
         "actual_to_cmd_ratio_mean": _safe_stats(
             collect(("actual_to_cmd_joint_delta_ratio", "mean"))
         ),
+        "max_success_margin_z": _safe_stats(collect(("max_success_margin_z",))),
+        "final_success_margin_z": _safe_stats(collect(("final_success_margin_z",))),
     }
 
 
@@ -267,7 +333,7 @@ def main() -> None:
             "episode={episode_index} seed={seed} success={success} "
             "steps={num_replayed_steps} reset_l1={reset_l1_mean:.4f} "
             "target_l1={target_l1:.4f} state_next_l1={state_l1:.4f} "
-            "ratio={ratio:.3f}".format(
+            "ratio={ratio:.3f} max_margin={max_margin}".format(
                 episode_index=ep["episode_index"],
                 seed=ep["seed"],
                 success=ep["success"],
@@ -276,6 +342,7 @@ def main() -> None:
                 target_l1=ep["joint_target_l1"]["mean"],
                 state_l1=ep["state_next_l1"]["mean"],
                 ratio=ep["actual_to_cmd_joint_delta_ratio"]["mean"],
+                max_margin=ep["max_success_margin_z"],
             ),
             flush=True,
         )

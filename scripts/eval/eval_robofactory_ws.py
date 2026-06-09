@@ -37,6 +37,17 @@ msgpack_numpy.patch()
 from robofactory.tasks import *  # noqa: F401,F403
 
 
+TASK_STATE_KEYS = (
+    "barrier_x",
+    "barrier_y",
+    "barrier_z",
+    "robot0_base_z",
+    "success_threshold_z",
+    "success_margin_z",
+    "info_success",
+)
+
+
 def _ws_connect(uri: str, timeout_s: float = 600.0, retry_every: float = 2.0):
     import websockets.sync.client as wsc
 
@@ -71,6 +82,35 @@ def _to_np(arr):
     if hasattr(arr, "cpu"):
         arr = arr.cpu().numpy()
     return np.asarray(arr).reshape(-1)
+
+
+def _task_env(env):
+    return getattr(env, "unwrapped", env)
+
+
+def extract_task_state(env, info=None):
+    """Return LiftBarrier object/success diagnostics as a fixed float row."""
+    base = _task_env(env)
+    row = np.full((len(TASK_STATE_KEYS),), np.nan, dtype=np.float32)
+    barrier = getattr(base, "barrier", None)
+    agent = getattr(base, "agent", None)
+    if barrier is not None:
+        barrier_p = _to_np(barrier.pose.p).astype(np.float32)
+        if barrier_p.size >= 3:
+            row[0:3] = barrier_p[:3]
+    if agent is not None:
+        try:
+            robot_p = _to_np(agent.agents[0].robot.pose.p).astype(np.float32)
+            if robot_p.size >= 3:
+                row[3] = robot_p[2]
+        except Exception:
+            pass
+    if np.isfinite(row[2]) and np.isfinite(row[3]):
+        row[4] = row[3] + 0.15
+        row[5] = row[2] - row[4]
+    if info is not None:
+        row[6] = 1.0 if _bool_from(info.get("success", False)) else 0.0
+    return row
 
 
 def extract_qpos(obs):
@@ -183,6 +223,8 @@ def run_episode(
     dump: dict | None = None,
 ):
     raw_obs, _ = env.reset(seed=seed)
+    if dump is not None:
+        dump["reset_task_state"] = extract_task_state(env)
     session_id = uuid.uuid4().hex
     ws.send(
         msgpack.packb(
@@ -248,12 +290,16 @@ def run_episode(
             )
             raw_obs, reward, term, trunc, info = env.step(env_action_dict(abs16))
             qpos_after_step = extract_qpos(raw_obs) if dump is not None else None
+            task_state_after_step = (
+                extract_task_state(env, info) if dump is not None else None
+            )
             cur = abs16
             steps += 1
             if dump is not None:
                 dump["exec_action"].append(abs16.copy())
                 dump["exec_qpos_before"].append(qpos_before_step.copy())
                 dump["exec_qpos_after"].append(qpos_after_step.copy())
+                dump["exec_task_state_after"].append(task_state_after_step.copy())
             if _bool_from(info.get("success", False)):
                 return True, steps
             if _bool_from(term) or _bool_from(trunc):
@@ -429,6 +475,9 @@ def main():
             "exec_action": np.stack(dump["exec_action"]),     # [n_steps, 16]
             "exec_qpos_before": np.stack(dump["exec_qpos_before"]),
             "exec_qpos_after": np.stack(dump["exec_qpos_after"]),
+            "task_state_keys": np.asarray(TASK_STATE_KEYS),
+            "reset_task_state": dump["reset_task_state"].copy(),
+            "exec_task_state_after": np.stack(dump["exec_task_state_after"]),
         }
         if dump.get("action_norm_raw"):
             payload["action_norm_raw"] = np.stack(dump["action_norm_raw"])
@@ -447,12 +496,18 @@ def main():
                 "exec_action": [],
                 "exec_qpos_before": [],
                 "exec_qpos_after": [],
+                "reset_task_state": None,
+                "exec_task_state_after": [],
                 "action_norm_raw": [],
                 "action_norm_clipped": [],
             }
             if args.dump_actions
             else None
         )
+        if dump is not None:
+            dump["reset_task_state"] = np.full(
+                (len(TASK_STATE_KEYS),), np.nan, dtype=np.float32
+            )
         try:
             success, steps = run_episode(
                 env, ws, seed, args.prompt, args.replan_every, args.max_steps,

@@ -26,6 +26,15 @@ import numpy as np
 
 JOINT_DIMS = np.asarray([0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14], dtype=np.int64)
 GRIPPER_DIMS = np.asarray([7, 15], dtype=np.int64)
+DEFAULT_TASK_STATE_KEYS = (
+    "barrier_x",
+    "barrier_y",
+    "barrier_z",
+    "robot0_base_z",
+    "success_threshold_z",
+    "success_margin_z",
+    "info_success",
+)
 
 
 def _safe_stats(values: np.ndarray | list[float]) -> dict[str, float]:
@@ -60,6 +69,16 @@ def analyze_file(path: str, close_threshold: float) -> dict[str, Any]:
     pre = np.asarray(d["exec_qpos_before"], dtype=np.float32) if "exec_qpos_before" in d.files else None
     post = np.asarray(d["exec_qpos_after"], dtype=np.float32) if "exec_qpos_after" in d.files else None
     infer_step = np.asarray(d["infer_step"], dtype=np.int64) if "infer_step" in d.files else None
+    task_state = (
+        np.asarray(d["exec_task_state_after"], dtype=np.float32)
+        if "exec_task_state_after" in d.files
+        else None
+    )
+    task_state_keys = (
+        [str(x) for x in np.asarray(d["task_state_keys"]).tolist()]
+        if "task_state_keys" in d.files
+        else list(DEFAULT_TASK_STATE_KEYS)
+    )
 
     if exec_action.ndim != 2 or exec_action.shape[1] != 16:
         raise ValueError(f"{path}: exec_action must be [T, 16], got {exec_action.shape}")
@@ -118,6 +137,31 @@ def analyze_file(path: str, close_threshold: float) -> dict[str, Any]:
                     boundary_err.append(float(np.abs(obs_qpos[idx] - pre[step]).mean()))
             episode["infer_obs_vs_step_qpos_l1"] = _safe_stats(boundary_err)
 
+    if task_state is not None and task_state.ndim == 2:
+        key_to_idx = {key: idx for idx, key in enumerate(task_state_keys)}
+
+        def col(name: str) -> np.ndarray:
+            idx = key_to_idx.get(name)
+            if idx is None or idx >= task_state.shape[1]:
+                return np.zeros((0,), dtype=np.float32)
+            values = np.asarray(task_state[:, idx], dtype=np.float32)
+            return values[np.isfinite(values)]
+
+        margin = col("success_margin_z")
+        barrier_z = col("barrier_z")
+        info_success = col("info_success")
+        episode["task_state_keys"] = task_state_keys
+        episode["barrier_z"] = _safe_stats(barrier_z)
+        episode["success_margin_z"] = _safe_stats(margin)
+        episode["max_success_margin_z"] = float(margin.max()) if margin.size else None
+        episode["final_success_margin_z"] = float(margin[-1]) if margin.size else None
+        episode["first_positive_success_margin_step"] = (
+            _first_index(margin > 0.0) if margin.size else None
+        )
+        episode["info_success_step_count"] = (
+            int(np.sum(info_success > 0.5)) if info_success.size else 0
+        )
+
     if "action_norm_raw" in d.files and "action_norm_clipped" in d.files:
         raw = np.asarray(d["action_norm_raw"], dtype=np.float32)
         clipped = np.asarray(d["action_norm_clipped"], dtype=np.float32)
@@ -146,7 +190,7 @@ def aggregate(episodes: list[dict[str, Any]]) -> dict[str, Any]:
                     missing = True
                     break
                 cur = cur[key]
-            if not missing:
+            if not missing and cur is not None:
                 values.append(float(cur))
         return values
 
@@ -170,6 +214,8 @@ def aggregate(episodes: list[dict[str, Any]]) -> dict[str, Any]:
         "planned_first_cmd_joint_delta_l1_mean": _safe_stats(
             collect(("planned_first_cmd_joint_delta_l1", "mean"))
         ),
+        "max_success_margin_z": _safe_stats(collect(("max_success_margin_z",))),
+        "final_success_margin_z": _safe_stats(collect(("final_success_margin_z",))),
     }
 
 
