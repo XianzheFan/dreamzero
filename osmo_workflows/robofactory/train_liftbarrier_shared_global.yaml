@@ -190,7 +190,19 @@ workflow:
               echo "Promoting nested model cache from ${resolved} into ${dest}."
               case "$resolved" in
                 "$dest"/*)
-                  find "$resolved" -mindepth 1 -maxdepth 1 -exec mv -n -t "$dest" {} +
+                  while IFS= read -r item; do
+                    [ -n "$item" ] || continue
+                    target="${dest}/$(basename "$item")"
+                    if [ "$(readlink -f "$item")" = "$(readlink -f "$target" 2>/dev/null || printf '%s' "$target")" ]; then
+                      echo "Skipping self-colliding nested cache entry: ${item}"
+                      continue
+                    fi
+                    if [ -e "$target" ]; then
+                      cp -an "$item" "$dest/"
+                    else
+                      mv -n "$item" "$dest/"
+                    fi
+                  done < <(find "$resolved" -mindepth 1 -maxdepth 1 -print)
                   ;;
                 *)
                   cp -an "${resolved}/." "$dest/"
