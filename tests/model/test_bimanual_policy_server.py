@@ -54,6 +54,34 @@ class _DummyDreamTransform(_DummyTransform):
         raise NotImplementedError
 
 
+class _FakeDist:
+    def __init__(self, incoming=None):
+        self.incoming = list(incoming or [])
+        self.sent = []
+
+    def broadcast_object_list(self, obj_list, src=0):
+        assert src == 0
+        if obj_list[0] is None:
+            if not self.incoming:
+                raise AssertionError("no fake command available")
+            obj_list[0] = self.incoming.pop(0)
+        else:
+            self.sent.append(obj_list[0])
+
+
+class _ProxyPolicy:
+    def __init__(self):
+        self.calls = []
+
+    def reset(self, payload):
+        self.calls.append(("reset", payload))
+        return "reset successful"
+
+    def infer(self, payload):
+        self.calls.append(("infer", payload))
+        return {"action_chunk": payload["qpos"]}
+
+
 def _metadata_with_action_stats(tag="robofactory"):
     return {
         tag: {
@@ -67,6 +95,68 @@ def _metadata_with_action_stats(tag="robofactory"):
             }
         }
     }
+
+
+def test_resolve_inference_parallel_size_rejects_unsupported_world_size():
+    mod = _load_server_module()
+
+    assert mod._resolve_inference_parallel_size(0, 1) == 1
+    assert mod._resolve_inference_parallel_size(0, 2) == 2
+    assert mod._resolve_inference_parallel_size(2, 2) == 2
+
+    with pytest.raises(ValueError, match="supports inference_parallel_size 1 or 2"):
+        mod._resolve_inference_parallel_size(0, 8)
+    with pytest.raises(ValueError, match="Distributed serving launch mismatch"):
+        mod._resolve_inference_parallel_size(2, 1)
+
+
+def test_distributed_policy_proxy_broadcasts_leader_commands():
+    mod = _load_server_module()
+    policy = _ProxyPolicy()
+    fake_dist = _FakeDist()
+    proxy = mod.DistributedPolicyProxy(
+        policy,
+        rank=0,
+        world_size=2,
+        dist_module=fake_dist,
+    )
+
+    assert proxy.reset({"session_id": "abc"}) == "reset successful"
+    assert proxy.infer({"qpos": [1, 2, 3]}) == {"action_chunk": [1, 2, 3]}
+
+    assert fake_dist.sent == [
+        {"endpoint": "reset", "payload": {"session_id": "abc"}},
+        {"endpoint": "infer", "payload": {"qpos": [1, 2, 3]}},
+    ]
+    assert policy.calls == [
+        ("reset", {"session_id": "abc"}),
+        ("infer", {"qpos": [1, 2, 3]}),
+    ]
+
+
+def test_distributed_policy_proxy_worker_executes_received_commands():
+    mod = _load_server_module()
+    policy = _ProxyPolicy()
+    fake_dist = _FakeDist(
+        [
+            {"endpoint": "reset", "payload": {"session_id": "abc"}},
+            {"endpoint": "infer", "payload": {"qpos": [4, 5, 6]}},
+            {"endpoint": "shutdown", "payload": {}},
+        ]
+    )
+    proxy = mod.DistributedPolicyProxy(
+        policy,
+        rank=1,
+        world_size=2,
+        dist_module=fake_dist,
+    )
+
+    proxy.worker_loop()
+
+    assert policy.calls == [
+        ("reset", {"session_id": "abc"}),
+        ("infer", {"qpos": [4, 5, 6]}),
+    ]
 
 
 def test_metadata_tag_prefers_robotwin_over_legacy_robofactory():

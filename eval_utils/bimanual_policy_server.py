@@ -132,6 +132,110 @@ def _configure_torch_dynamo_for_serving(torch_module) -> None:
         )
 
 
+@dataclasses.dataclass
+class DistributedServingContext:
+    rank: int = 0
+    local_rank: int = 0
+    world_size: int = 1
+    inference_parallel_size: int = 1
+    device: str = "cpu"
+    device_mesh: Any | None = None
+
+    @property
+    def enabled(self) -> bool:
+        return self.world_size > 1
+
+    @property
+    def is_leader(self) -> bool:
+        return self.rank == 0
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.environ.get(name, "").strip()
+    return int(value) if value else default
+
+
+def _resolve_inference_parallel_size(
+    requested_size: int,
+    world_size: int,
+) -> int:
+    """Resolve and validate the serving-time inference-parallel world size.
+
+    The WAN action head currently implements two-way inference parallelism
+    for CFG branches, not arbitrary tensor/FSDP sharding. Keep validation
+    explicit so launching with 8 ranks fails fast instead of hanging in
+    distributed collectives.
+    """
+    if requested_size < 0:
+        raise ValueError(
+            "inference_parallel_size must be >= 0; use 0 to infer from WORLD_SIZE"
+        )
+    resolved = world_size if requested_size == 0 else requested_size
+    if resolved not in (1, 2):
+        raise ValueError(
+            "DreamZero websocket serving currently supports inference_parallel_size "
+            f"1 or 2, got {resolved}. The existing WAN action head only supports "
+            "two-way CFG inference parallelism; 8-way tensor/FSDP sharding needs "
+            "a separate model-parallel implementation."
+        )
+    if world_size != resolved:
+        raise ValueError(
+            "Distributed serving launch mismatch: requested "
+            f"inference_parallel_size={resolved}, but torch distributed WORLD_SIZE="
+            f"{world_size}. Launch with torchrun --nproc_per_node={resolved}, or "
+            "set --inference-parallel-size 1 for non-distributed serving."
+        )
+    return resolved
+
+
+def _init_distributed_serving(requested_size: int) -> DistributedServingContext:
+    import torch
+    import torch.distributed as dist
+
+    world_size = _env_int("WORLD_SIZE", 1)
+    rank = _env_int("RANK", 0)
+    local_rank = _env_int("LOCAL_RANK", rank if world_size > 1 else 0)
+    ip_size = _resolve_inference_parallel_size(requested_size, world_size)
+
+    device = "cpu"
+    if torch.cuda.is_available():
+        torch.cuda.set_device(local_rank)
+        device = f"cuda:{local_rank}"
+
+    if world_size == 1:
+        return DistributedServingContext(
+            rank=0,
+            local_rank=local_rank,
+            world_size=1,
+            inference_parallel_size=ip_size,
+            device=device,
+            device_mesh=None,
+        )
+
+    if not dist.is_available():
+        raise RuntimeError("torch.distributed is not available in this Python build")
+    if not dist.is_initialized():
+        backend = "nccl" if torch.cuda.is_available() else "gloo"
+        dist.init_process_group(backend=backend)
+
+    from torch.distributed.device_mesh import init_device_mesh
+
+    mesh_device = "cuda" if torch.cuda.is_available() else "cpu"
+    device_mesh = init_device_mesh(
+        mesh_device,
+        (ip_size,),
+        mesh_dim_names=("ip",),
+    )
+    return DistributedServingContext(
+        rank=rank,
+        local_rank=local_rank,
+        world_size=world_size,
+        inference_parallel_size=ip_size,
+        device=device,
+        device_mesh=device_mesh,
+    )
+
+
 SLICE_COMPATIBLE_PRETRAINED_KEYS = frozenset(
     {
         "action_head.model.action_decoder.layer2.W",
@@ -269,6 +373,8 @@ class BimanualPolicy:
         gripper_close_value: float | None = None,
         gripper_force_open_until_infer: int | None = None,
         gripper_convention: str = "auto",
+        device: str | None = None,
+        device_mesh: Any | None = None,
     ):
         self.ckpt_dir = Path(ckpt_dir)
         self.ckpt_setting = ckpt_setting
@@ -340,6 +446,8 @@ class BimanualPolicy:
         self._relative_action_per_horizon = False
         self._relative_action_keys: set[str] = set()
         self.action_representation = "robotwin_delta"
+        self._requested_device = device
+        self._device_mesh = device_mesh
 
         self._sessions: dict[str, dict] = {}
         self._load()
@@ -738,10 +846,25 @@ class BimanualPolicy:
             dropped_reason="fine-tune checkpoint architecture differs from eval model",
         )
 
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        device = self._requested_device or (
+            "cuda" if torch.cuda.is_available() else "cpu"
+        )
         self._device = device
-        self._dtype = torch.bfloat16 if device == "cuda" else torch.float32
+        self._dtype = (
+            torch.bfloat16 if str(device).startswith("cuda") else torch.float32
+        )
         model = model.to(device=device, dtype=self._dtype)
+        if self._device_mesh is not None:
+            if not hasattr(model, "parallelize"):
+                raise RuntimeError(
+                    "Distributed serving requested, but loaded VLA model does not "
+                    "provide parallelize(device_mesh)."
+                )
+            model.parallelize(self._device_mesh)
+            logging.info(
+                "Enabled inference-parallel WAN serving on device mesh %s",
+                self._device_mesh,
+            )
         model.eval()
         self._model = model
         logging.info("VLA loaded onto %s in %s", device, self._dtype)
@@ -1530,6 +1653,7 @@ class BimanualWebsocketServer:
         self._policy = policy
         self._host = host
         self._port = port
+        self._request_lock: asyncio.Lock | None = None
         self._cfg = BimanualServerConfig(
             num_frames=policy.num_frames,
             action_horizon=policy.action_horizon,
@@ -1547,6 +1671,7 @@ class BimanualWebsocketServer:
         asyncio.run(self.run())
 
     async def run(self) -> None:
+        self._request_lock = asyncio.Lock()
         async with websockets.asyncio.server.serve(
             self._handler,
             self._host,
@@ -1569,10 +1694,12 @@ class BimanualWebsocketServer:
             try:
                 obs = unpack(await websocket.recv())
                 endpoint = obs.pop("endpoint", "infer")
-                if endpoint == "reset":
-                    reply: Any = self._policy.reset(obs)
-                else:
-                    reply = self._policy.infer(obs)
+                assert self._request_lock is not None
+                async with self._request_lock:
+                    if endpoint == "reset":
+                        reply: Any = self._policy.reset(obs)
+                    else:
+                        reply = self._policy.infer(obs)
                 await websocket.send(pack(reply))
             except websockets.ConnectionClosed:
                 logging.info("Connection from %s closed", websocket.remote_address)
@@ -1586,6 +1713,85 @@ class BimanualWebsocketServer:
                     reason="Internal server error.",
                 )
                 raise
+
+
+class DistributedPolicyProxy:
+    """Rank-0 proxy that keeps non-websocket ranks in lockstep.
+
+    The WAN action head already implements two-way inference parallelism
+    internally. The websocket server must therefore make every rank enter
+    ``policy.reset`` / ``policy.infer`` in the same order, while only rank 0
+    reads client messages and sends replies.
+    """
+
+    def __init__(
+        self,
+        policy: BimanualPolicy,
+        *,
+        rank: int,
+        world_size: int,
+        dist_module: Any | None = None,
+    ):
+        self._policy = policy
+        self._rank = int(rank)
+        self._world_size = int(world_size)
+        if dist_module is None:
+            import torch.distributed as dist_module
+        self._dist = dist_module
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._policy, name)
+
+    @property
+    def is_leader(self) -> bool:
+        return self._rank == 0
+
+    def _broadcast_command(self, command: dict[str, Any] | None) -> dict[str, Any]:
+        obj_list = [command if self.is_leader else None]
+        self._dist.broadcast_object_list(obj_list, src=0)
+        received = obj_list[0]
+        if not isinstance(received, dict):
+            raise RuntimeError(f"invalid distributed policy command: {received!r}")
+        return received
+
+    def _execute_command(self, command: dict[str, Any]) -> Any:
+        endpoint = command.get("endpoint")
+        payload = command.get("payload") or {}
+        if endpoint == "reset":
+            return self._policy.reset(payload)
+        if endpoint == "infer":
+            return self._policy.infer(payload)
+        if endpoint == "shutdown":
+            return None
+        raise RuntimeError(f"unknown distributed policy endpoint: {endpoint!r}")
+
+    def reset(self, info: dict) -> str:
+        command = self._broadcast_command({"endpoint": "reset", "payload": info})
+        return self._execute_command(command)
+
+    def infer(self, obs: dict) -> dict:
+        command = self._broadcast_command({"endpoint": "infer", "payload": obs})
+        return self._execute_command(command)
+
+    def worker_loop(self) -> None:
+        if self.is_leader:
+            raise RuntimeError("worker_loop must not run on distributed rank 0")
+        logging.info(
+            "Distributed policy worker rank %d/%d waiting for websocket commands",
+            self._rank,
+            self._world_size,
+        )
+        while True:
+            command = self._broadcast_command(None)
+            if command.get("endpoint") == "shutdown":
+                logging.info("Distributed policy worker rank %d shutting down", self._rank)
+                return
+            self._execute_command(command)
+
+    def shutdown_workers(self) -> None:
+        if self._world_size <= 1 or not self.is_leader:
+            return
+        self._broadcast_command({"endpoint": "shutdown", "payload": {}})
 
 
 def main():
@@ -1604,6 +1810,15 @@ def main():
     parser.add_argument("--ckpt-setting", default="checkpoint-10")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=5001)
+    parser.add_argument(
+        "--inference-parallel-size",
+        type=int,
+        default=int(os.environ.get("DREAMZERO_INFERENCE_PARALLEL_SIZE", "0") or 0),
+        help="Serving-time inference parallel size. Use 0 to infer from "
+             "torchrun WORLD_SIZE. Values 1 and 2 are supported; 2 runs the "
+             "WAN action head's CFG branches across two ranks while rank 0 "
+             "owns the websocket server.",
+    )
     # Match the LeRobot v2 raw mp4 dimensions (see
     # scripts/data/robofactory_to_lerobot_v2.py); the transform chain
     # checks input resolution exactly and the in-chain Resize downsizes
@@ -1702,6 +1917,17 @@ def main():
         format="%(asctime)s [%(levelname)s] %(message)s",
         stream=sys.stdout,
     )
+    dist_ctx = _init_distributed_serving(args.inference_parallel_size)
+    logging.info(
+        "Distributed serving context: rank=%d local_rank=%d world_size=%d "
+        "inference_parallel_size=%d device=%s leader=%s",
+        dist_ctx.rank,
+        dist_ctx.local_rank,
+        dist_ctx.world_size,
+        dist_ctx.inference_parallel_size,
+        dist_ctx.device,
+        dist_ctx.is_leader,
+    )
 
     policy = BimanualPolicy(
         ckpt_dir=args.ckpt_dir,
@@ -1722,9 +1948,34 @@ def main():
         gripper_close_value=args.gripper_close_value,
         gripper_force_open_until_infer=args.gripper_force_open_until_infer,
         gripper_convention=args.gripper_convention,
+        device=dist_ctx.device,
+        device_mesh=dist_ctx.device_mesh,
     )
-    server = BimanualWebsocketServer(policy, host=args.host, port=args.port)
-    server.serve_forever()
+    proxy: DistributedPolicyProxy | None = None
+    serving_policy: Any = policy
+    if dist_ctx.enabled:
+        import torch.distributed as dist
+
+        dist.barrier()
+        proxy = DistributedPolicyProxy(
+            policy,
+            rank=dist_ctx.rank,
+            world_size=dist_ctx.world_size,
+        )
+        if not dist_ctx.is_leader:
+            proxy.worker_loop()
+            return
+        serving_policy = proxy
+
+    server = BimanualWebsocketServer(serving_policy, host=args.host, port=args.port)
+    try:
+        server.serve_forever()
+    finally:
+        if proxy is not None:
+            try:
+                proxy.shutdown_workers()
+            except Exception:
+                logging.exception("Failed to broadcast distributed worker shutdown")
 
 
 if __name__ == "__main__":
