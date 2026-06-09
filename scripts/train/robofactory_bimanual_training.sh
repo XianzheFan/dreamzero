@@ -127,11 +127,17 @@ GRIPPER_BINARY_LOGIT_SCALE=${GRIPPER_BINARY_LOGIT_SCALE:-4.0}
 GRIPPER_BINARY_MAX_SIGMA=${GRIPPER_BINARY_MAX_SIGMA:-0.75}
 ACTION_PREFIX_LOSS_WEIGHT=${ACTION_PREFIX_LOSS_WEIGHT:-2.0}
 ACTION_PREFIX_LOSS_LEN=${ACTION_PREFIX_LOSS_LEN:-8}
+CONTACT_LIFT_ACTION_LOSS_WEIGHT=${CONTACT_LIFT_ACTION_LOSS_WEIGHT:-1.0}
+CONTACT_LIFT_PRE_STEPS=${CONTACT_LIFT_PRE_STEPS:-0}
+CONTACT_LIFT_POST_STEPS=${CONTACT_LIFT_POST_STEPS:-0}
+CONTACT_LIFT_SYNC_ALL_AGENTS=${CONTACT_LIFT_SYNC_ALL_AGENTS:-true}
+CONTACT_LIFT_JOINT_ONLY=${CONTACT_LIFT_JOINT_ONLY:-true}
 
 echo "save_steps=$SAVE_STEPS  save_total_limit=$SAVE_TOTAL_LIMIT"
 echo "dataset_shard_sampling_rate=$DATASET_SHARD_SAMPLING_RATE"
 echo "action_loss_weight=$ACTION_LOSS_WEIGHT  gripper_action_loss_weight=$GRIPPER_ACTION_LOSS_WEIGHT  gripper_close_action_loss_weight=$GRIPPER_CLOSE_ACTION_LOSS_WEIGHT  gripper_close_threshold=$GRIPPER_CLOSE_THRESHOLD  gripper_action_dims=[$GRIPPER_ACTION_DIMS]  gripper_clean_action_loss_weight=$GRIPPER_CLEAN_ACTION_LOSS_WEIGHT  gripper_clean_close_action_loss_weight=$GRIPPER_CLEAN_CLOSE_ACTION_LOSS_WEIGHT  gripper_clean_max_sigma=$GRIPPER_CLEAN_MAX_SIGMA  action_prefix_loss_weight=$ACTION_PREFIX_LOSS_WEIGHT  action_prefix_loss_len=$ACTION_PREFIX_LOSS_LEN"
 echo "gripper_binary_action_loss_weight=$GRIPPER_BINARY_ACTION_LOSS_WEIGHT  gripper_binary_close_action_loss_weight=$GRIPPER_BINARY_CLOSE_ACTION_LOSS_WEIGHT  gripper_binary_logit_scale=$GRIPPER_BINARY_LOGIT_SCALE  gripper_binary_max_sigma=$GRIPPER_BINARY_MAX_SIGMA"
+echo "contact_lift_action_loss_weight=$CONTACT_LIFT_ACTION_LOSS_WEIGHT  contact_lift_pre_steps=$CONTACT_LIFT_PRE_STEPS  contact_lift_post_steps=$CONTACT_LIFT_POST_STEPS  contact_lift_sync_all_agents=$CONTACT_LIFT_SYNC_ALL_AGENTS  contact_lift_joint_only=$CONTACT_LIFT_JOINT_ONLY"
 
 WAN_CKPT_DIR=${WAN_CKPT_DIR:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/Wan2.1-I2V-14B-480P"}
 TOKENIZER_DIR=${TOKENIZER_DIR:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/umt5-xxl"}
@@ -213,6 +219,11 @@ torchrun --nproc_per_node $NUM_GPUS --standalone groot/vla/experiment/experiment
     ++action_head_cfg.config.gripper_binary_max_sigma=$GRIPPER_BINARY_MAX_SIGMA \
     ++action_head_cfg.config.action_prefix_loss_weight=$ACTION_PREFIX_LOSS_WEIGHT \
     ++action_head_cfg.config.action_prefix_loss_len=$ACTION_PREFIX_LOSS_LEN \
+    ++action_head_cfg.config.contact_lift_action_loss_weight=$CONTACT_LIFT_ACTION_LOSS_WEIGHT \
+    ++action_head_cfg.config.contact_lift_pre_steps=$CONTACT_LIFT_PRE_STEPS \
+    ++action_head_cfg.config.contact_lift_post_steps=$CONTACT_LIFT_POST_STEPS \
+    ++action_head_cfg.config.contact_lift_sync_all_agents=$CONTACT_LIFT_SYNC_ALL_AGENTS \
+    ++action_head_cfg.config.contact_lift_joint_only=$CONTACT_LIFT_JOINT_ONLY \
     ++action_head_cfg.config.max_state_dim=8 \
     ++action_head_cfg.config.action_dim=8 \
     ++action_head_cfg.config.diffusion_model_cfg.num_agents=$NUM_ARMS \

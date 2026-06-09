@@ -200,6 +200,30 @@ class WANPolicyHeadConfig(PretrainedConfig):
         default=0,
         metadata={"help": "Number of early action steps to upweight."},
     )
+    contact_lift_action_loss_weight: float = field(
+        default=1.0,
+        metadata={
+            "help": "Extra multiplier for the gripper-contact/lift phase inferred from close gripper targets."
+        },
+    )
+    contact_lift_pre_steps: int = field(
+        default=0,
+        metadata={"help": "Number of steps before first close target to include in contact/lift weighting."},
+    )
+    contact_lift_post_steps: int = field(
+        default=0,
+        metadata={"help": "Number of steps after close targets to include in contact/lift weighting."},
+    )
+    contact_lift_sync_all_agents: bool = field(
+        default=True,
+        metadata={
+            "help": "When any agent is in the inferred contact/lift window, weight all agents at that timestep."
+        },
+    )
+    contact_lift_joint_only: bool = field(
+        default=True,
+        metadata={"help": "Apply contact/lift phase weighting to non-gripper action dimensions only."},
+    )
     max_num_embodiments: int = field(default=32, metadata={"help": "Number of embodiments."})
     tune_projector: bool = field(default=True, metadata={"help": "Whether to tune the projector."})
     tune_diffusion_model: bool = field(
@@ -525,6 +549,13 @@ class WANPolicyHead(ActionHead):
         gripper_close_threshold = self._config_float("gripper_close_threshold", 0.0)
         prefix_weight = self._config_float("action_prefix_loss_weight", 1.0)
         prefix_len = self._config_int("action_prefix_loss_len", 0)
+        contact_lift_weight = self._config_float("contact_lift_action_loss_weight", 1.0)
+        contact_lift_pre_steps = max(0, self._config_int("contact_lift_pre_steps", 0))
+        contact_lift_post_steps = max(0, self._config_int("contact_lift_post_steps", 0))
+        contact_lift_sync_all_agents = self._config_bool(
+            "contact_lift_sync_all_agents", True
+        )
+        contact_lift_joint_only = self._config_bool("contact_lift_joint_only", True)
         gripper_dims = [int(dim) for dim in getattr(self.config, "gripper_action_dims", [7])]
 
         weighted = action_loss
@@ -559,6 +590,67 @@ class WANPolicyHead(ActionHead):
                     )
             weighted = weighted * close_weights
 
+        if (
+            contact_lift_weight != 1.0
+            and actions is not None
+            and weighted.shape == actions.shape
+            and weighted.shape[-1] > 0
+        ):
+            close_mask = None
+            for dim in gripper_dims:
+                if -weighted.shape[-1] <= dim < weighted.shape[-1]:
+                    dim_idx = dim % weighted.shape[-1]
+                    dim_close_mask = actions[..., dim_idx] < gripper_close_threshold
+                    close_mask = (
+                        dim_close_mask
+                        if close_mask is None
+                        else close_mask | dim_close_mask
+                    )
+            if close_mask is not None:
+                phase_mask = close_mask
+                if contact_lift_pre_steps > 0 or contact_lift_post_steps > 0:
+                    phase_mask = torch.zeros_like(close_mask, dtype=torch.bool)
+                    steps = close_mask.shape[-1]
+                    for offset in range(
+                        -contact_lift_pre_steps,
+                        contact_lift_post_steps + 1,
+                    ):
+                        dst_start = max(0, offset)
+                        dst_end = min(steps, steps + offset)
+                        src_start = max(0, -offset)
+                        src_end = min(steps, steps - offset)
+                        if dst_start < dst_end and src_start < src_end:
+                            phase_mask[..., dst_start:dst_end] = (
+                                phase_mask[..., dst_start:dst_end]
+                                | close_mask[..., src_start:src_end]
+                            )
+
+                if contact_lift_sync_all_agents and phase_mask.ndim >= 3:
+                    phase_mask = phase_mask.any(dim=-2, keepdim=True).expand_as(phase_mask)
+
+                phase_dim_mask = torch.ones(
+                    weighted.shape[-1], device=weighted.device, dtype=torch.bool
+                )
+                if contact_lift_joint_only:
+                    for dim in gripper_dims:
+                        if -weighted.shape[-1] <= dim < weighted.shape[-1]:
+                            phase_dim_mask[dim % weighted.shape[-1]] = False
+                if phase_dim_mask.any():
+                    phase_weight = torch.ones_like(weighted)
+                    phase_mask = phase_mask.unsqueeze(-1) & phase_dim_mask.view(
+                        *([1] * (weighted.ndim - 1)), weighted.shape[-1]
+                    )
+                    phase_weight = torch.where(
+                        phase_mask,
+                        torch.as_tensor(
+                            contact_lift_weight,
+                            device=weighted.device,
+                            dtype=weighted.dtype,
+                        ),
+                        phase_weight,
+                    )
+                    weighted = weighted * phase_weight
+
         time_dim = weighted.ndim - 2
         if prefix_weight != 1.0 and prefix_len > 0 and time_dim >= 0:
             steps = min(prefix_len, weighted.shape[time_dim])
@@ -588,6 +680,14 @@ class WANPolicyHead(ActionHead):
         if value is None:
             value = default
         return int(value)
+
+    def _config_bool(self, name: str, default: bool) -> bool:
+        value = getattr(self.config, name, default)
+        if value is None:
+            value = default
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+        return bool(value)
 
     def _sigma_for_timestep(
         self,

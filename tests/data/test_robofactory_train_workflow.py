@@ -73,6 +73,7 @@ def test_liftbarrier_train_workflow_verifies_code_cache_and_robofactory_dataset(
     for marker in (
         "DATASET_SHARD_SAMPLING_RATE",
         "gripper_binary_action_loss_weight",
+        "contact_lift_action_loss_weight",
         "_compute_gripper_binary_action_loss",
         "agent_action_dims: [[0, 8], [8, 16]]",
     ):
@@ -117,6 +118,11 @@ def test_liftbarrier_train_workflow_passes_shared_global_binary_gripper_training
         'export GRIPPER_BINARY_MAX_SIGMA="${GRIPPER_BINARY_MAX_SIGMA:-0.75}"',
         'export ACTION_PREFIX_LOSS_WEIGHT="${ACTION_PREFIX_LOSS_WEIGHT:-2.0}"',
         'export ACTION_PREFIX_LOSS_LEN="${ACTION_PREFIX_LOSS_LEN:-8}"',
+        'export CONTACT_LIFT_ACTION_LOSS_WEIGHT="${CONTACT_LIFT_ACTION_LOSS_WEIGHT:-{{contact_lift_action_loss_weight}}}"',
+        'export CONTACT_LIFT_PRE_STEPS="${CONTACT_LIFT_PRE_STEPS:-{{contact_lift_pre_steps}}}"',
+        'export CONTACT_LIFT_POST_STEPS="${CONTACT_LIFT_POST_STEPS:-{{contact_lift_post_steps}}}"',
+        'export CONTACT_LIFT_SYNC_ALL_AGENTS="${CONTACT_LIFT_SYNC_ALL_AGENTS:-{{contact_lift_sync_all_agents}}}"',
+        'export CONTACT_LIFT_JOINT_ONLY="${CONTACT_LIFT_JOINT_ONLY:-{{contact_lift_joint_only}}}"',
         "bash scripts/train/robofactory_bimanual_training.sh",
     ):
         assert marker in script
@@ -127,6 +133,11 @@ def test_liftbarrier_train_workflow_passes_shared_global_binary_gripper_training
         "GRIPPER_BINARY_CLOSE_ACTION_LOSS_WEIGHT=$GRIPPER_BINARY_CLOSE_ACTION_LOSS_WEIGHT",
         "GRIPPER_BINARY_LOGIT_SCALE=$GRIPPER_BINARY_LOGIT_SCALE",
         "GRIPPER_BINARY_MAX_SIGMA=$GRIPPER_BINARY_MAX_SIGMA",
+        "CONTACT_LIFT_ACTION_LOSS_WEIGHT=$CONTACT_LIFT_ACTION_LOSS_WEIGHT",
+        "CONTACT_LIFT_PRE_STEPS=$CONTACT_LIFT_PRE_STEPS",
+        "CONTACT_LIFT_POST_STEPS=$CONTACT_LIFT_POST_STEPS",
+        "CONTACT_LIFT_SYNC_ALL_AGENTS=$CONTACT_LIFT_SYNC_ALL_AGENTS",
+        "CONTACT_LIFT_JOINT_ONLY=$CONTACT_LIFT_JOINT_ONLY",
     ):
         assert marker in script
 

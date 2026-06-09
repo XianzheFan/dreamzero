@@ -31,6 +31,25 @@ def test_robofactory_training_script_passes_binary_gripper_loss_knobs():
         assert marker in script
 
 
+def test_robofactory_training_script_passes_contact_lift_loss_knobs():
+    script = SCRIPT_PATH.read_text()
+
+    for marker in (
+        "CONTACT_LIFT_ACTION_LOSS_WEIGHT=${CONTACT_LIFT_ACTION_LOSS_WEIGHT:-1.0}",
+        "CONTACT_LIFT_PRE_STEPS=${CONTACT_LIFT_PRE_STEPS:-0}",
+        "CONTACT_LIFT_POST_STEPS=${CONTACT_LIFT_POST_STEPS:-0}",
+        "CONTACT_LIFT_SYNC_ALL_AGENTS=${CONTACT_LIFT_SYNC_ALL_AGENTS:-true}",
+        "CONTACT_LIFT_JOINT_ONLY=${CONTACT_LIFT_JOINT_ONLY:-true}",
+        "contact_lift_action_loss_weight=$CONTACT_LIFT_ACTION_LOSS_WEIGHT",
+        "++action_head_cfg.config.contact_lift_action_loss_weight=$CONTACT_LIFT_ACTION_LOSS_WEIGHT",
+        "++action_head_cfg.config.contact_lift_pre_steps=$CONTACT_LIFT_PRE_STEPS",
+        "++action_head_cfg.config.contact_lift_post_steps=$CONTACT_LIFT_POST_STEPS",
+        "++action_head_cfg.config.contact_lift_sync_all_agents=$CONTACT_LIFT_SYNC_ALL_AGENTS",
+        "++action_head_cfg.config.contact_lift_joint_only=$CONTACT_LIFT_JOINT_ONLY",
+    ):
+        assert marker in script
+
+
 def test_robofactory_training_script_uses_full_dataset_sampling_by_default():
     script = SCRIPT_PATH.read_text()
 

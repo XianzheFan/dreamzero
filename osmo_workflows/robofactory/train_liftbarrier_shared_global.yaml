@@ -353,11 +353,13 @@ workflow:
             require_code_marker \
               scripts/train/robofactory_bimanual_training.sh \
               "DATASET_SHARD_SAMPLING_RATE" \
-              "gripper_binary_action_loss_weight"
+              "gripper_binary_action_loss_weight" \
+              "contact_lift_action_loss_weight"
             require_code_marker \
               groot/vla/model/dreamzero/action_head/wan_flow_matching_action_tf.py \
               "gripper_binary_action_loss_weight" \
-              "_compute_gripper_binary_action_loss"
+              "_compute_gripper_binary_action_loss" \
+              "contact_lift_action_loss_weight"
             require_code_marker \
               groot/vla/configs/data/dreamzero/robofactory_bimanual_shared_global.yaml \
               "agent_action_dims: [[0, 8], [8, 16]]"
@@ -434,6 +436,11 @@ workflow:
             export GRIPPER_BINARY_MAX_SIGMA="${GRIPPER_BINARY_MAX_SIGMA:-0.75}"
             export ACTION_PREFIX_LOSS_WEIGHT="${ACTION_PREFIX_LOSS_WEIGHT:-2.0}"
             export ACTION_PREFIX_LOSS_LEN="${ACTION_PREFIX_LOSS_LEN:-8}"
+            export CONTACT_LIFT_ACTION_LOSS_WEIGHT="${CONTACT_LIFT_ACTION_LOSS_WEIGHT:-{{contact_lift_action_loss_weight}}}"
+            export CONTACT_LIFT_PRE_STEPS="${CONTACT_LIFT_PRE_STEPS:-{{contact_lift_pre_steps}}}"
+            export CONTACT_LIFT_POST_STEPS="${CONTACT_LIFT_POST_STEPS:-{{contact_lift_post_steps}}}"
+            export CONTACT_LIFT_SYNC_ALL_AGENTS="${CONTACT_LIFT_SYNC_ALL_AGENTS:-{{contact_lift_sync_all_agents}}}"
+            export CONTACT_LIFT_JOINT_ONLY="${CONTACT_LIFT_JOINT_ONLY:-{{contact_lift_joint_only}}}"
             export REPORT_TO=wandb
             export WANDB_PROJECT=dreamzero_robofactory
             export WANDB_RUN_NAME="$RUN_NAME"
@@ -569,6 +576,11 @@ workflow:
             echo "GRIPPER_BINARY_CLOSE_ACTION_LOSS_WEIGHT=$GRIPPER_BINARY_CLOSE_ACTION_LOSS_WEIGHT"
             echo "GRIPPER_BINARY_LOGIT_SCALE=$GRIPPER_BINARY_LOGIT_SCALE"
             echo "GRIPPER_BINARY_MAX_SIGMA=$GRIPPER_BINARY_MAX_SIGMA"
+            echo "CONTACT_LIFT_ACTION_LOSS_WEIGHT=$CONTACT_LIFT_ACTION_LOSS_WEIGHT"
+            echo "CONTACT_LIFT_PRE_STEPS=$CONTACT_LIFT_PRE_STEPS"
+            echo "CONTACT_LIFT_POST_STEPS=$CONTACT_LIFT_POST_STEPS"
+            echo "CONTACT_LIFT_SYNC_ALL_AGENTS=$CONTACT_LIFT_SYNC_ALL_AGENTS"
+            echo "CONTACT_LIFT_JOINT_ONLY=$CONTACT_LIFT_JOINT_ONLY"
             bash scripts/train/robofactory_bimanual_training.sh
 
 default-values:
@@ -584,3 +596,8 @@ default-values:
   save_steps: "500"
   save_total_limit: "4"
   learning_rate: "1e-5"
+  contact_lift_action_loss_weight: "1.0"
+  contact_lift_pre_steps: "0"
+  contact_lift_post_steps: "0"
+  contact_lift_sync_all_agents: "true"
+  contact_lift_joint_only: "true"

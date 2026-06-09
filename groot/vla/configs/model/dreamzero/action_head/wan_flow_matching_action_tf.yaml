@@ -103,6 +103,11 @@ action_head_cfg:
     gripper_action_dims: [7]
     action_prefix_loss_weight: 1.0
     action_prefix_loss_len: 0
+    contact_lift_action_loss_weight: 1.0
+    contact_lift_pre_steps: 0
+    contact_lift_post_steps: 0
+    contact_lift_sync_all_agents: true
+    contact_lift_joint_only: true
     num_inference_timesteps: 4  # not used during training
     noise_beta_alpha: 1.5
     noise_beta_beta: 1.0

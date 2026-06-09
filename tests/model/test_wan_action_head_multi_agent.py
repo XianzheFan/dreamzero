@@ -425,6 +425,36 @@ def test_config_zero_values_are_honored_in_loss_helpers():
     assert clean_loss.item() == 1.0
 
 
+def test_contact_lift_phase_loss_weights_synced_joint_window():
+    Cls = _load_head_cls()
+    head = Cls.__new__(Cls)
+    torch.nn.Module.__init__(head)
+    head.config = types.SimpleNamespace(
+        action_loss_weight=1.0,
+        gripper_action_loss_weight=1.0,
+        gripper_close_action_loss_weight=1.0,
+        gripper_close_threshold=0.0,
+        action_prefix_loss_weight=1.0,
+        action_prefix_loss_len=0,
+        contact_lift_action_loss_weight=4.0,
+        contact_lift_pre_steps=1,
+        contact_lift_post_steps=1,
+        contact_lift_sync_all_agents=True,
+        contact_lift_joint_only=True,
+        gripper_action_dims=[3],
+    )
+
+    action_loss = torch.ones(1, 2, 5, 4)
+    actions = torch.ones_like(action_loss)
+    actions[0, 0, 2, 3] = -1.0
+
+    weighted = head._apply_action_loss_weights(action_loss, actions=actions)
+
+    expected = torch.ones_like(action_loss)
+    expected[:, :, 1:4, :3] = 4.0
+    torch.testing.assert_close(weighted, expected)
+
+
 def test_gripper_clean_action_loss_ignores_fake_or_masked_actions():
     Cls = _load_head_cls()
     head = Cls.__new__(Cls)

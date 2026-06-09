@@ -64,6 +64,37 @@ def _sample_state_action():
     return state, action
 
 
+def test_source_episode_metadata_preserves_original_seed_and_aliases(tmp_path):
+    converter = _load_converter()
+    h5_path = tmp_path / "LiftBarrier-rf.h5"
+    h5_path.with_suffix(".json").write_text(json.dumps({
+        "episodes": [
+            {
+                "episode_id": 3,
+                "episode_seed": 1008,
+                "control_mode": "pd_joint_pos",
+                "elapsed_steps": 97,
+                "success": True,
+                "reset_kwargs": {"seed": 1008},
+            }
+        ]
+    }))
+
+    metadata = converter.load_source_episode_metadata(h5_path)
+    episode = converter.source_episode_metadata_for_traj_key("traj_3", metadata)
+
+    assert episode["source_traj_key"] == "traj_3"
+    assert episode["source_episode_id"] == 3
+    assert episode["episode_seed"] == 1008
+    assert episode["source_episode_seed"] == 1008
+    assert episode["elapsed_steps"] == 97
+    assert episode["source_elapsed_steps"] == 97
+    assert episode["success"] is True
+    assert episode["source_success"] is True
+    assert episode["reset_kwargs"] == {"seed": 1008}
+    assert episode["source_reset_kwargs"] == {"seed": 1008}
+
+
 def test_write_meta_uses_robofactory_tag_and_gripper_slices(tmp_path):
     converter = _load_converter()
     state, action = _sample_state_action()
@@ -78,9 +109,21 @@ def test_write_meta_uses_robofactory_tag_and_gripper_slices(tmp_path):
         actions=[action],
         states=[state],
         num_arms=2,
+        episode_metadata=[
+            {
+                "source_traj_key": "traj_17",
+                "source_episode_id": 17,
+                "episode_seed": 1008,
+                "source_episode_seed": 1008,
+                "success": True,
+                "source_success": True,
+                "elapsed_steps": 97,
+            }
+        ],
     )
 
     embodiment = json.loads((tmp_path / "meta" / "embodiment.json").read_text())
+    episode = json.loads((tmp_path / "meta" / "episodes.jsonl").read_text())
     modality = json.loads((tmp_path / "meta" / "modality.json").read_text())
     info = json.loads((tmp_path / "meta" / "info.json").read_text())
     stats = json.loads((tmp_path / "meta" / "stats.json").read_text())
@@ -94,6 +137,14 @@ def test_write_meta_uses_robofactory_tag_and_gripper_slices(tmp_path):
     assert info["features"]["observation.state"]["shape"] == [16]
     assert info["features"]["action"]["names"][7] == "panda0_gripper.pos"
     assert info["features"]["action"]["names"][15] == "panda1_gripper.pos"
+    assert episode["episode_index"] == 0
+    assert episode["source_traj_key"] == "traj_17"
+    assert episode["source_episode_id"] == 17
+    assert episode["episode_seed"] == 1008
+    assert episode["source_episode_seed"] == 1008
+    assert episode["success"] is True
+    assert episode["source_success"] is True
+    assert episode["elapsed_steps"] == 97
 
     assert modality["action"]["panda0_joint_pos"]["start"] == 0
     assert modality["action"]["panda0_joint_pos"]["end"] == 7
