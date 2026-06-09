@@ -73,18 +73,22 @@ def _to_np(arr):
     return np.asarray(arr).reshape(-1)
 
 
+def extract_qpos(obs):
+    """RoboFactory raw obs -> qpos[16] for the two Panda arms."""
+    q0 = _to_np(obs["agent"]["panda-0"]["qpos"]).astype(np.float32)
+    q1 = _to_np(obs["agent"]["panda-1"]["qpos"]).astype(np.float32)
+    qpos = np.concatenate([q0[:8], q1[:8]]).astype(np.float32)
+    assert qpos.shape == (16,)
+    return qpos
+
+
 def extract_obs(obs):
     """RoboFactory raw obs -> (head_rgb, left_rgb, right_rgb, qpos[16])."""
     sd = obs["sensor_data"]
     head = _to_uint8_rgb(sd["head_camera_global"])
     left = _to_uint8_rgb(sd["head_camera_agent0"])
     right = _to_uint8_rgb(sd["head_camera_agent1"])
-    q0 = _to_np(obs["agent"]["panda-0"]["qpos"]).astype(np.float32)
-    q1 = _to_np(obs["agent"]["panda-1"]["qpos"]).astype(np.float32)
-    # Training used qpos[:8] per arm (7 arm joints + 1 finger joint).
-    qpos = np.concatenate([q0[:8], q1[:8]]).astype(np.float32)
-    assert qpos.shape == (16,)
-    return head, left, right, qpos
+    return head, left, right, extract_qpos(obs)
 
 
 def integrate_action(
@@ -232,6 +236,7 @@ def run_episode(
 
         cur = qpos.copy()
         for da in actions[:replan_every]:
+            qpos_before_step = extract_qpos(raw_obs) if dump is not None else None
             abs16 = integrate_action(da, cur, action_representation)
             abs16 = apply_gripper_override(
                 abs16,
@@ -242,10 +247,13 @@ def run_episode(
                 gripper_close_value,
             )
             raw_obs, reward, term, trunc, info = env.step(env_action_dict(abs16))
+            qpos_after_step = extract_qpos(raw_obs) if dump is not None else None
             cur = abs16
             steps += 1
             if dump is not None:
                 dump["exec_action"].append(abs16.copy())
+                dump["exec_qpos_before"].append(qpos_before_step.copy())
+                dump["exec_qpos_after"].append(qpos_after_step.copy())
             if _bool_from(info.get("success", False)):
                 return True, steps
             if _bool_from(term) or _bool_from(trunc):
@@ -419,6 +427,8 @@ def main():
             "pred_chunk": np.stack(dump["pred_chunk"]),       # denorm [n_infer, chunk_len, 16]
             "obs_qpos": np.stack(dump["obs_qpos"]),           # [n_infer, 16]
             "exec_action": np.stack(dump["exec_action"]),     # [n_steps, 16]
+            "exec_qpos_before": np.stack(dump["exec_qpos_before"]),
+            "exec_qpos_after": np.stack(dump["exec_qpos_after"]),
         }
         if dump.get("action_norm_raw"):
             payload["action_norm_raw"] = np.stack(dump["action_norm_raw"])
@@ -435,6 +445,8 @@ def main():
                 "pred_chunk": [],
                 "obs_qpos": [],
                 "exec_action": [],
+                "exec_qpos_before": [],
+                "exec_qpos_after": [],
                 "action_norm_raw": [],
                 "action_norm_clipped": [],
             }
