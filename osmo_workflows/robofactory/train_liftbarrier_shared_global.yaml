@@ -499,14 +499,14 @@ workflow:
                 echo "No complete output checkpoints available for pruning."
                 return 0
               fi
-              while IFS= read -r ckpt_dir; do
+              complete_checkpoints_by_step "$OUTPUT_DIR" | cut -d' ' -f2- | while IFS= read -r ckpt_dir; do
                 [ -n "$ckpt_dir" ] || continue
                 if [ "$ckpt_dir" = "$latest_ckpt" ]; then
                   continue
                 fi
                 echo "Removing non-latest output checkpoint to save local storage: ${ckpt_dir}"
                 rm -rf "$ckpt_dir"
-              done < <(find "$OUTPUT_DIR" -maxdepth 1 -type d -name 'checkpoint-*' -print)
+              done
             }
 
             stage_checkpoints_for_upload() {
@@ -524,6 +524,7 @@ workflow:
                 cp -a "${OUTPUT_DIR}/experiment_cfg" "$stage_dir/"
               fi
 
+              prune_output_checkpoints_to_latest
               ckpt_dir="$(latest_complete_checkpoint_under "$OUTPUT_DIR" || true)"
               if [ -z "$ckpt_dir" ]; then
                 echo "No complete checkpoints ready for upload." >&2
