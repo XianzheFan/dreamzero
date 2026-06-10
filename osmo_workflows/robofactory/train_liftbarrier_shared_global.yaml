@@ -465,6 +465,50 @@ workflow:
             export PRETRAINED_DIR
             mkdir -p "$OUTPUT_DIR"
 
+            is_complete_resume_checkpoint() {
+              ckpt_dir="$1"
+              [ -f "${ckpt_dir}/trainer_state.json" ] && \
+                { [ -f "${ckpt_dir}/model.safetensors" ] || [ -f "${ckpt_dir}/model.safetensors.index.json" ]; }
+            }
+
+            complete_checkpoints_by_step() {
+              search_root="$1"
+              find "$search_root" -type d -name 'checkpoint-*' | while IFS= read -r ckpt_dir; do
+                [ -n "$ckpt_dir" ] || continue
+                ckpt_name="$(basename "$ckpt_dir")"
+                ckpt_step="${ckpt_name#checkpoint-}"
+                case "$ckpt_step" in
+                  ''|*[!0-9]*) ckpt_step=0 ;;
+                esac
+                if is_complete_resume_checkpoint "$ckpt_dir"; then
+                  printf '%012d %s\n' "$ckpt_step" "$ckpt_dir"
+                else
+                  echo "Skipping incomplete checkpoint ${ckpt_dir}; need model weights plus trainer_state.json." >&2
+                fi
+              done | sort -n
+            }
+
+            latest_complete_checkpoint_under() {
+              search_root="$1"
+              complete_checkpoints_by_step "$search_root" | tail -n 1 | cut -d' ' -f2-
+            }
+
+            prune_output_checkpoints_to_latest() {
+              latest_ckpt="$(latest_complete_checkpoint_under "$OUTPUT_DIR" || true)"
+              if [ -z "$latest_ckpt" ]; then
+                echo "No complete output checkpoints available for pruning."
+                return 0
+              fi
+              while IFS= read -r ckpt_dir; do
+                [ -n "$ckpt_dir" ] || continue
+                if [ "$ckpt_dir" = "$latest_ckpt" ]; then
+                  continue
+                fi
+                echo "Removing non-latest output checkpoint to save local storage: ${ckpt_dir}"
+                rm -rf "$ckpt_dir"
+              done < <(find "$OUTPUT_DIR" -maxdepth 1 -type d -name 'checkpoint-*' -print)
+            }
+
             stage_checkpoints_for_upload() {
               stage_root="/workspace/rf_checkpoint_upload"
               stage_dir="${stage_root}/${RUN_NAME}"
@@ -480,24 +524,15 @@ workflow:
                 cp -a "${OUTPUT_DIR}/experiment_cfg" "$stage_dir/"
               fi
 
-              found=0
-              while IFS= read -r ckpt_dir; do
-                [ -n "$ckpt_dir" ] || continue
-                if [ -f "${ckpt_dir}/trainer_state.json" ] && \
-                   { [ -f "${ckpt_dir}/model.safetensors" ] || [ -f "${ckpt_dir}/model.safetensors.index.json" ]; }; then
-                  ckpt_name="$(basename "$ckpt_dir")"
-                  mkdir -p "${stage_dir}/${ckpt_name}"
-                  cp -a "${ckpt_dir}/." "${stage_dir}/${ckpt_name}/"
-                  found=1
-                else
-                  echo "Skipping incomplete checkpoint ${ckpt_dir}; need model weights plus trainer_state.json."
-                fi
-              done < <(find "$OUTPUT_DIR" -maxdepth 1 -type d -name 'checkpoint-*' | sort)
-
-              if [ "$found" -eq 0 ]; then
+              ckpt_dir="$(latest_complete_checkpoint_under "$OUTPUT_DIR" || true)"
+              if [ -z "$ckpt_dir" ]; then
                 echo "No complete checkpoints ready for upload." >&2
                 return 1
               fi
+              ckpt_name="$(basename "$ckpt_dir")"
+              echo "Staging latest complete checkpoint for upload: ${ckpt_dir}" >&2
+              mkdir -p "${stage_dir}/${ckpt_name}"
+              cp -a "${ckpt_dir}/." "${stage_dir}/${ckpt_name}/"
               echo "$stage_dir"
               return 0
             }
@@ -505,8 +540,11 @@ workflow:
             upload_checkpoints_once() {
               stage_dir="$(stage_checkpoints_for_upload || true)"
               if [ -n "$stage_dir" ] && [ -d "$stage_dir" ]; then
-                osmo data upload "${OUTPUT_S3_URI}/" "$stage_dir"
-                osmo data upload "${CACHE_OUTPUT_S3_URI}/" "$stage_dir"
+                upload_status=0
+                osmo data upload "${OUTPUT_S3_URI}/" "$stage_dir" || upload_status=$?
+                osmo data upload "${CACHE_OUTPUT_S3_URI}/" "$stage_dir" || upload_status=$?
+                rm -rf "$stage_dir"
+                return "$upload_status"
               fi
             }
 
@@ -517,12 +555,6 @@ workflow:
                 osmo data upload "${LOG_S3_URI}/" /tmp/train_liftbarrier_shared_global.log || true
                 upload_checkpoints_once || true
               done
-            }
-
-            is_complete_resume_checkpoint() {
-              ckpt_dir="$1"
-              [ -f "${ckpt_dir}/trainer_state.json" ] && \
-                { [ -f "${ckpt_dir}/model.safetensors" ] || [ -f "${ckpt_dir}/model.safetensors.index.json" ]; }
             }
 
             restore_checkpoints_from_s3() {
@@ -541,31 +573,27 @@ workflow:
               set -e
               if [ "$restore_status" -ne 0 ]; then
                 echo "Checkpoint restore from ${src_uri}/ failed with status=${restore_status}."
+                rm -rf "$import_dir"
                 return 1
               fi
-              found=0
-              while IFS= read -r ckpt_dir; do
-                [ -n "$ckpt_dir" ] || continue
-                ckpt_name="$(basename "$ckpt_dir")"
-                if is_complete_resume_checkpoint "$ckpt_dir"; then
-                  echo "Promoting restored checkpoint ${ckpt_dir} -> ${OUTPUT_DIR}/${ckpt_name}"
-                  mkdir -p "${OUTPUT_DIR}/${ckpt_name}"
-                  cp -an "${ckpt_dir}/." "${OUTPUT_DIR}/${ckpt_name}/"
-                  found=1
-                else
-                  echo "Skipping incomplete restored checkpoint ${ckpt_dir}; need model weights plus trainer_state.json."
-                fi
-              done < <(find "$import_dir" -type d -name 'checkpoint-*' | sort)
-              if [ "$found" -eq 0 ]; then
+              ckpt_dir="$(latest_complete_checkpoint_under "$import_dir" || true)"
+              if [ -z "$ckpt_dir" ]; then
                 echo "No usable complete checkpoint-* directories found under ${src_uri}/."
+                rm -rf "$import_dir"
                 return 1
               fi
+              ckpt_name="$(basename "$ckpt_dir")"
+              echo "Promoting latest restored checkpoint ${ckpt_dir} -> ${OUTPUT_DIR}/${ckpt_name}"
+              mkdir -p "${OUTPUT_DIR}/${ckpt_name}"
+              cp -an "${ckpt_dir}/." "${OUTPUT_DIR}/${ckpt_name}/"
+              rm -rf "$import_dir"
               return 0
             }
 
             restore_checkpoints_from_s3 "$RESTORE_CACHE_S3_URI" "restore_cache" || \
               restore_checkpoints_from_s3 "$RESTORE_S3_URI" "restore_primary" || \
               echo "No previous checkpoints restored; training will start fresh."
+            prune_output_checkpoints_to_latest
             echo "Checkpoints available before training:"
             find "$OUTPUT_DIR" -maxdepth 1 -type d -name 'checkpoint-*' -print | sort || true
 

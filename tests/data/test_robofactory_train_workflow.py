@@ -159,10 +159,16 @@ def test_liftbarrier_train_workflow_restores_and_uploads_run_and_s3cache_checkpo
     assert "restore_checkpoints_from_s3 \"$RESTORE_CACHE_S3_URI\" \"restore_cache\"" in script
     assert "restore_checkpoints_from_s3 \"$RESTORE_S3_URI\" \"restore_primary\"" in script
     assert "Skipping incomplete checkpoint" in script
-    assert "Skipping incomplete restored checkpoint" in script
     assert "No usable complete checkpoint-* directories found under ${src_uri}/." in script
     assert "No previous checkpoints restored; training will start fresh." in script
     assert '[ -f "${ckpt_dir}/trainer_state.json" ]' in script
+    assert "latest_complete_checkpoint_under" in script
+    assert "Staging latest complete checkpoint for upload" in script
+    assert 'rm -rf "$stage_dir"' in script
+    assert "Promoting latest restored checkpoint" in script
+    assert 'rm -rf "$import_dir"' in script
+    assert "prune_output_checkpoints_to_latest" in script
+    assert "Removing non-latest output checkpoint to save local storage" in script
 
 
 def test_liftbarrier_train_workflow_embedded_python_blocks_compile():
