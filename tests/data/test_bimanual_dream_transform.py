@@ -42,7 +42,9 @@ def _make_inst(Cls, *, views=((0, 1), (0, 2)),
                state_dims=((0, 7), (7, 14)),
                action_dims=((0, 7), (7, 14)),
                global_views=None,
-               global_condition_mode="full"):
+               global_condition_mode="full",
+               state_pad_dim=None,
+               action_pad_dim=None):
     """Build a lite instance via ``__new__`` (skip the full pydantic init
     that pulls in a tokenizer)."""
     inst = Cls.__new__(Cls)
@@ -53,6 +55,8 @@ def _make_inst(Cls, *, views=((0, 1), (0, 2)),
     inst.__dict__["global_condition_mode"] = global_condition_mode
     inst.__dict__["agent_state_dims"] = [tuple(s) for s in state_dims]
     inst.__dict__["agent_action_dims"] = [tuple(a) for a in action_dims]
+    inst.__dict__["agent_state_pad_dim"] = state_pad_dim
+    inst.__dict__["agent_action_pad_dim"] = action_pad_dim
     return inst
 
 
@@ -150,6 +154,54 @@ def test_eight_dim_per_arm_split_preserves_gripper_values_and_masks():
     np.testing.assert_allclose(split_action[1, :, 7], np.ones(24))
     assert split_state_mask[:, :, 7].all()
     assert split_action_mask[:, :, 7].all()
+
+
+def test_droid_width_per_arm_split_pads_each_agent_independently():
+    Cls = _maybe_load_bimanual_transform()
+    inst = _make_inst(
+        Cls,
+        state_dims=((0, 8), (8, 16)),
+        action_dims=((0, 8), (8, 16)),
+        state_pad_dim=64,
+        action_pad_dim=32,
+    )
+    state = np.zeros((1, 16), dtype=np.float32)
+    state[0, 0:8] = np.arange(8, dtype=np.float32)
+    state[0, 8:16] = np.arange(10, 18, dtype=np.float32)
+    action = np.zeros((24, 16), dtype=np.float32)
+    action[:, 0:8] = np.arange(8, dtype=np.float32)
+    action[:, 8:16] = np.arange(10, 18, dtype=np.float32)
+
+    split_state = inst._split_dense(
+        state, inst.agent_state_dims, pad_dim=inst.agent_state_pad_dim
+    )
+    split_action = inst._split_dense(
+        action, inst.agent_action_dims, pad_dim=inst.agent_action_pad_dim
+    )
+    split_state_mask = inst._split_mask_from_raw(
+        state, inst.agent_state_dims, pad_dim=inst.agent_state_pad_dim
+    )
+    split_action_mask = inst._split_mask_from_raw(
+        action, inst.agent_action_dims, pad_dim=inst.agent_action_pad_dim
+    )
+
+    assert split_state.shape == (2, 1, 64)
+    assert split_action.shape == (2, 24, 32)
+    np.testing.assert_array_equal(split_state[0, 0, :8], np.arange(8))
+    np.testing.assert_array_equal(split_state[1, 0, :8], np.arange(10, 18))
+    np.testing.assert_array_equal(split_state[:, :, 8:], 0.0)
+    np.testing.assert_array_equal(
+        split_action[0, :, :8], np.tile(np.arange(8, dtype=np.float32), (24, 1))
+    )
+    np.testing.assert_array_equal(
+        split_action[1, :, :8],
+        np.tile(np.arange(10, 18, dtype=np.float32), (24, 1)),
+    )
+    np.testing.assert_array_equal(split_action[:, :, 8:], 0.0)
+    assert split_state_mask[:, :, :8].all()
+    assert not split_state_mask[:, :, 8:].any()
+    assert split_action_mask[:, :, :8].all()
+    assert not split_action_mask[:, :, 8:].any()
 
 
 def test_per_arm_state_values(yam_post_dream):

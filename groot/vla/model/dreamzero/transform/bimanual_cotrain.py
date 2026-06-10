@@ -96,6 +96,24 @@ class BimanualDreamTransform(DreamTransform):
         ...,
         description="Per-agent action dim slices (same shape rules as state).",
     )
+    agent_state_pad_dim: int | None = Field(
+        default=None,
+        description=(
+            "Optional per-agent padded state width. When set, split raw "
+            "post-concat state by agent_state_dims first, then pad each "
+            "agent independently to this width. This preserves DROID-style "
+            "padded heads such as 64 state dims per agent."
+        ),
+    )
+    agent_action_pad_dim: int | None = Field(
+        default=None,
+        description=(
+            "Optional per-agent padded action width. When set, split raw "
+            "post-concat action by agent_action_dims first, then pad each "
+            "agent independently to this width. This preserves DROID-style "
+            "padded heads such as 32 action dims per agent."
+        ),
+    )
 
     @property
     def num_agents(self) -> int:
@@ -131,6 +149,16 @@ class BimanualDreamTransform(DreamTransform):
             f"All agents must have the same action width; got "
             f"{[b - a for (a, b) in self.agent_action_dims]}"
         )
+        if self.agent_state_pad_dim is not None:
+            assert self.agent_state_pad_dim >= max(state_widths), (
+                "agent_state_pad_dim must be >= each raw per-agent state "
+                f"width; got pad={self.agent_state_pad_dim} widths={state_widths}"
+            )
+        if self.agent_action_pad_dim is not None:
+            assert self.agent_action_pad_dim >= max(action_widths), (
+                "agent_action_pad_dim must be >= each raw per-agent action "
+                f"width; got pad={self.agent_action_pad_dim} widths={action_widths}"
+            )
         assert self.global_condition_mode in ("full", "current_repeat"), (
             "global_condition_mode must be 'full' or 'current_repeat'; "
             f"got {self.global_condition_mode!r}"
@@ -179,9 +207,50 @@ class BimanualDreamTransform(DreamTransform):
             return views[0]  # [T, C, H, W]
         return BimanualDreamTransform._tile_views_2x2(views)
 
-    def _split_dense(self, tensor, dims):
-        """``[T, D]`` -> ``[P, T, D_per_agent]`` (also works for masks)."""
-        per_agent = [tensor[:, a:b] for (a, b) in dims]
+    @staticmethod
+    def _pad_last_dim(tensor, target_dim: int, value=0):
+        """Pad ``[T, D]`` arrays/tensors on the last dim to ``target_dim``."""
+        import torch
+
+        width = tensor.shape[-1]
+        if width == target_dim:
+            return tensor
+        if width > target_dim:
+            return tensor[..., :target_dim]
+        pad = target_dim - width
+        if isinstance(tensor, np.ndarray):
+            return np.pad(tensor, ((0, 0), (0, pad)), constant_values=value)
+        if isinstance(tensor, torch.Tensor):
+            return torch.nn.functional.pad(tensor, (0, pad), value=value)
+        raise TypeError(f"Cannot pad type {type(tensor).__name__}")
+
+    def _split_dense(self, tensor, dims, pad_dim: int | None = None, value=0):
+        """``[T, D]`` -> ``[P, T, D_per_agent]`` with optional per-agent pad."""
+        per_agent = []
+        for a, b in dims:
+            part = tensor[:, a:b]
+            if pad_dim is not None:
+                part = self._pad_last_dim(part, pad_dim, value=value)
+            per_agent.append(part)
+        return self._stack_agents(per_agent)
+
+    def _split_mask_from_raw(self, tensor, dims, pad_dim: int | None = None):
+        """Build masks for raw split dims, with padded tail left false."""
+        import torch
+
+        per_agent = []
+        for a, b in dims:
+            width = b - a
+            target_width = width if pad_dim is None else pad_dim
+            shape = (tensor.shape[0], target_width)
+            if isinstance(tensor, np.ndarray):
+                mask = np.zeros(shape, dtype=bool)
+            elif isinstance(tensor, torch.Tensor):
+                mask = torch.zeros(shape, dtype=torch.bool, device=tensor.device)
+            else:
+                raise TypeError(f"Cannot mask type {type(tensor).__name__}")
+            mask[:, : min(width, target_width)] = True
+            per_agent.append(mask)
         return self._stack_agents(per_agent)
 
     def _prepare_global_video(self, data: dict) -> np.ndarray:
@@ -258,26 +327,61 @@ class BimanualDreamTransform(DreamTransform):
         # State / action splits. Images already carry a P axis thanks to
         # the ``_prepare_video`` + ``_apply_vlm_processing`` overrides --
         # no further split here.
+        state_source = data.get("state", out.get("state"))
+        action_source = data.get("action", out.get("action"))
+        lapa_action_source = data.get("lapa_action", action_source)
+
         if "state" in out:
-            out["state"] = self._split_dense(out["state"], self.agent_state_dims)
+            out["state"] = self._split_dense(
+                state_source,
+                self.agent_state_dims,
+                pad_dim=self.agent_state_pad_dim,
+            )
         if "state_mask" in out:
-            out["state_mask"] = self._split_dense(
-                out["state_mask"], self.agent_state_dims
-            )
+            if self.agent_state_pad_dim is None:
+                out["state_mask"] = self._split_dense(
+                    out["state_mask"], self.agent_state_dims
+                )
+            else:
+                out["state_mask"] = self._split_mask_from_raw(
+                    state_source,
+                    self.agent_state_dims,
+                    pad_dim=self.agent_state_pad_dim,
+                )
         if "action" in out:
-            out["action"] = self._split_dense(out["action"], self.agent_action_dims)
-        if "action_mask" in out:
-            out["action_mask"] = self._split_dense(
-                out["action_mask"], self.agent_action_dims
+            out["action"] = self._split_dense(
+                action_source,
+                self.agent_action_dims,
+                pad_dim=self.agent_action_pad_dim,
             )
+        if "action_mask" in out:
+            if self.agent_action_pad_dim is None:
+                out["action_mask"] = self._split_dense(
+                    out["action_mask"], self.agent_action_dims
+                )
+            else:
+                out["action_mask"] = self._split_mask_from_raw(
+                    action_source,
+                    self.agent_action_dims,
+                    pad_dim=self.agent_action_pad_dim,
+                )
         if "lapa_action" in out:
             out["lapa_action"] = self._split_dense(
-                out["lapa_action"], self.agent_action_dims
+                out["lapa_action"],
+                self.agent_action_dims,
+                pad_dim=self.agent_action_pad_dim,
             )
         if "lapa_action_mask" in out:
-            out["lapa_action_mask"] = self._split_dense(
-                out["lapa_action_mask"], self.agent_action_dims
-            )
+            if self.agent_action_pad_dim is None:
+                out["lapa_action_mask"] = self._split_dense(
+                    out["lapa_action_mask"], self.agent_action_dims
+                )
+            else:
+                out["lapa_action_mask"] = self._split_mask_from_raw(
+                    lapa_action_source,
+                    self.agent_action_dims,
+                    pad_dim=self.agent_action_pad_dim,
+                )
 
         # Shared-global stream: factor the scene camera out of the
         # per-agent video and emit it once under ``video_global``. The

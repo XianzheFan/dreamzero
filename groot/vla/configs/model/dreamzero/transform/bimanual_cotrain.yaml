@@ -13,6 +13,8 @@ defaults:
 agent_video_views: [[0, 1], [0, 2]]  # each agent: [top_shared, own_wrist]
 agent_state_dims: [[0, 7], [7, 14]]   # raw state 14-dim split 7+7
 agent_action_dims: [[0, 7], [7, 14]]  # raw action 14-dim split 7+7
+agent_state_pad_dim: null
+agent_action_pad_dim: null
 
 model_specific_transform:
   _target_: groot.vla.model.dreamzero.transform.bimanual_cotrain.BimanualDreamTransform
@@ -35,3 +37,5 @@ model_specific_transform:
   global_condition_mode: ${oc.select:global_condition_mode,full}
   agent_state_dims: ${agent_state_dims}
   agent_action_dims: ${agent_action_dims}
+  agent_state_pad_dim: ${agent_state_pad_dim}
+  agent_action_pad_dim: ${agent_action_pad_dim}

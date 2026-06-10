@@ -127,11 +127,16 @@ GRIPPER_BINARY_LOGIT_SCALE=${GRIPPER_BINARY_LOGIT_SCALE:-4.0}
 GRIPPER_BINARY_MAX_SIGMA=${GRIPPER_BINARY_MAX_SIGMA:-0.75}
 ACTION_PREFIX_LOSS_WEIGHT=${ACTION_PREFIX_LOSS_WEIGHT:-2.0}
 ACTION_PREFIX_LOSS_LEN=${ACTION_PREFIX_LOSS_LEN:-8}
+MODEL_MAX_STATE_DIM=${MODEL_MAX_STATE_DIM:-8}
+MODEL_ACTION_DIM=${MODEL_ACTION_DIM:-8}
+AGENT_STATE_PAD_DIM=${AGENT_STATE_PAD_DIM:-null}
+AGENT_ACTION_PAD_DIM=${AGENT_ACTION_PAD_DIM:-null}
 
 echo "save_steps=$SAVE_STEPS  save_total_limit=$SAVE_TOTAL_LIMIT"
 echo "dataset_shard_sampling_rate=$DATASET_SHARD_SAMPLING_RATE"
 echo "action_loss_weight=$ACTION_LOSS_WEIGHT  gripper_action_loss_weight=$GRIPPER_ACTION_LOSS_WEIGHT  gripper_close_action_loss_weight=$GRIPPER_CLOSE_ACTION_LOSS_WEIGHT  gripper_close_threshold=$GRIPPER_CLOSE_THRESHOLD  gripper_action_dims=[$GRIPPER_ACTION_DIMS]  gripper_clean_action_loss_weight=$GRIPPER_CLEAN_ACTION_LOSS_WEIGHT  gripper_clean_close_action_loss_weight=$GRIPPER_CLEAN_CLOSE_ACTION_LOSS_WEIGHT  gripper_clean_max_sigma=$GRIPPER_CLEAN_MAX_SIGMA  action_prefix_loss_weight=$ACTION_PREFIX_LOSS_WEIGHT  action_prefix_loss_len=$ACTION_PREFIX_LOSS_LEN"
 echo "gripper_binary_action_loss_weight=$GRIPPER_BINARY_ACTION_LOSS_WEIGHT  gripper_binary_close_action_loss_weight=$GRIPPER_BINARY_CLOSE_ACTION_LOSS_WEIGHT  gripper_binary_logit_scale=$GRIPPER_BINARY_LOGIT_SCALE  gripper_binary_max_sigma=$GRIPPER_BINARY_MAX_SIGMA"
+echo "model_max_state_dim=$MODEL_MAX_STATE_DIM  model_action_dim=$MODEL_ACTION_DIM  agent_state_pad_dim=$AGENT_STATE_PAD_DIM  agent_action_pad_dim=$AGENT_ACTION_PAD_DIM"
 
 WAN_CKPT_DIR=${WAN_CKPT_DIR:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/Wan2.1-I2V-14B-480P"}
 TOKENIZER_DIR=${TOKENIZER_DIR:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/umt5-xxl"}
@@ -191,6 +196,8 @@ torchrun --nproc_per_node $NUM_GPUS --standalone groot/vla/experiment/experiment
     save_strategy=steps \
     robofactory_data_root=$ROBOFACTORY_DATA_ROOT \
     dataset_shard_sampling_rate=$DATASET_SHARD_SAMPLING_RATE \
+    ++agent_state_pad_dim=$AGENT_STATE_PAD_DIM \
+    ++agent_action_pad_dim=$AGENT_ACTION_PAD_DIM \
     dit_version=$WAN_CKPT_DIR \
     text_encoder_pretrained_path=$WAN_CKPT_DIR/models_t5_umt5-xxl-enc-bf16.pth \
     image_encoder_pretrained_path=$WAN_CKPT_DIR/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth \
@@ -213,10 +220,10 @@ torchrun --nproc_per_node $NUM_GPUS --standalone groot/vla/experiment/experiment
     ++action_head_cfg.config.gripper_binary_max_sigma=$GRIPPER_BINARY_MAX_SIGMA \
     ++action_head_cfg.config.action_prefix_loss_weight=$ACTION_PREFIX_LOSS_WEIGHT \
     ++action_head_cfg.config.action_prefix_loss_len=$ACTION_PREFIX_LOSS_LEN \
-    ++action_head_cfg.config.max_state_dim=8 \
-    ++action_head_cfg.config.action_dim=8 \
+    ++action_head_cfg.config.max_state_dim=$MODEL_MAX_STATE_DIM \
+    ++action_head_cfg.config.action_dim=$MODEL_ACTION_DIM \
     ++action_head_cfg.config.diffusion_model_cfg.num_agents=$NUM_ARMS \
-    ++action_head_cfg.config.diffusion_model_cfg.max_state_dim=8 \
-    ++action_head_cfg.config.diffusion_model_cfg.action_dim=8 \
+    ++action_head_cfg.config.diffusion_model_cfg.max_state_dim=$MODEL_MAX_STATE_DIM \
+    ++action_head_cfg.config.diffusion_model_cfg.action_dim=$MODEL_ACTION_DIM \
     ++action_head_cfg.config.diffusion_model_cfg.concat_first_frame_latent=$CONCAT_FIRST_FRAME_LATENT \
     ++action_head_cfg.config.diffusion_model_cfg.in_dim=$DIFFUSION_IN_DIM
