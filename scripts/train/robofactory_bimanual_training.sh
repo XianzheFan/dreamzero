@@ -18,6 +18,10 @@
 #   ROBOFACTORY_DATA_ROOT=/path/to/lerobot_v2/CameraAlignment-rf \
 #   OUTPUT_DIR=$HOME/checkpoints/robofactory_3arm_smoke \
 #   bash scripts/train/robofactory_bimanual_training.sh
+#
+# Multi-node:
+#   NUM_NODES=2 NODE_RANK=0 MASTER_ADDR=$MASTER_HOST NUM_GPUS=8 \
+#   bash scripts/train/robofactory_bimanual_training.sh
 
 export HYDRA_FULL_ERROR=1
 # Multi-agent sparse hub attention uses a custom token-routing topology
@@ -104,6 +108,8 @@ echo "NUM_ARMS=$NUM_ARMS  SHARED_GLOBAL=$SHARED_GLOBAL  data=$DATA_CFG  gradient
 ROBOFACTORY_DATA_ROOT=${ROBOFACTORY_DATA_ROOT:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/data/robofactory_lerobot_v2/LiftBarrier-rf"}
 OUTPUT_DIR=${OUTPUT_DIR:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/robofactory_bimanual_smoke"}
 NUM_GPUS=${NUM_GPUS:-1}
+NUM_NODES=${NUM_NODES:-${NNODES:-1}}
+MASTER_PORT=${MASTER_PORT:-29500}
 MAX_STEPS=${MAX_STEPS:-3}
 BATCH_SIZE=${BATCH_SIZE:-1}
 SAVE_STEPS=${SAVE_STEPS:-$MAX_STEPS}
@@ -131,12 +137,71 @@ MODEL_MAX_STATE_DIM=${MODEL_MAX_STATE_DIM:-8}
 MODEL_ACTION_DIM=${MODEL_ACTION_DIM:-8}
 AGENT_STATE_PAD_DIM=${AGENT_STATE_PAD_DIM:-null}
 AGENT_ACTION_PAD_DIM=${AGENT_ACTION_PAD_DIM:-null}
+GLOBAL_BATCH_SIZE=${GLOBAL_BATCH_SIZE:-}
+
+case "$NUM_GPUS" in
+    ''|*[!0-9]*) echo "NUM_GPUS must be a positive integer, got '$NUM_GPUS'" >&2; exit 1 ;;
+esac
+case "$NUM_NODES" in
+    ''|*[!0-9]*) echo "NUM_NODES must be a positive integer, got '$NUM_NODES'" >&2; exit 1 ;;
+esac
+case "$MASTER_PORT" in
+    ''|*[!0-9]*) echo "MASTER_PORT must be a positive integer, got '$MASTER_PORT'" >&2; exit 1 ;;
+esac
+if [ "$NUM_GPUS" -lt 1 ]; then
+    echo "NUM_GPUS must be >= 1, got '$NUM_GPUS'" >&2
+    exit 1
+fi
+if [ "$NUM_NODES" -lt 1 ]; then
+    echo "NUM_NODES must be >= 1, got '$NUM_NODES'" >&2
+    exit 1
+fi
+if [ -n "$GLOBAL_BATCH_SIZE" ]; then
+    case "$GLOBAL_BATCH_SIZE" in
+        *[!0-9]*) echo "GLOBAL_BATCH_SIZE must be a positive integer when set, got '$GLOBAL_BATCH_SIZE'" >&2; exit 1 ;;
+    esac
+    if [ "$GLOBAL_BATCH_SIZE" -lt 1 ]; then
+        echo "GLOBAL_BATCH_SIZE must be >= 1 when set, got '$GLOBAL_BATCH_SIZE'" >&2
+        exit 1
+    fi
+fi
+
+TORCHRUN_ARGS=(--nproc_per_node "$NUM_GPUS")
+if [ "$NUM_NODES" -gt 1 ]; then
+    if [ -z "${NODE_RANK+x}" ]; then
+        echo "NODE_RANK must be set when NUM_NODES=$NUM_NODES" >&2
+        exit 1
+    fi
+    case "$NODE_RANK" in
+        ''|*[!0-9]*) echo "NODE_RANK must be a non-negative integer, got '$NODE_RANK'" >&2; exit 1 ;;
+    esac
+    if [ "$NODE_RANK" -ge "$NUM_NODES" ]; then
+        echo "NODE_RANK must be < NUM_NODES (${NUM_NODES}), got '$NODE_RANK'" >&2
+        exit 1
+    fi
+    if [ -z "${MASTER_ADDR:-}" ]; then
+        echo "MASTER_ADDR must be set when NUM_NODES=$NUM_NODES" >&2
+        exit 1
+    fi
+    TORCHRUN_ARGS+=(--nnodes "$NUM_NODES" --node_rank "$NODE_RANK" --master_addr "$MASTER_ADDR" --master_port "$MASTER_PORT")
+else
+    NODE_RANK=${NODE_RANK:-0}
+    MASTER_ADDR=${MASTER_ADDR:-}
+    TORCHRUN_ARGS+=(--standalone)
+fi
+TOTAL_GPUS=$((NUM_GPUS * NUM_NODES))
+
+GLOBAL_BATCH_SIZE_ARG=()
+if [ -n "$GLOBAL_BATCH_SIZE" ]; then
+    GLOBAL_BATCH_SIZE_ARG=(global_batch_size=$GLOBAL_BATCH_SIZE)
+fi
 
 echo "save_steps=$SAVE_STEPS  save_total_limit=$SAVE_TOTAL_LIMIT"
 echo "dataset_shard_sampling_rate=$DATASET_SHARD_SAMPLING_RATE"
 echo "action_loss_weight=$ACTION_LOSS_WEIGHT  gripper_action_loss_weight=$GRIPPER_ACTION_LOSS_WEIGHT  gripper_close_action_loss_weight=$GRIPPER_CLOSE_ACTION_LOSS_WEIGHT  gripper_close_threshold=$GRIPPER_CLOSE_THRESHOLD  gripper_action_dims=[$GRIPPER_ACTION_DIMS]  gripper_clean_action_loss_weight=$GRIPPER_CLEAN_ACTION_LOSS_WEIGHT  gripper_clean_close_action_loss_weight=$GRIPPER_CLEAN_CLOSE_ACTION_LOSS_WEIGHT  gripper_clean_max_sigma=$GRIPPER_CLEAN_MAX_SIGMA  action_prefix_loss_weight=$ACTION_PREFIX_LOSS_WEIGHT  action_prefix_loss_len=$ACTION_PREFIX_LOSS_LEN"
 echo "gripper_binary_action_loss_weight=$GRIPPER_BINARY_ACTION_LOSS_WEIGHT  gripper_binary_close_action_loss_weight=$GRIPPER_BINARY_CLOSE_ACTION_LOSS_WEIGHT  gripper_binary_logit_scale=$GRIPPER_BINARY_LOGIT_SCALE  gripper_binary_max_sigma=$GRIPPER_BINARY_MAX_SIGMA"
 echo "model_max_state_dim=$MODEL_MAX_STATE_DIM  model_action_dim=$MODEL_ACTION_DIM  agent_state_pad_dim=$AGENT_STATE_PAD_DIM  agent_action_pad_dim=$AGENT_ACTION_PAD_DIM"
+echo "num_nodes=$NUM_NODES  node_rank=$NODE_RANK  num_gpus_per_node=$NUM_GPUS  total_gpus=$TOTAL_GPUS  master_addr=${MASTER_ADDR:-standalone}  master_port=$MASTER_PORT  global_batch_size=${GLOBAL_BATCH_SIZE:-unset}"
 
 WAN_CKPT_DIR=${WAN_CKPT_DIR:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/Wan2.1-I2V-14B-480P"}
 TOKENIZER_DIR=${TOKENIZER_DIR:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/umt5-xxl"}
@@ -156,7 +221,8 @@ if [ ! -d "$ROBOFACTORY_DATA_ROOT" ]; then
     exit 1
 fi
 
-torchrun --nproc_per_node $NUM_GPUS --standalone groot/vla/experiment/experiment.py \
+torchrun "${TORCHRUN_ARGS[@]}" groot/vla/experiment/experiment.py \
+    "${GLOBAL_BATCH_SIZE_ARG[@]}" \
     report_to=$REPORT_TO \
     wandb_project=$WANDB_PROJECT \
     +training_args.run_name=$WANDB_RUN_NAME \

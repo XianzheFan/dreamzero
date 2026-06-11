@@ -53,5 +53,30 @@ def test_robofactory_training_script_preserves_droid_i2v_patch_embedding_by_defa
     assert "++action_head_cfg.config.diffusion_model_cfg.in_dim=16" not in script
 
 
+def test_robofactory_training_script_supports_multinode_torchrun():
+    script = SCRIPT_PATH.read_text()
+
+    for marker in (
+        "NUM_NODES=${NUM_NODES:-${NNODES:-1}}",
+        "MASTER_PORT=${MASTER_PORT:-29500}",
+        "NODE_RANK must be set when NUM_NODES=$NUM_NODES",
+        "MASTER_ADDR must be set when NUM_NODES=$NUM_NODES",
+        'TORCHRUN_ARGS=(--nproc_per_node "$NUM_GPUS")',
+        'TORCHRUN_ARGS+=(--nnodes "$NUM_NODES" --node_rank "$NODE_RANK" --master_addr "$MASTER_ADDR" --master_port "$MASTER_PORT")',
+        "TORCHRUN_ARGS+=(--standalone)",
+        'torchrun "${TORCHRUN_ARGS[@]}" groot/vla/experiment/experiment.py',
+    ):
+        assert marker in script
+
+
+def test_robofactory_training_script_can_pin_global_batch_size():
+    script = SCRIPT_PATH.read_text()
+
+    assert "GLOBAL_BATCH_SIZE=${GLOBAL_BATCH_SIZE:-}" in script
+    assert "GLOBAL_BATCH_SIZE_ARG=()" in script
+    assert "GLOBAL_BATCH_SIZE_ARG=(global_batch_size=$GLOBAL_BATCH_SIZE)" in script
+    assert '"${GLOBAL_BATCH_SIZE_ARG[@]}" \\' in script
+
+
 def test_robofactory_training_script_is_valid_bash():
     subprocess.run(["bash", "-n", str(SCRIPT_PATH)], check=True)
