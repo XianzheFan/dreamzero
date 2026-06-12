@@ -64,3 +64,28 @@ def test_open_then_close_after_step_forces_schedule(monkeypatch):
     np.testing.assert_allclose(early[[7, 15]], [1.0, 1.0])
     np.testing.assert_allclose(late[[7, 15]], [-1.0, -1.0])
 
+
+def test_scale_joint_targets_preserves_grippers(monkeypatch):
+    mod = _load_eval_module(monkeypatch)
+    qpos = np.arange(16, dtype=np.float32)
+    action = qpos.copy()
+    action[0:7] += 0.1
+    action[8:15] -= 0.2
+    action[7] = -1.0
+    action[15] = 1.0
+
+    out = mod.scale_joint_targets(action, qpos, scale=2.0)
+
+    np.testing.assert_allclose(out[0:7], qpos[0:7] + 0.2, atol=1e-6)
+    np.testing.assert_allclose(out[8:15], qpos[8:15] - 0.4, atol=1e-6)
+    np.testing.assert_allclose(out[[7, 15]], [-1.0, 1.0])
+
+
+def test_scale_joint_targets_one_is_noop(monkeypatch):
+    mod = _load_eval_module(monkeypatch)
+    qpos = np.arange(16, dtype=np.float32)
+    action = qpos + 0.5
+
+    out = mod.scale_joint_targets(action, qpos, scale=1.0)
+
+    np.testing.assert_allclose(out, action)

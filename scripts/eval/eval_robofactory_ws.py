@@ -120,6 +120,28 @@ def env_action_dict(abs16: np.ndarray) -> dict:
     }
 
 
+def scale_joint_targets(
+    action16: np.ndarray,
+    reference_qpos16: np.ndarray,
+    scale: float,
+) -> np.ndarray:
+    """Scale joint target displacement from the current 16-D qpos.
+
+    This is an eval-only diagnostic for separating under-sized joint
+    commands from gripper timing. Gripper commands are copied verbatim.
+    """
+    out = np.asarray(action16, dtype=np.float32).copy()
+    if scale == 1.0:
+        return out
+    if not np.isfinite(scale) or scale <= 0.0:
+        raise ValueError(f"joint target scale must be positive and finite, got {scale}")
+
+    qpos16 = np.asarray(reference_qpos16, dtype=np.float32)
+    out[0:7] = qpos16[0:7] + scale * (out[0:7] - qpos16[0:7])
+    out[8:15] = qpos16[8:15] + scale * (out[8:15] - qpos16[8:15])
+    return out
+
+
 def apply_gripper_override(
     action16: np.ndarray,
     step: int,
@@ -174,6 +196,7 @@ def run_episode(
     replan_every: int,
     max_steps: int,
     action_representation: str,
+    joint_target_scale: float,
     gripper_override: str,
     gripper_close_after_step: int,
     gripper_open_value: float,
@@ -235,6 +258,7 @@ def run_episode(
         cur = qpos.copy()
         for da in actions[:replan_every]:
             abs16 = integrate_action(da, cur, action_representation)
+            abs16 = scale_joint_targets(abs16, cur, joint_target_scale)
             abs16 = apply_gripper_override(
                 abs16,
                 steps,
@@ -299,6 +323,16 @@ def main():
     ap.add_argument("--gripper-open-value", type=float, default=1.0)
     ap.add_argument("--gripper-close-value", type=float, default=-1.0)
     ap.add_argument(
+        "--joint-target-scale",
+        type=float,
+        default=1.0,
+        help=(
+            "Eval-only diagnostic: scale joint target displacement relative to "
+            "the current commanded qpos before gripper overrides. 1.0 preserves "
+            "policy output."
+        ),
+    )
+    ap.add_argument(
         "--video-dir",
         default=None,
         help="If set, wrap env with RecordEpisode and write one mp4 per seed.",
@@ -327,6 +361,7 @@ def main():
     print(f"Seeds:         {args.seed_start}..{args.seed_start + args.num_episodes - 1}")
     print(f"Max steps:     {args.max_steps}")
     print(f"Replan every:  {args.replan_every}")
+    print(f"Joint scale:   {args.joint_target_scale}")
     print(f"Gripper mode:  {args.gripper_override}")
     if args.gripper_override in ("close-after-step", "open-then-close-after-step"):
         print(f"Close after:   {args.gripper_close_after_step}")
@@ -404,6 +439,7 @@ def main():
                         "num_episodes": args.num_episodes,
                         "max_steps": args.max_steps,
                         "replan_every": args.replan_every,
+                        "joint_target_scale": args.joint_target_scale,
                         "prompt": args.prompt,
                         "gripper_override": args.gripper_override,
                         "gripper_close_after_step": args.gripper_close_after_step,
@@ -457,6 +493,7 @@ def main():
             success, steps = run_episode(
                 env, ws, seed, args.prompt, args.replan_every, args.max_steps,
                 action_representation=action_representation,
+                joint_target_scale=args.joint_target_scale,
                 gripper_override=args.gripper_override,
                 gripper_close_after_step=args.gripper_close_after_step,
                 gripper_open_value=args.gripper_open_value,
