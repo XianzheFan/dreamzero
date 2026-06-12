@@ -212,6 +212,42 @@ def _range_stats(values: np.ndarray) -> dict[str, float]:
     }
 
 
+def _abs_stats(values: np.ndarray) -> dict[str, float]:
+    if values.size == 0:
+        return {
+            "mean_abs": 0.0,
+            "max_abs": 0.0,
+            "p95_abs": 0.0,
+        }
+    abs_values = np.abs(values)
+    return {
+        "mean_abs": float(abs_values.mean()),
+        "max_abs": float(abs_values.max()),
+        "p95_abs": float(np.quantile(abs_values, 0.95)),
+    }
+
+
+def _fmt_range(stats: dict[str, float]) -> str:
+    return (
+        f"min={stats['min']:+.3f} max={stats['max']:+.3f} "
+        f"mean={stats['mean']:+.3f} std={stats['std']:.3f}"
+    )
+
+
+def _fmt_abs(stats: dict[str, float]) -> str:
+    return (
+        f"mean_abs={stats['mean_abs']:.3f} "
+        f"p95_abs={stats['p95_abs']:.3f} "
+        f"max_abs={stats['max_abs']:.3f}"
+    )
+
+
+def _round_list(values: np.ndarray, digits: int = 4) -> list[float]:
+    if values.size == 0:
+        return []
+    return np.round(values.astype(np.float64), digits).tolist()
+
+
 def analyze_episode(
     path: str,
     close_threshold: float,
@@ -277,15 +313,34 @@ def analyze_episode(
 
     first_cmd_delta_mean = None
     first_cmd_delta_max = None
+    joint_debug: dict[str, Any] = {
+        "exec_joint": _range_stats(exec_action[:, joint_dims]) if joint_dims else None,
+        "exec_joint_step_delta": _abs_stats(joint_step_delta),
+        "pred_chunk_joint": _range_stats(pred_chunk[..., joint_dims]) if joint_dims else None,
+    }
     if (
         joint_dims
         and obs_qpos.ndim == 2
         and obs_qpos.shape[0] == pred_chunk.shape[0]
         and obs_qpos.shape[1] >= action_dim
     ):
-        first_cmd_delta = np.abs(pred_chunk[:, 0, joint_dims] - obs_qpos[:, joint_dims])
+        first_cmd_delta_signed = pred_chunk[:, 0, joint_dims] - obs_qpos[:, joint_dims]
+        first_cmd_delta = np.abs(first_cmd_delta_signed)
         first_cmd_delta_mean = float(first_cmd_delta.mean())
         first_cmd_delta_max = float(first_cmd_delta.max())
+        joint_debug.update(
+            {
+                "obs_qpos_joint": _range_stats(obs_qpos[:, joint_dims]),
+                "first_cmd_delta_signed": _range_stats(first_cmd_delta_signed),
+                "first_cmd_delta_abs": _abs_stats(first_cmd_delta_signed),
+                "first_cmd_delta_abs_per_dim_mean": _round_list(
+                    first_cmd_delta.mean(axis=0)
+                ),
+                "first_cmd_delta_abs_per_dim_max": _round_list(
+                    first_cmd_delta.max(axis=0)
+                ),
+            }
+        )
 
     pred_offsets = {
         label: _chunk_close_offsets(pred_chunk, dim, decisive_threshold)
@@ -297,6 +352,13 @@ def analyze_episode(
         raw_grip = action_norm_raw[..., gripper_dims]
         clipped_grip = action_norm_clipped[..., gripper_dims]
         clamp_delta = np.abs(action_norm_raw - action_norm_clipped)
+        raw_joint = action_norm_raw[..., joint_dims] if joint_dims else np.asarray([])
+        clipped_joint = action_norm_clipped[..., joint_dims] if joint_dims else np.asarray([])
+        joint_clamp_delta = (
+            np.abs(raw_joint - clipped_joint)
+            if raw_joint.size and clipped_joint.size
+            else np.asarray([])
+        )
         norm_debug = {
             "raw_gripper": _range_stats(raw_grip),
             "clipped_gripper": _range_stats(clipped_grip),
@@ -313,6 +375,16 @@ def analyze_episode(
             "clamp_delta_mean": float(clamp_delta.mean()),
             "clamp_delta_max": float(clamp_delta.max()),
         }
+        if raw_joint.size:
+            norm_debug.update(
+                {
+                    "raw_joint": _range_stats(raw_joint),
+                    "clipped_joint": _range_stats(clipped_joint),
+                    "raw_joint_saturation_frac": float((np.abs(raw_joint) >= 0.999).mean()),
+                    "joint_clamp_delta_mean": float(joint_clamp_delta.mean()),
+                    "joint_clamp_delta_max": float(joint_clamp_delta.max()),
+                }
+            )
 
     episode = {
         "file": os.path.basename(path),
@@ -331,6 +403,7 @@ def analyze_episode(
         "mean_joint_step_delta": mean_joint_step_delta,
         "first_cmd_delta_mean": first_cmd_delta_mean,
         "first_cmd_delta_max": first_cmd_delta_max,
+        "joint_debug": joint_debug,
         "norm_debug": norm_debug,
     }
 
@@ -378,6 +451,20 @@ def analyze_episode(
             f"max_abs={first_cmd_delta_max:.3f}"
         )
     print(delta_msg)
+    if joint_debug["exec_joint"] is not None:
+        print(f"  exec joint range: {_fmt_range(joint_debug['exec_joint'])}")
+        print(f"  pred chunk joint range: {_fmt_range(joint_debug['pred_chunk_joint'])}")
+        if "obs_qpos_joint" in joint_debug:
+            print(f"  obs qpos joint range: {_fmt_range(joint_debug['obs_qpos_joint'])}")
+            print(
+                "  first_cmd_vs_obs signed: "
+                f"{_fmt_range(joint_debug['first_cmd_delta_signed'])} | "
+                f"{_fmt_abs(joint_debug['first_cmd_delta_abs'])}"
+            )
+            print(
+                "  first_cmd_vs_obs per-dim mean_abs: "
+                f"{joint_debug['first_cmd_delta_abs_per_dim_mean']}"
+            )
 
     if infer_step.size:
         print(f"  infer steps: first={int(infer_step[0])} last={int(infer_step[-1])} count={infer_step.size}")
@@ -390,6 +477,15 @@ def analyze_episode(
             f"clamp_delta_mean={norm_debug['clamp_delta_mean']:.3f} "
             f"clamp_delta_max={norm_debug['clamp_delta_max']:.3f}"
         )
+        if "raw_joint" in norm_debug:
+            rj = norm_debug["raw_joint"]
+            print(
+                "  raw normalized joints: "
+                f"min={rj['min']:+.2f} max={rj['max']:+.2f} "
+                f"sat_frac={norm_debug['raw_joint_saturation_frac']:.2f} "
+                f"joint_clamp_delta_mean={norm_debug['joint_clamp_delta_mean']:.3f} "
+                f"joint_clamp_delta_max={norm_debug['joint_clamp_delta_max']:.3f}"
+            )
 
     return episode
 
