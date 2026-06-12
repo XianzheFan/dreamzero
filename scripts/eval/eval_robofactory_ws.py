@@ -316,6 +316,7 @@ def run_episode(
     gripper_close_value: float,
     joint_delta_scale: float,
     joint_delta_clip: float | None,
+    joint_delta_scale_reference: str,
     dump: dict | None = None,
 ):
     raw_obs, _ = env.reset(seed=seed)
@@ -371,11 +372,17 @@ def run_episode(
                 )
 
         cur = qpos.copy()
+        chunk_reference = qpos.copy()
         for da in actions[:replan_every]:
             abs16 = integrate_action(da, cur, action_representation)
+            scale_reference = (
+                chunk_reference
+                if joint_delta_scale_reference == "chunk"
+                else cur
+            )
             abs16 = scale_joint_target_delta(
                 abs16,
-                cur,
+                scale_reference,
                 joint_delta_scale,
                 joint_delta_clip,
             )
@@ -478,6 +485,17 @@ def main():
         ),
     )
     ap.add_argument(
+        "--joint-delta-scale-reference",
+        choices=("previous", "chunk"),
+        default="previous",
+        help=(
+            "Reference for --joint-delta-scale. 'previous' scales each target "
+            "relative to the previous commanded target; 'chunk' scales every "
+            "target in a replan window relative to the qpos observed at that "
+            "replan."
+        ),
+    )
+    ap.add_argument(
         "--video-dir",
         default=None,
         help="If set, wrap env with RecordEpisode and write one mp4 per seed.",
@@ -507,7 +525,10 @@ def main():
     print(f"Max steps:     {args.max_steps}")
     print(f"Replan every:  {args.replan_every}")
     print(f"Gripper mode:  {args.gripper_override}")
-    print(f"Joint scale:   {args.joint_delta_scale} clip={args.joint_delta_clip}")
+    print(
+        f"Joint scale:   {args.joint_delta_scale} "
+        f"clip={args.joint_delta_clip} ref={args.joint_delta_scale_reference}"
+    )
     if args.gripper_override in {
         "close-after-step",
         "open-until-step",
@@ -595,6 +616,7 @@ def main():
                         "gripper_close_value": args.gripper_close_value,
                         "joint_delta_scale": args.joint_delta_scale,
                         "joint_delta_clip": args.joint_delta_clip,
+                        "joint_delta_scale_reference": args.joint_delta_scale_reference,
                     },
                     "n_completed": len(results),
                     "n_target": args.num_episodes,
@@ -655,6 +677,7 @@ def main():
                 gripper_close_value=args.gripper_close_value,
                 joint_delta_scale=args.joint_delta_scale,
                 joint_delta_clip=args.joint_delta_clip,
+                joint_delta_scale_reference=args.joint_delta_scale_reference,
                 dump=dump,
             )
         except Exception as e:
