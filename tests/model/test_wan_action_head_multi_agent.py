@@ -482,6 +482,64 @@ def test_first_close_joint_loss_ignores_trajectories_without_close():
     torch.testing.assert_close(weighted, torch.ones(1, 1, 4, 3))
 
 
+def test_pre_close_joint_loss_weights_only_joint_dims_before_first_close():
+    Cls = _load_head_cls()
+    head = Cls.__new__(Cls)
+    torch.nn.Module.__init__(head)
+    head.config = types.SimpleNamespace(
+        action_loss_weight=1.0,
+        gripper_action_loss_weight=1.0,
+        gripper_close_action_loss_weight=1.0,
+        gripper_close_threshold=0.0,
+        action_prefix_loss_weight=1.0,
+        action_prefix_loss_len=0,
+        pre_close_joint_loss_weight=4.0,
+        pre_close_joint_loss_window_before=2,
+        gripper_action_dims=[1],
+    )
+
+    weighted = head._apply_action_loss_weights(
+        torch.ones(1, 1, 5, 3),
+        actions=torch.tensor(
+            [[[[0.0, 1.0, 0.0],
+               [0.0, 1.0, 0.0],
+               [0.0, -1.0, 0.0],
+               [0.0, -1.0, 0.0],
+               [0.0, -1.0, 0.0]]]]
+        ),
+    )
+
+    expected = torch.ones(1, 1, 5, 3)
+    expected[:, :, 0:2, [0, 2]] = 4.0
+    torch.testing.assert_close(weighted, expected)
+
+
+def test_joint_prefix_loss_weights_only_joint_dims_in_early_horizon():
+    Cls = _load_head_cls()
+    head = Cls.__new__(Cls)
+    torch.nn.Module.__init__(head)
+    head.config = types.SimpleNamespace(
+        action_loss_weight=1.0,
+        gripper_action_loss_weight=1.0,
+        gripper_close_action_loss_weight=1.0,
+        gripper_close_threshold=0.0,
+        action_prefix_loss_weight=1.0,
+        action_prefix_loss_len=0,
+        joint_prefix_loss_weight=5.0,
+        joint_prefix_loss_len=2,
+        gripper_action_dims=[1],
+    )
+
+    weighted = head._apply_action_loss_weights(
+        torch.ones(1, 1, 4, 3),
+        actions=torch.ones(1, 1, 4, 3),
+    )
+
+    expected = torch.ones(1, 1, 4, 3)
+    expected[:, :, 0:2, [0, 2]] = 5.0
+    torch.testing.assert_close(weighted, expected)
+
+
 def test_gripper_clean_action_loss_ignores_fake_or_masked_actions():
     Cls = _load_head_cls()
     head = Cls.__new__(Cls)

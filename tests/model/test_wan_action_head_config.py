@@ -31,6 +31,10 @@ def test_wan_action_head_yaml_parses_and_contains_gripper_clean_defaults():
     assert head_cfg["first_close_joint_loss_weight"] == 1.0
     assert head_cfg["first_close_joint_loss_window_before"] == 0
     assert head_cfg["first_close_joint_loss_window_after"] == 0
+    assert head_cfg["joint_prefix_loss_weight"] == 1.0
+    assert head_cfg["joint_prefix_loss_len"] == 0
+    assert head_cfg["pre_close_joint_loss_weight"] == 1.0
+    assert head_cfg["pre_close_joint_loss_window_before"] == 0
     assert "gripper_clean_action_loss_weight" not in cfg
     assert "gripper_binary_action_loss_weight" not in cfg
 
@@ -55,3 +59,7 @@ def test_wan_action_head_config_imports_with_gripper_defaults():
     assert cfg.first_close_joint_loss_weight == 1.0
     assert cfg.first_close_joint_loss_window_before == 0
     assert cfg.first_close_joint_loss_window_after == 0
+    assert cfg.joint_prefix_loss_weight == 1.0
+    assert cfg.joint_prefix_loss_len == 0
+    assert cfg.pre_close_joint_loss_weight == 1.0
+    assert cfg.pre_close_joint_loss_window_before == 0

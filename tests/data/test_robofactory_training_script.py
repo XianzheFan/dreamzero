@@ -46,6 +46,24 @@ def test_robofactory_training_script_passes_first_close_joint_loss_knobs():
         assert marker in script
 
 
+def test_robofactory_training_script_passes_approach_joint_loss_knobs():
+    script = SCRIPT_PATH.read_text()
+
+    for marker in (
+        "JOINT_PREFIX_LOSS_WEIGHT=${JOINT_PREFIX_LOSS_WEIGHT:-1.0}",
+        "JOINT_PREFIX_LOSS_LEN=${JOINT_PREFIX_LOSS_LEN:-0}",
+        "PRE_CLOSE_JOINT_LOSS_WEIGHT=${PRE_CLOSE_JOINT_LOSS_WEIGHT:-1.0}",
+        "PRE_CLOSE_JOINT_LOSS_WINDOW_BEFORE=${PRE_CLOSE_JOINT_LOSS_WINDOW_BEFORE:-0}",
+        "joint_prefix_loss_weight=$JOINT_PREFIX_LOSS_WEIGHT",
+        "pre_close_joint_loss_weight=$PRE_CLOSE_JOINT_LOSS_WEIGHT",
+        "++action_head_cfg.config.joint_prefix_loss_weight=$JOINT_PREFIX_LOSS_WEIGHT",
+        "++action_head_cfg.config.joint_prefix_loss_len=$JOINT_PREFIX_LOSS_LEN",
+        "++action_head_cfg.config.pre_close_joint_loss_weight=$PRE_CLOSE_JOINT_LOSS_WEIGHT",
+        "++action_head_cfg.config.pre_close_joint_loss_window_before=$PRE_CLOSE_JOINT_LOSS_WINDOW_BEFORE",
+    ):
+        assert marker in script
+
+
 def test_robofactory_training_script_uses_full_dataset_sampling_by_default():
     script = SCRIPT_PATH.read_text()
 
