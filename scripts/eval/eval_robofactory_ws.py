@@ -170,6 +170,118 @@ def _bool_from(info_val) -> bool:
     return bool(info_val)
 
 
+def _trace_array(x):
+    if x is None:
+        return None
+    if hasattr(x, "detach"):
+        x = x.detach().cpu().numpy()
+    elif hasattr(x, "cpu"):
+        x = x.cpu().numpy()
+    return np.asarray(x)
+
+
+def _trace_float(x):
+    arr = _trace_array(x)
+    if arr is None:
+        return None
+    arr = np.asarray(arr).reshape(-1)
+    if arr.size == 0:
+        return None
+    return float(arr[0])
+
+
+def _trace_xyz(actor):
+    pose = getattr(actor, "pose", None)
+    p = getattr(pose, "p", None)
+    arr = _trace_array(p)
+    if arr is None or arr.size == 0:
+        return [None, None, None]
+    arr = np.asarray(arr, dtype=np.float64)
+    row = arr if arr.ndim == 1 else arr.reshape(-1, arr.shape[-1])[0]
+    return [float(row[i]) if i < row.shape[0] else None for i in range(3)]
+
+
+def _trace_obs_qpos(obs):
+    try:
+        q0 = _to_np(obs["agent"]["panda-0"]["qpos"]).astype(np.float32)
+        q1 = _to_np(obs["agent"]["panda-1"]["qpos"]).astype(np.float32)
+        return np.concatenate([q0[:8], q1[:8]]).astype(float).tolist()
+    except Exception:
+        return None
+
+
+def _xy_dist(a, b):
+    if not isinstance(a, list) or not isinstance(b, list) or len(a) < 2 or len(b) < 2:
+        return None
+    if a[0] is None or a[1] is None or b[0] is None or b[1] is None:
+        return None
+    return float(np.linalg.norm(np.asarray(a[:2], dtype=np.float64) - np.asarray(b[:2], dtype=np.float64)))
+
+
+def _less_than(a, b):
+    if a is None or b is None:
+        return False
+    return bool(a < b)
+
+
+def _trace_state(env, info, reward, term, trunc, seed, step_before, qpos_before, action, obs_after):
+    e = getattr(env, "unwrapped", env)
+    meat_xyz = _trace_xyz(getattr(e, "meat", None))
+    pot_xyz = _trace_xyz(getattr(e, "pot", None))
+    agent_root = getattr(e, "agent", None)
+    agents = list(getattr(agent_root, "agents", []) or [])
+    base_xyz = _trace_xyz(getattr(agents[0], "robot", None)) if agents else [None, None, None]
+    tcp_xyz = [_trace_xyz(getattr(agent, "tcp", None)) for agent in agents]
+
+    base_z = base_xyz[2] if len(base_xyz) >= 3 else None
+    meat_z = meat_xyz[2] if len(meat_xyz) >= 3 else None
+    meat_above_base = None if base_z is None or meat_z is None else float(meat_z - base_z)
+    meat_drop_target_z = None if base_z is None else float(base_z + 0.1)
+    meat_pot_xy_dist = _xy_dist(meat_xyz, pot_xyz)
+    place_success_like = (
+        _less_than(meat_z, meat_drop_target_z)
+        and meat_pot_xy_dist is not None
+        and meat_pot_xy_dist < 0.1
+    )
+
+    qpos_before_arr = np.asarray(qpos_before, dtype=np.float32).reshape(-1)
+    action_arr = np.asarray(action, dtype=np.float32).reshape(-1)
+    joint_delta = []
+    for arm in range(2):
+        lo = 8 * arm
+        if action_arr.size >= lo + 7 and qpos_before_arr.size >= lo + 7:
+            joint_delta.extend((action_arr[lo:lo + 7] - qpos_before_arr[lo:lo + 7]).astype(float).tolist())
+    gripper_dims = [d for d in (7, 15) if d < action_arr.size]
+    info_success = _bool_from(info.get("success", False)) if isinstance(info, dict) else _bool_from(info)
+
+    return {
+        "seed": int(seed),
+        "step_before": int(step_before),
+        "step_after": int(step_before + 1),
+        "reward": _trace_float(reward),
+        "term": _bool_from(term),
+        "trunc": _bool_from(trunc),
+        "info_success": bool(info_success),
+        "place_success_like": bool(place_success_like),
+        "base_xyz": base_xyz,
+        "meat_xyz": meat_xyz,
+        "pot_xyz": pot_xyz,
+        "tcp_xyz": tcp_xyz,
+        "meat_above_base": meat_above_base,
+        "meat_drop_target_z": meat_drop_target_z,
+        "meat_pot_xy_dist": meat_pot_xy_dist,
+        "qpos_before": qpos_before_arr.astype(float).tolist(),
+        "qpos_after": _trace_obs_qpos(obs_after),
+        "exec_action": action_arr.astype(float).tolist(),
+        "exec_action_abs_max": float(np.max(np.abs(action_arr))) if action_arr.size else None,
+        "exec_action_mean_abs": float(np.mean(np.abs(action_arr))) if action_arr.size else None,
+        "joint_delta_abs_max": float(np.max(np.abs(joint_delta))) if joint_delta else None,
+        "joint_delta_mean_abs": float(np.mean(np.abs(joint_delta))) if joint_delta else None,
+        "grippers": [float(action_arr[d]) for d in gripper_dims],
+        "info": {k: _trace_float(v) for k, v in info.items()} if isinstance(info, dict) else {},
+    }
+
+
 def run_episode(
     env,
     ws,
@@ -247,11 +359,26 @@ def run_episode(
                 gripper_open_value,
                 gripper_close_value,
             )
+            qpos_before_step = cur.copy()
             raw_obs, reward, term, trunc, info = env.step(env_action_dict(abs16))
             cur = abs16
             steps += 1
             if dump is not None:
                 dump["exec_action"].append(abs16.copy())
+                dump["trace"].append(
+                    _trace_state(
+                        env,
+                        info,
+                        reward,
+                        term,
+                        trunc,
+                        seed,
+                        steps - 1,
+                        qpos_before_step,
+                        abs16,
+                        raw_obs,
+                    )
+                )
             if _bool_from(info.get("success", False)):
                 return True, steps
             if _bool_from(term) or _bool_from(trunc):
@@ -446,6 +573,11 @@ def main():
         if dump.get("action_norm_clipped"):
             payload["action_norm_clipped"] = np.stack(dump["action_norm_clipped"])
         np.savez_compressed(path, **payload)
+        if dump.get("trace"):
+            trace_path = os.path.join(args.dump_actions, f"episode_{seed}_trace.jsonl")
+            with open(trace_path, "w", encoding="utf-8") as f:
+                for row in dump["trace"]:
+                    f.write(json.dumps(row, sort_keys=True) + "\n")
 
     for i in range(args.num_episodes):
         seed = args.seed_start + i
@@ -456,6 +588,7 @@ def main():
                 "pred_chunk": [],
                 "obs_qpos": [],
                 "exec_action": [],
+                "trace": [],
                 "action_norm_raw": [],
                 "action_norm_clipped": [],
             }
