@@ -89,3 +89,53 @@ def test_scale_joint_targets_one_is_noop(monkeypatch):
     out = mod.scale_joint_targets(action, qpos, scale=1.0)
 
     np.testing.assert_allclose(out, action)
+
+
+def test_prepare_env_action_target_scales_absolute_chunk_from_infer_qpos(monkeypatch):
+    mod = _load_eval_module(monkeypatch)
+    infer_qpos = np.zeros(16, dtype=np.float32)
+    rolling_qpos = np.zeros(16, dtype=np.float32)
+    rolling_qpos[0:7] = 0.8
+    rolling_qpos[8:15] = -0.8
+    action = np.zeros(16, dtype=np.float32)
+    action[0:7] = 0.2
+    action[8:15] = -0.3
+    action[7] = -1.0
+    action[15] = 1.0
+
+    out = mod.prepare_env_action_target(
+        action,
+        rolling_qpos,
+        infer_qpos,
+        action_representation="absolute_qpos",
+        joint_target_scale=2.0,
+    )
+
+    np.testing.assert_allclose(out[0:7], 0.4, atol=1e-6)
+    np.testing.assert_allclose(out[8:15], -0.6, atol=1e-6)
+    np.testing.assert_allclose(out[[7, 15]], [-1.0, 1.0])
+
+
+def test_prepare_env_action_target_scales_legacy_delta_from_rolling_qpos(monkeypatch):
+    mod = _load_eval_module(monkeypatch)
+    infer_qpos = np.zeros(16, dtype=np.float32)
+    rolling_qpos = np.zeros(16, dtype=np.float32)
+    rolling_qpos[0:7] = 0.8
+    rolling_qpos[8:15] = -0.8
+    action = np.zeros(16, dtype=np.float32)
+    action[0:7] = 0.2
+    action[8:15] = -0.3
+    action[7] = -1.0
+    action[15] = 1.0
+
+    out = mod.prepare_env_action_target(
+        action,
+        rolling_qpos,
+        infer_qpos,
+        action_representation="robotwin_delta",
+        joint_target_scale=2.0,
+    )
+
+    np.testing.assert_allclose(out[0:7], 1.2, atol=1e-6)
+    np.testing.assert_allclose(out[8:15], -1.4, atol=1e-6)
+    np.testing.assert_allclose(out[[7, 15]], [-1.0, 1.0])

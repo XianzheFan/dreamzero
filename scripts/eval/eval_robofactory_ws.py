@@ -142,6 +142,28 @@ def scale_joint_targets(
     return out
 
 
+def prepare_env_action_target(
+    action16: np.ndarray,
+    rolling_qpos16: np.ndarray,
+    infer_qpos16: np.ndarray,
+    action_representation: str,
+    joint_target_scale: float,
+) -> np.ndarray:
+    """Convert one policy action row to an env target.
+
+    ``absolute_qpos`` chunks are anchored to the qpos observed at inference time.
+    Diagnostic scaling must use that same anchor for the whole chunk; otherwise
+    scaling compounds against the previous command and can explode.
+    """
+    abs16 = integrate_action(action16, rolling_qpos16, action_representation)
+    scale_reference = (
+        np.asarray(infer_qpos16, dtype=np.float32)
+        if action_representation == "absolute_qpos"
+        else np.asarray(rolling_qpos16, dtype=np.float32)
+    )
+    return scale_joint_targets(abs16, scale_reference, joint_target_scale)
+
+
 def apply_gripper_override(
     action16: np.ndarray,
     step: int,
@@ -255,10 +277,16 @@ def run_episode(
                     np.asarray(reply["action_norm_clipped"], dtype=np.float32).copy()
                 )
 
-        cur = qpos.copy()
+        infer_qpos = qpos.copy()
+        cur = infer_qpos.copy()
         for da in actions[:replan_every]:
-            abs16 = integrate_action(da, cur, action_representation)
-            abs16 = scale_joint_targets(abs16, cur, joint_target_scale)
+            abs16 = prepare_env_action_target(
+                da,
+                cur,
+                infer_qpos,
+                action_representation,
+                joint_target_scale,
+            )
             abs16 = apply_gripper_override(
                 abs16,
                 steps,
