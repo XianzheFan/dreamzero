@@ -50,6 +50,8 @@ PER_ARM_GRIPPER_DIMS = [7]
 ARM_SLICES = [(0, 8), (8, 16)]              # left, right
 JOINT_THRESHOLDS = [0.02, 0.05, 0.1]        # normalized-action units
 GRIPPER_THRESHOLDS = [0.05, 0.1, 0.2]
+DEFAULT_PHASE_WINDOW_BEFORE = 8
+DEFAULT_PHASE_WINDOW_AFTER = 16
 
 SLICE_COMPATIBLE_PRETRAINED_KEYS = frozenset(
     {
@@ -110,6 +112,18 @@ def parse_args() -> argparse.Namespace:
             "Threshold in normalized action space for gripper open/close "
             "classification. close < threshold, open >= threshold."
         ),
+    )
+    p.add_argument(
+        "--phase-window-before",
+        type=int,
+        default=DEFAULT_PHASE_WINDOW_BEFORE,
+        help="Number of action steps before first GT close to summarize as approach.",
+    )
+    p.add_argument(
+        "--phase-window-after",
+        type=int,
+        default=DEFAULT_PHASE_WINDOW_AFTER,
+        help="Number of action steps after first GT close to summarize as contact/lift.",
     )
     return p.parse_args()
 
@@ -338,6 +352,110 @@ def collect_dim_pairs(
     return np.concatenate(pred_pieces, axis=0), np.concatenate(gt_pieces, axis=0)
 
 
+def _phase_joint_errors(
+    pred: np.ndarray,
+    gt: np.ndarray,
+    valid: np.ndarray,
+    phase_mask: np.ndarray,
+    joint_dims=PER_ARM_JOINT_DIMS,
+) -> np.ndarray:
+    """Return flattened joint abs errors for ``phase_mask`` over [B, P, T]."""
+    joint_err = np.abs(pred[..., joint_dims] - gt[..., joint_dims])
+    joint_valid = valid[..., joint_dims].astype(bool) & phase_mask[..., None].astype(bool)
+    return joint_err[joint_valid].astype(np.float32)
+
+
+def _first_close_masks(
+    gt: np.ndarray,
+    valid: np.ndarray,
+    threshold: float,
+    before: int,
+    after: int,
+) -> dict[str, np.ndarray]:
+    """Build [B, P, T] masks relative to each sample/arm's first GT close."""
+    gt_close = (gt[..., PER_ARM_GRIPPER_DIMS[0]] < threshold) & valid[
+        ..., PER_ARM_GRIPPER_DIMS[0]
+    ].astype(bool)
+    masks = {
+        f"pre_first_close[-{before},-1]": np.zeros_like(gt_close, dtype=bool),
+        "at_first_close[0]": np.zeros_like(gt_close, dtype=bool),
+        f"post_first_close[0,+{after}]": np.zeros_like(gt_close, dtype=bool),
+        f"near_first_close[-{before},+{after}]": np.zeros_like(gt_close, dtype=bool),
+    }
+    if gt_close.ndim != 3:
+        return masks
+
+    T = gt_close.shape[-1]
+    offsets = np.arange(T)
+    for b in range(gt_close.shape[0]):
+        for p in range(gt_close.shape[1]):
+            close_idx = np.flatnonzero(gt_close[b, p])
+            if close_idx.size == 0:
+                continue
+            rel = offsets - int(close_idx[0])
+            pre = (rel >= -before) & (rel <= -1)
+            at = rel == 0
+            post = (rel >= 0) & (rel <= after)
+            near = (rel >= -before) & (rel <= after)
+            masks[f"pre_first_close[-{before},-1]"][b, p, pre] = True
+            masks["at_first_close[0]"][b, p, at] = True
+            masks[f"post_first_close[0,+{after}]"][b, p, post] = True
+            masks[f"near_first_close[-{before},+{after}]"][b, p, near] = True
+    return masks
+
+
+def collect_phase_joint_errors(
+    all_values: list[tuple[np.ndarray, np.ndarray, np.ndarray]],
+    threshold: float,
+    before: int = DEFAULT_PHASE_WINDOW_BEFORE,
+    after: int = DEFAULT_PHASE_WINDOW_AFTER,
+) -> dict[str, np.ndarray]:
+    """Aggregate per-joint abs errors by GT gripper/contact phase.
+
+    The phase masks are computed per batch/sample/arm from the GT gripper
+    channel. This keeps the metric tied to demonstration timing rather than to
+    a fixed global step, which varies across sampled dataset windows.
+    """
+    pieces: dict[str, list[np.ndarray]] = {}
+    for pred, gt, valid in all_values:
+        grip_valid = valid[..., PER_ARM_GRIPPER_DIMS[0]].astype(bool)
+        gt_grip = gt[..., PER_ARM_GRIPPER_DIMS[0]]
+        phase_masks = {
+            "gt_open": grip_valid & (gt_grip >= threshold),
+            "gt_close": grip_valid & (gt_grip < threshold),
+        }
+        phase_masks.update(_first_close_masks(gt, valid, threshold, before, after))
+        for name, mask in phase_masks.items():
+            pieces.setdefault(name, []).append(_phase_joint_errors(pred, gt, valid, mask))
+
+    return {
+        name: np.concatenate(vals, axis=0) if vals else np.empty((0,), dtype=np.float32)
+        for name, vals in pieces.items()
+    }
+
+
+def collect_horizon_joint_errors(
+    all_values: list[tuple[np.ndarray, np.ndarray, np.ndarray]],
+    joint_dims=PER_ARM_JOINT_DIMS,
+) -> list[tuple[int, int, float]]:
+    """Return (horizon_offset, n_valid_joint_values, mean_abs_error)."""
+    max_t = max((pred.shape[-2] for pred, _, _ in all_values), default=0)
+    rows: list[tuple[int, int, float]] = []
+    for t in range(max_t):
+        pieces = []
+        for pred, gt, valid in all_values:
+            if t >= pred.shape[-2]:
+                continue
+            err = np.abs(pred[..., t, joint_dims] - gt[..., t, joint_dims])
+            mask = valid[..., t, joint_dims].astype(bool)
+            if np.any(mask):
+                pieces.append(err[mask])
+        if pieces:
+            flat = np.concatenate(pieces, axis=0).astype(np.float32)
+            rows.append((t, int(flat.size), float(flat.mean())))
+    return rows
+
+
 def _safe_rate(num: int, denom: int) -> float:
     if denom == 0:
         return float("nan")
@@ -464,6 +582,24 @@ def summarize_gripper_open_close(
         f"(mean gt={metrics['gt_mean']:.4f}, mean pred={metrics['pred_mean']:.4f})"
     )
     return metrics
+
+
+def summarize_phase_joint_errors(phase_errors: dict[str, np.ndarray]) -> None:
+    print("\n=== Joint L1 by GT gripper/contact phase ===")
+    for name in sorted(phase_errors):
+        summarize(phase_errors[name], JOINT_THRESHOLDS, name)
+
+
+def summarize_horizon_joint_errors(rows: list[tuple[int, int, float]]) -> None:
+    if not rows:
+        print("\nJoint L1 by horizon offset: no valid entries")
+        return
+    print("\n=== Joint L1 by predicted horizon offset ===")
+    formatted = []
+    for t, n, mean in rows:
+        formatted.append(f"t{t:02d}:{mean:.4f}(n={n})")
+    for start in range(0, len(formatted), 8):
+        print("  " + "  ".join(formatted[start : start + 8]))
 
 
 def main():
@@ -593,6 +729,14 @@ def main():
         gripper_gt_flat,
         args.gripper_class_threshold,
     )
+    phase_errors = collect_phase_joint_errors(
+        all_action_values,
+        args.gripper_class_threshold,
+        before=args.phase_window_before,
+        after=args.phase_window_after,
+    )
+    summarize_phase_joint_errors(phase_errors)
+    summarize_horizon_joint_errors(collect_horizon_joint_errors(all_action_values))
 
 
 if __name__ == "__main__":

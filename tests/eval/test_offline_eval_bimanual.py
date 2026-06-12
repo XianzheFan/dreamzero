@@ -2,6 +2,8 @@ import numpy as np
 
 from eval_utils.offline_eval_bimanual import (
     collect_dim_pairs,
+    collect_horizon_joint_errors,
+    collect_phase_joint_errors,
     gripper_open_close_metrics,
     summarize_gripper_open_close,
 )
@@ -55,3 +57,40 @@ def test_summarize_gripper_open_close_prints_semantic_summary(capsys):
     assert "gt close: pred close=1 pred open=1" in captured
     assert "gt open : pred close=1 pred open=1" in captured
     assert "open rate: gt= 50.0% pred= 50.0%" in captured
+
+
+def test_collect_phase_joint_errors_uses_gt_first_close_windows():
+    pred = np.zeros((1, 1, 5, 8), dtype=np.float32)
+    gt = np.zeros((1, 1, 5, 8), dtype=np.float32)
+    valid = np.ones((1, 1, 5, 8), dtype=bool)
+
+    # Joint dim 0 errors by horizon step: 0.0, 0.1, 0.2, 0.3, 0.4.
+    pred[0, 0, :, 0] = np.arange(5, dtype=np.float32) * 0.1
+    gt[0, 0, :, 7] = [1.0, 1.0, -1.0, -1.0, -1.0]
+
+    phase = collect_phase_joint_errors([(pred, gt, valid)], threshold=0.0, before=1, after=2)
+
+    assert np.isclose(phase["gt_open"].mean(), (0.0 + 0.1) / 14)
+    assert np.isclose(phase["gt_close"].mean(), (0.2 + 0.3 + 0.4) / 21)
+    assert np.isclose(phase["pre_first_close[-1,-1]"].mean(), 0.1 / 7)
+    assert np.isclose(phase["at_first_close[0]"].mean(), 0.2 / 7)
+    assert np.isclose(phase["post_first_close[0,+2]"].mean(), (0.2 + 0.3 + 0.4) / 21)
+    assert np.isclose(phase["near_first_close[-1,+2]"].mean(), (0.1 + 0.2 + 0.3 + 0.4) / 28)
+
+
+def test_collect_horizon_joint_errors_reports_per_offset_means():
+    pred = np.zeros((1, 2, 3, 8), dtype=np.float32)
+    gt = np.zeros((1, 2, 3, 8), dtype=np.float32)
+    valid = np.ones((1, 2, 3, 8), dtype=bool)
+    pred[:, :, 0, 0] = 0.1
+    pred[:, :, 1, 0] = 0.2
+    pred[:, :, 2, 0] = 0.3
+
+    rows = collect_horizon_joint_errors([(pred, gt, valid)])
+
+    assert [row[:2] for row in rows] == [(0, 14), (1, 14), (2, 14)]
+    np.testing.assert_allclose(
+        [row[2] for row in rows],
+        [0.1 / 7, 0.2 / 7, 0.3 / 7],
+        rtol=1e-6,
+    )
