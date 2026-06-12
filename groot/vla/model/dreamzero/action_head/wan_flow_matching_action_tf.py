@@ -234,6 +234,12 @@ class WANPolicyHeadConfig(PretrainedConfig):
             "help": "Number of steps before first close to upweight for pre-close joint loss; 0 means all pre-close steps."
         },
     )
+    open_phase_joint_loss_weight: float = field(
+        default=1.0,
+        metadata={
+            "help": "Extra multiplier for non-gripper joint action loss on timesteps whose target gripper is open."
+        },
+    )
     max_num_embodiments: int = field(default=32, metadata={"help": "Number of embodiments."})
     tune_projector: bool = field(default=True, metadata={"help": "Whether to tune the projector."})
     tune_diffusion_model: bool = field(
@@ -577,6 +583,10 @@ class WANPolicyHead(ActionHead):
             "pre_close_joint_loss_weight",
             1.0,
         )
+        open_phase_joint_weight = self._config_float(
+            "open_phase_joint_loss_weight",
+            1.0,
+        )
         pre_close_window_before = self._config_int(
             "pre_close_joint_loss_window_before",
             0,
@@ -635,6 +645,7 @@ class WANPolicyHead(ActionHead):
                 (joint_prefix_weight != 1.0 and joint_prefix_len > 0)
                 or first_close_joint_weight != 1.0
                 or pre_close_joint_weight != 1.0
+                or open_phase_joint_weight != 1.0
             )
             and weighted.shape[-1] > 0
         ):
@@ -746,6 +757,36 @@ class WANPolicyHead(ActionHead):
                         weighted,
                     )
 
+        if (
+            open_phase_joint_weight != 1.0
+            and actions is not None
+            and weighted.shape == actions.shape
+            and weighted.ndim >= 2
+            and weighted.shape[-1] > 0
+        ):
+            open_phase_mask = self._open_phase_mask(
+                actions=actions,
+                gripper_dims=gripper_dims,
+                close_threshold=gripper_close_threshold,
+            )
+            if open_phase_mask is not None and joint_dim_mask is not None:
+                if joint_dim_mask.any():
+                    view_shape = [1] * weighted.ndim
+                    view_shape[-1] = weighted.shape[-1]
+                    phase_joint_mask = open_phase_mask.unsqueeze(-1) & joint_dim_mask.view(
+                        *view_shape
+                    )
+                    phase_weight = torch.as_tensor(
+                        open_phase_joint_weight,
+                        device=weighted.device,
+                        dtype=weighted.dtype,
+                    )
+                    weighted = torch.where(
+                        phase_joint_mask,
+                        weighted * phase_weight,
+                        weighted,
+                    )
+
         if action_weight != 1.0:
             weighted = weighted * action_weight
         return weighted
@@ -826,6 +867,30 @@ class WANPolicyHead(ActionHead):
         end = first_close.unsqueeze(1)
         flat_phase = has_close.unsqueeze(1) & (time_idx >= start) & (time_idx < end)
         return flat_phase.reshape(close_mask.shape)
+
+    def _open_phase_mask(
+        self,
+        actions: torch.Tensor,
+        gripper_dims: list[int],
+        close_threshold: float,
+    ) -> torch.Tensor | None:
+        """Return a mask over action time steps whose target gripper is open."""
+        if actions.ndim < 2 or actions.shape[-1] <= 0:
+            return None
+
+        open_mask = torch.zeros(
+            actions.shape[:-1],
+            device=actions.device,
+            dtype=torch.bool,
+        )
+        has_gripper_dim = False
+        for dim in gripper_dims:
+            if -actions.shape[-1] <= dim < actions.shape[-1]:
+                has_gripper_dim = True
+                open_mask |= actions[..., dim % actions.shape[-1]] >= close_threshold
+        if not has_gripper_dim:
+            return None
+        return open_mask
 
     def _config_float(self, name: str, default: float) -> float:
         value = getattr(self.config, name, default)
