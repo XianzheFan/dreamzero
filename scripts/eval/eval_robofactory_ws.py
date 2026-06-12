@@ -146,6 +146,8 @@ def apply_gripper_override(
         if step < close_after_step:
             return out
         target = close_value
+    elif mode == "open-then-close-after-step":
+        target = open_value if step < close_after_step else close_value
     else:
         raise ValueError(f"unknown gripper override mode: {mode}")
 
@@ -274,7 +276,13 @@ def main():
     ap.add_argument("--ckpt-setting", default=None)
     ap.add_argument(
         "--gripper-override",
-        choices=("none", "open", "close", "close-after-step"),
+        choices=(
+            "none",
+            "open",
+            "close",
+            "close-after-step",
+            "open-then-close-after-step",
+        ),
         default="none",
         help="Diagnostic RoboFactory gripper override. RoboFactory uses +1=open, -1=close.",
     )
@@ -282,7 +290,11 @@ def main():
         "--gripper-close-after-step",
         type=int,
         default=40,
-        help="First env step to force close when --gripper-override=close-after-step.",
+        help=(
+            "First env step to force close when --gripper-override=close-after-step "
+            "or open-then-close-after-step. The latter also forces open before "
+            "this step."
+        ),
     )
     ap.add_argument("--gripper-open-value", type=float, default=1.0)
     ap.add_argument("--gripper-close-value", type=float, default=-1.0)
@@ -316,7 +328,7 @@ def main():
     print(f"Max steps:     {args.max_steps}")
     print(f"Replan every:  {args.replan_every}")
     print(f"Gripper mode:  {args.gripper_override}")
-    if args.gripper_override == "close-after-step":
+    if args.gripper_override in ("close-after-step", "open-then-close-after-step"):
         print(f"Close after:   {args.gripper_close_after_step}")
 
     # Build env FIRST (sapien init takes ~30-60s); only then open the
