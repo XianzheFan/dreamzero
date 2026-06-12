@@ -94,6 +94,14 @@ class BimanualServerConfig:
     gripper_convention: str = "auto"
     gripper_close_value: float = 0.0
     gripper_open_value: float = 1.0
+    shared_global_wrist_window_mode: str = "repeat-current"
+
+
+_SHARED_GLOBAL_WRIST_WINDOW_MODES = (
+    "repeat-current",
+    "history-current-first",
+    "history-chronological",
+)
 
 
 def _make_packer():
@@ -373,6 +381,7 @@ class BimanualPolicy:
         gripper_close_value: float | None = None,
         gripper_force_open_until_infer: int | None = None,
         gripper_convention: str = "auto",
+        shared_global_wrist_window_mode: str | None = None,
         device: str | None = None,
         device_mesh: Any | None = None,
     ):
@@ -441,6 +450,20 @@ class BimanualPolicy:
                 "gripper_force_open_until_infer must be >= 0, got "
                 f"{self.gripper_force_open_until_infer}"
             )
+        if shared_global_wrist_window_mode is None:
+            shared_global_wrist_window_mode = os.environ.get(
+                "DREAMZERO_SHARED_GLOBAL_WRIST_WINDOW_MODE",
+                "repeat-current",
+            )
+        self.shared_global_wrist_window_mode = str(
+            shared_global_wrist_window_mode or "repeat-current"
+        ).strip().lower()
+        if self.shared_global_wrist_window_mode not in _SHARED_GLOBAL_WRIST_WINDOW_MODES:
+            raise ValueError(
+                "shared_global_wrist_window_mode must be one of "
+                f"{_SHARED_GLOBAL_WRIST_WINDOW_MODES}; got "
+                f"{shared_global_wrist_window_mode!r}"
+            )
         self._last_action_debug: dict[str, np.ndarray] = {}
         self._relative_action = False
         self._relative_action_per_horizon = False
@@ -456,6 +479,10 @@ class BimanualPolicy:
             self._resolved_gripper_convention(),
             self._gripper_close_target(),
             self._gripper_open_target(),
+        )
+        logging.info(
+            "Shared-global wrist window mode: %s",
+            self.shared_global_wrist_window_mode,
         )
 
     def _effective_prompt(self, prompt: str | None) -> str:
@@ -1005,11 +1032,17 @@ class BimanualPolicy:
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Return global/left/right video windows for the transform input.
 
-        Shared-global training uses ``global_condition_mode=current_repeat``:
-        frame 0 is the current observation and the action head uses frame 0
-        for per-agent I2V conditioning whenever ``video_global`` is present.
-        Repeat all camera streams from the current observation so the
-        closed-loop path conditions on the same frame index as training.
+        Shared-global training uses ``global_condition_mode=current_repeat`` for
+        the global stream: frame 0 is the current observation and the action head
+        uses frame 0 for per-agent I2V conditioning whenever ``video_global`` is
+        present. The wrist stream is configurable for eval diagnostics:
+
+        * repeat-current: repeat the current wrist frames, matching the
+          historical closed-loop server behavior.
+        * history-current-first: put the current wrist frame at index 0, then
+          append the rest of the rolling history.
+        * history-chronological: keep the rolling history unchanged.
+
         Legacy non-shared-global checkpoints keep the rolling history window.
         """
         global_history = np.stack([h for (h, _, _) in history], axis=0)
@@ -1018,8 +1051,32 @@ class BimanualPolicy:
         if self._uses_shared_global():
             current_global, current_agent0, current_agent1 = history[-1]
             global_history = np.repeat(current_global[None], self.num_frames, axis=0)
-            agent0_history = np.repeat(current_agent0[None], self.num_frames, axis=0)
-            agent1_history = np.repeat(current_agent1[None], self.num_frames, axis=0)
+            mode = getattr(
+                self,
+                "shared_global_wrist_window_mode",
+                "repeat-current",
+            )
+            if mode == "repeat-current":
+                agent0_history = np.repeat(
+                    current_agent0[None], self.num_frames, axis=0
+                )
+                agent1_history = np.repeat(
+                    current_agent1[None], self.num_frames, axis=0
+                )
+            elif mode == "history-current-first":
+                agent0_history = np.concatenate(
+                    [agent0_history[-1:], agent0_history[:-1]], axis=0
+                )
+                agent1_history = np.concatenate(
+                    [agent1_history[-1:], agent1_history[:-1]], axis=0
+                )
+            elif mode == "history-chronological":
+                pass
+            else:
+                raise ValueError(
+                    "shared_global_wrist_window_mode must be one of "
+                    f"{_SHARED_GLOBAL_WRIST_WINDOW_MODES}; got {mode!r}"
+                )
         return global_history, agent0_history, agent1_history
 
     # ----- inference ----------------------------------------------------
@@ -1677,6 +1734,7 @@ class BimanualWebsocketServer:
             gripper_convention=policy._resolved_gripper_convention(),
             gripper_close_value=policy._gripper_close_target(),
             gripper_open_value=policy._gripper_open_target(),
+            shared_global_wrist_window_mode=policy.shared_global_wrist_window_mode,
         )
         logging.getLogger("websockets.server").setLevel(logging.INFO)
 
@@ -1923,6 +1981,18 @@ def main():
              "1-based boundary. For example, 6 keeps infer 1-5 open and lets "
              "infer 6 close if the model predicts close.",
     )
+    parser.add_argument(
+        "--shared-global-wrist-window-mode",
+        default=os.environ.get(
+            "DREAMZERO_SHARED_GLOBAL_WRIST_WINDOW_MODE",
+            "repeat-current",
+        ),
+        choices=_SHARED_GLOBAL_WRIST_WINDOW_MODES,
+        help="Eval diagnostic for shared-global checkpoints. repeat-current "
+             "matches the historical server behavior; history-current-first "
+             "keeps the current wrist frame at index 0 and appends rolling "
+             "history; history-chronological keeps wrist history unchanged.",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -1961,6 +2031,7 @@ def main():
         gripper_close_value=args.gripper_close_value,
         gripper_force_open_until_infer=args.gripper_force_open_until_infer,
         gripper_convention=args.gripper_convention,
+        shared_global_wrist_window_mode=args.shared_global_wrist_window_mode,
         device=dist_ctx.device,
         device_mesh=dist_ctx.device_mesh,
     )

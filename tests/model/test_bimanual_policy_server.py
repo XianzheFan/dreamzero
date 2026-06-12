@@ -34,6 +34,7 @@ def _make_policy(metadata):
     policy.gripper_close_after_infer = 0
     policy.gripper_close_value = 0.0
     policy.gripper_force_open_until_infer = 0
+    policy.shared_global_wrist_window_mode = "repeat-current"
     return policy
 
 
@@ -656,7 +657,7 @@ def _constant_rgb(value: int) -> np.ndarray:
     return np.full((2, 3, 3), value, dtype=np.uint8)
 
 
-def test_shared_global_video_window_repeats_current_frame_for_all_streams():
+def test_shared_global_video_window_repeats_current_frame_for_default_mode():
     policy = _make_policy(_metadata_with_action_stats())
     policy.num_frames = 3
     shared_global_transform = _DummyTransform()
@@ -673,6 +674,46 @@ def test_shared_global_video_window_repeats_current_frame_for_all_streams():
     np.testing.assert_array_equal(global_video[:, 0, 0, 0], [2, 2, 2])
     np.testing.assert_array_equal(agent0_video[:, 0, 0, 0], [12, 12, 12])
     np.testing.assert_array_equal(agent1_video[:, 0, 0, 0], [22, 22, 22])
+
+
+def test_shared_global_video_window_can_keep_current_first_wrist_history():
+    policy = _make_policy(_metadata_with_action_stats())
+    policy.num_frames = 3
+    policy.shared_global_wrist_window_mode = "history-current-first"
+    shared_global_transform = _DummyTransform()
+    shared_global_transform.global_views = [0]
+    policy._transform = _DummyTransform(transforms=[shared_global_transform])
+    history = [
+        (_constant_rgb(0), _constant_rgb(10), _constant_rgb(20)),
+        (_constant_rgb(1), _constant_rgb(11), _constant_rgb(21)),
+        (_constant_rgb(2), _constant_rgb(12), _constant_rgb(22)),
+    ]
+
+    global_video, agent0_video, agent1_video = policy._build_video_windows(history)
+
+    np.testing.assert_array_equal(global_video[:, 0, 0, 0], [2, 2, 2])
+    np.testing.assert_array_equal(agent0_video[:, 0, 0, 0], [12, 10, 11])
+    np.testing.assert_array_equal(agent1_video[:, 0, 0, 0], [22, 20, 21])
+
+
+def test_shared_global_video_window_can_keep_chronological_wrist_history():
+    policy = _make_policy(_metadata_with_action_stats())
+    policy.num_frames = 3
+    policy.shared_global_wrist_window_mode = "history-chronological"
+    shared_global_transform = _DummyTransform()
+    shared_global_transform.global_views = [0]
+    policy._transform = _DummyTransform(transforms=[shared_global_transform])
+    history = [
+        (_constant_rgb(0), _constant_rgb(10), _constant_rgb(20)),
+        (_constant_rgb(1), _constant_rgb(11), _constant_rgb(21)),
+        (_constant_rgb(2), _constant_rgb(12), _constant_rgb(22)),
+    ]
+
+    global_video, agent0_video, agent1_video = policy._build_video_windows(history)
+
+    np.testing.assert_array_equal(global_video[:, 0, 0, 0], [2, 2, 2])
+    np.testing.assert_array_equal(agent0_video[:, 0, 0, 0], [10, 11, 12])
+    np.testing.assert_array_equal(agent1_video[:, 0, 0, 0], [20, 21, 22])
 
 
 def test_legacy_video_window_preserves_all_camera_histories():
