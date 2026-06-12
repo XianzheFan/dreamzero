@@ -113,6 +113,26 @@ def integrate_action(
     return out
 
 
+def scale_joint_target_delta(
+    action16: np.ndarray,
+    reference16: np.ndarray,
+    scale: float,
+    clip: float | None,
+) -> np.ndarray:
+    """Scale per-step joint-target changes while leaving grippers untouched."""
+    if scale == 1.0 and (clip is None or clip <= 0.0):
+        return action16
+
+    out = np.asarray(action16, dtype=np.float32).copy()
+    reference16 = np.asarray(reference16, dtype=np.float32)
+    for lo in (0, 8):
+        delta = out[lo:lo + 7] - reference16[lo:lo + 7]
+        if clip is not None and clip > 0.0:
+            delta = np.clip(delta, -clip, clip)
+        out[lo:lo + 7] = reference16[lo:lo + 7] + (scale * delta)
+    return out
+
+
 def env_action_dict(abs16: np.ndarray) -> dict:
     return {
         "panda-0": np.asarray(abs16[0:8], dtype=np.float32),
@@ -294,6 +314,8 @@ def run_episode(
     gripper_close_after_step: int,
     gripper_open_value: float,
     gripper_close_value: float,
+    joint_delta_scale: float,
+    joint_delta_clip: float | None,
     dump: dict | None = None,
 ):
     raw_obs, _ = env.reset(seed=seed)
@@ -351,6 +373,12 @@ def run_episode(
         cur = qpos.copy()
         for da in actions[:replan_every]:
             abs16 = integrate_action(da, cur, action_representation)
+            abs16 = scale_joint_target_delta(
+                abs16,
+                cur,
+                joint_delta_scale,
+                joint_delta_clip,
+            )
             abs16 = apply_gripper_override(
                 abs16,
                 steps,
@@ -431,6 +459,25 @@ def main():
     ap.add_argument("--gripper-open-value", type=float, default=1.0)
     ap.add_argument("--gripper-close-value", type=float, default=-1.0)
     ap.add_argument(
+        "--joint-delta-scale",
+        type=float,
+        default=1.0,
+        help=(
+            "Diagnostic closed-loop control knob. Multiplies joint target "
+            "changes relative to the previous commanded target; gripper "
+            "dimensions are unchanged."
+        ),
+    )
+    ap.add_argument(
+        "--joint-delta-clip",
+        type=float,
+        default=None,
+        help=(
+            "Optional per-step absolute joint delta clip applied before "
+            "--joint-delta-scale. Values <=0 disable clipping."
+        ),
+    )
+    ap.add_argument(
         "--video-dir",
         default=None,
         help="If set, wrap env with RecordEpisode and write one mp4 per seed.",
@@ -460,6 +507,7 @@ def main():
     print(f"Max steps:     {args.max_steps}")
     print(f"Replan every:  {args.replan_every}")
     print(f"Gripper mode:  {args.gripper_override}")
+    print(f"Joint scale:   {args.joint_delta_scale} clip={args.joint_delta_clip}")
     if args.gripper_override in {
         "close-after-step",
         "open-until-step",
@@ -545,6 +593,8 @@ def main():
                         "gripper_close_after_step": args.gripper_close_after_step,
                         "gripper_open_value": args.gripper_open_value,
                         "gripper_close_value": args.gripper_close_value,
+                        "joint_delta_scale": args.joint_delta_scale,
+                        "joint_delta_clip": args.joint_delta_clip,
                     },
                     "n_completed": len(results),
                     "n_target": args.num_episodes,
@@ -603,6 +653,8 @@ def main():
                 gripper_close_after_step=args.gripper_close_after_step,
                 gripper_open_value=args.gripper_open_value,
                 gripper_close_value=args.gripper_close_value,
+                joint_delta_scale=args.joint_delta_scale,
+                joint_delta_clip=args.joint_delta_clip,
                 dump=dump,
             )
         except Exception as e:
