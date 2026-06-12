@@ -185,7 +185,7 @@ def test_collect_env_trace_records_barrier_tcp_and_gripper(monkeypatch):
     contact2[:3, 3] = [0.0, 0.1, 0.0]
     env.annotation_data = {
         "barrier": {
-            "scale": 1.0,
+            "scale": [1.0, 1.0, 1.0],
             "contact_points_pose": [contact0, contact1, contact2],
         }
     }

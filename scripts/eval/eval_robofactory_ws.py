@@ -144,7 +144,7 @@ def _maybe_liftbarrier_grasp_targets(root) -> tuple[np.ndarray, np.ndarray]:
     try:
         actor_matrix = _first_matrix(barrier.pose.to_transformation_matrix())
         contact_poses = actor_data["contact_points_pose"]
-        scale = float(actor_data.get("scale", 1.0))
+        scale = np.asarray(actor_data.get("scale", 1.0), dtype=np.float32)
         convert_matrix = np.asarray(
             [[1, 0, 0, 0], [0, 0, -1, 0], [0, 1, 0, 0], [0, 0, 0, 1]],
             dtype=np.float32,
