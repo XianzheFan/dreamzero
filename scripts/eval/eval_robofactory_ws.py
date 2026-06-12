@@ -30,6 +30,30 @@ import msgpack_numpy
 
 msgpack_numpy.patch()
 
+ENV_TRACE_COLUMNS = np.asarray(
+    [
+        "step",
+        "barrier_x",
+        "barrier_y",
+        "barrier_z",
+        "success_margin",
+        "success",
+        "left_tcp_x",
+        "left_tcp_y",
+        "left_tcp_z",
+        "right_tcp_x",
+        "right_tcp_y",
+        "right_tcp_z",
+        "left_tcp_to_barrier",
+        "right_tcp_to_barrier",
+        "left_grasping",
+        "right_grasping",
+        "cmd_left_gripper",
+        "cmd_right_gripper",
+    ],
+    dtype="<U32",
+)
+
 # Module-level wildcard import for env registration -- Python rejects
 # ``from x import *`` inside a function. Only ever imported from the
 # RoboFactory conda env (the dreamzero policy server doesn't import
@@ -71,6 +95,99 @@ def _to_np(arr):
     if hasattr(arr, "cpu"):
         arr = arr.cpu().numpy()
     return np.asarray(arr).reshape(-1)
+
+
+def _first_xyz(value) -> np.ndarray:
+    arr = _to_np(value).astype(np.float32)
+    if arr.size < 3:
+        raise ValueError(f"expected at least 3 values, got shape {arr.shape}")
+    return arr[:3]
+
+
+def _nan_xyz() -> np.ndarray:
+    return np.full(3, np.nan, dtype=np.float32)
+
+
+def _maybe_pose_p(obj) -> np.ndarray:
+    try:
+        return _first_xyz(obj.pose.p)
+    except Exception:
+        return _nan_xyz()
+
+
+def _env_root(env):
+    return getattr(env, "unwrapped", env)
+
+
+def _maybe_success(info) -> float:
+    if info is None or "success" not in info:
+        return np.nan
+    return float(_bool_from(info["success"]))
+
+
+def _maybe_grasping(agent, actor) -> float:
+    if agent is None or actor is None or not hasattr(agent, "is_grasping"):
+        return np.nan
+    try:
+        return float(_bool_from(agent.is_grasping(actor)))
+    except Exception:
+        return np.nan
+
+
+def collect_env_trace(env, step: int, action16: np.ndarray | None, info=None) -> np.ndarray:
+    """Best-effort per-step physical trace for closed-loop diagnostics."""
+    root = _env_root(env)
+    barrier = getattr(root, "barrier", None)
+    barrier_p = _maybe_pose_p(barrier) if barrier is not None else _nan_xyz()
+
+    agents_root = getattr(root, "agent", None)
+    agents = list(getattr(agents_root, "agents", []) or [])
+    left = agents[0] if len(agents) > 0 else None
+    right = agents[1] if len(agents) > 1 else None
+
+    base_p = _maybe_pose_p(left.robot) if left is not None and hasattr(left, "robot") else _nan_xyz()
+    margin = barrier_p[2] - (base_p[2] + 0.15) if np.isfinite(barrier_p[2]) and np.isfinite(base_p[2]) else np.nan
+
+    left_tcp = _maybe_pose_p(left.tcp) if left is not None and hasattr(left, "tcp") else _nan_xyz()
+    right_tcp = _maybe_pose_p(right.tcp) if right is not None and hasattr(right, "tcp") else _nan_xyz()
+    left_dist = (
+        float(np.linalg.norm(left_tcp - barrier_p))
+        if np.isfinite(left_tcp).all() and np.isfinite(barrier_p).all()
+        else np.nan
+    )
+    right_dist = (
+        float(np.linalg.norm(right_tcp - barrier_p))
+        if np.isfinite(right_tcp).all() and np.isfinite(barrier_p).all()
+        else np.nan
+    )
+
+    action = np.asarray(action16, dtype=np.float32).reshape(-1) if action16 is not None else None
+    cmd_left = float(action[7]) if action is not None and action.size > 7 else np.nan
+    cmd_right = float(action[15]) if action is not None and action.size > 15 else np.nan
+
+    return np.asarray(
+        [
+            float(step),
+            float(barrier_p[0]),
+            float(barrier_p[1]),
+            float(barrier_p[2]),
+            float(margin),
+            _maybe_success(info),
+            float(left_tcp[0]),
+            float(left_tcp[1]),
+            float(left_tcp[2]),
+            float(right_tcp[0]),
+            float(right_tcp[1]),
+            float(right_tcp[2]),
+            left_dist,
+            right_dist,
+            _maybe_grasping(left, barrier),
+            _maybe_grasping(right, barrier),
+            cmd_left,
+            cmd_right,
+        ],
+        dtype=np.float32,
+    )
 
 
 def extract_obs(obs):
@@ -226,6 +343,8 @@ def run_episode(
     dump: dict | None = None,
 ):
     raw_obs, _ = env.reset(seed=seed)
+    if dump is not None:
+        dump["env_trace"].append(collect_env_trace(env, 0, None, None))
     session_id = uuid.uuid4().hex
     ws.send(
         msgpack.packb(
@@ -300,6 +419,7 @@ def run_episode(
             steps += 1
             if dump is not None:
                 dump["exec_action"].append(abs16.copy())
+                dump["env_trace"].append(collect_env_trace(env, steps, abs16, info))
             if _bool_from(info.get("success", False)):
                 return True, steps
             if _bool_from(term) or _bool_from(trunc):
@@ -495,6 +615,8 @@ def main():
             "pred_chunk": np.stack(dump["pred_chunk"]),       # denorm [n_infer, chunk_len, 16]
             "obs_qpos": np.stack(dump["obs_qpos"]),           # [n_infer, 16]
             "exec_action": np.stack(dump["exec_action"]),     # [n_steps, 16]
+            "env_trace": np.stack(dump["env_trace"]),         # [n_steps + 1, len(ENV_TRACE_COLUMNS)]
+            "env_trace_columns": ENV_TRACE_COLUMNS,
         }
         if dump.get("action_norm_raw"):
             payload["action_norm_raw"] = np.stack(dump["action_norm_raw"])
@@ -511,6 +633,7 @@ def main():
                 "pred_chunk": [],
                 "obs_qpos": [],
                 "exec_action": [],
+                "env_trace": [],
                 "action_norm_raw": [],
                 "action_norm_clipped": [],
             }

@@ -139,3 +139,60 @@ def test_prepare_env_action_target_scales_legacy_delta_from_rolling_qpos(monkeyp
     np.testing.assert_allclose(out[0:7], 1.2, atol=1e-6)
     np.testing.assert_allclose(out[8:15], -1.4, atol=1e-6)
     np.testing.assert_allclose(out[[7, 15]], [-1.0, 1.0])
+
+
+def test_collect_env_trace_records_barrier_tcp_and_gripper(monkeypatch):
+    mod = _load_eval_module(monkeypatch)
+
+    class Pose:
+        def __init__(self, p):
+            self.p = np.asarray(p, dtype=np.float32)[None, :]
+
+    class Body:
+        def __init__(self, p):
+            self.pose = Pose(p)
+
+    class Agent:
+        def __init__(self, robot_p, tcp_p, grasping):
+            self.robot = Body(robot_p)
+            self.tcp = Body(tcp_p)
+            self._grasping = grasping
+
+        def is_grasping(self, _actor):
+            return np.asarray([self._grasping])
+
+    class MultiAgent:
+        def __init__(self, agents):
+            self.agents = agents
+
+    class Env:
+        @property
+        def unwrapped(self):
+            return self
+
+    env = Env()
+    env.barrier = Body([0.1, 0.2, 0.25])
+    env.agent = MultiAgent(
+        [
+            Agent([0.0, 0.0, 0.0], [0.1, 0.2, 0.30], True),
+            Agent([0.0, 0.0, 0.0], [0.1, 0.3, 0.25], False),
+        ]
+    )
+    action = np.zeros(16, dtype=np.float32)
+    action[7] = 1.0
+    action[15] = -1.0
+
+    trace = mod.collect_env_trace(env, step=12, action16=action, info={"success": np.asarray([False])})
+    columns = list(mod.ENV_TRACE_COLUMNS)
+    values = dict(zip(columns, trace))
+
+    assert values["step"] == 12.0
+    assert values["barrier_z"] == np.float32(0.25)
+    assert values["success"] == 0.0
+    assert values["left_grasping"] == 1.0
+    assert values["right_grasping"] == 0.0
+    assert values["cmd_left_gripper"] == 1.0
+    assert values["cmd_right_gripper"] == -1.0
+    np.testing.assert_allclose(values["success_margin"], 0.10, atol=1e-6)
+    np.testing.assert_allclose(values["left_tcp_to_barrier"], 0.05, atol=1e-6)
+    np.testing.assert_allclose(values["right_tcp_to_barrier"], 0.10, atol=1e-6)
