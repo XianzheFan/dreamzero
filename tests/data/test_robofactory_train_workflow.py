@@ -117,6 +117,9 @@ def test_liftbarrier_train_workflow_passes_shared_global_binary_gripper_training
         'export GRIPPER_BINARY_MAX_SIGMA="${GRIPPER_BINARY_MAX_SIGMA:-0.75}"',
         'export ACTION_PREFIX_LOSS_WEIGHT="${ACTION_PREFIX_LOSS_WEIGHT:-2.0}"',
         'export ACTION_PREFIX_LOSS_LEN="${ACTION_PREFIX_LOSS_LEN:-8}"',
+        'export FIRST_CLOSE_JOINT_LOSS_WEIGHT="${FIRST_CLOSE_JOINT_LOSS_WEIGHT:-1.0}"',
+        'export FIRST_CLOSE_JOINT_LOSS_WINDOW_BEFORE="${FIRST_CLOSE_JOINT_LOSS_WINDOW_BEFORE:-0}"',
+        'export FIRST_CLOSE_JOINT_LOSS_WINDOW_AFTER="${FIRST_CLOSE_JOINT_LOSS_WINDOW_AFTER:-0}"',
         "bash scripts/train/robofactory_bimanual_training.sh",
     ):
         assert marker in script
@@ -127,6 +130,9 @@ def test_liftbarrier_train_workflow_passes_shared_global_binary_gripper_training
         "GRIPPER_BINARY_CLOSE_ACTION_LOSS_WEIGHT=$GRIPPER_BINARY_CLOSE_ACTION_LOSS_WEIGHT",
         "GRIPPER_BINARY_LOGIT_SCALE=$GRIPPER_BINARY_LOGIT_SCALE",
         "GRIPPER_BINARY_MAX_SIGMA=$GRIPPER_BINARY_MAX_SIGMA",
+        "FIRST_CLOSE_JOINT_LOSS_WEIGHT=$FIRST_CLOSE_JOINT_LOSS_WEIGHT",
+        "FIRST_CLOSE_JOINT_LOSS_WINDOW_BEFORE=$FIRST_CLOSE_JOINT_LOSS_WINDOW_BEFORE",
+        "FIRST_CLOSE_JOINT_LOSS_WINDOW_AFTER=$FIRST_CLOSE_JOINT_LOSS_WINDOW_AFTER",
     ):
         assert marker in script
 

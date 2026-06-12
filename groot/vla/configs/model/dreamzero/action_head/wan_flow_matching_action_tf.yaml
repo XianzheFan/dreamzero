@@ -103,6 +103,9 @@ action_head_cfg:
     gripper_action_dims: [7]
     action_prefix_loss_weight: 1.0
     action_prefix_loss_len: 0
+    first_close_joint_loss_weight: 1.0
+    first_close_joint_loss_window_before: 0
+    first_close_joint_loss_window_after: 0
     num_inference_timesteps: 4  # not used during training
     noise_beta_alpha: 1.5
     noise_beta_beta: 1.0

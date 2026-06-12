@@ -31,6 +31,21 @@ def test_robofactory_training_script_passes_binary_gripper_loss_knobs():
         assert marker in script
 
 
+def test_robofactory_training_script_passes_first_close_joint_loss_knobs():
+    script = SCRIPT_PATH.read_text()
+
+    for marker in (
+        "FIRST_CLOSE_JOINT_LOSS_WEIGHT=${FIRST_CLOSE_JOINT_LOSS_WEIGHT:-1.0}",
+        "FIRST_CLOSE_JOINT_LOSS_WINDOW_BEFORE=${FIRST_CLOSE_JOINT_LOSS_WINDOW_BEFORE:-0}",
+        "FIRST_CLOSE_JOINT_LOSS_WINDOW_AFTER=${FIRST_CLOSE_JOINT_LOSS_WINDOW_AFTER:-0}",
+        "first_close_joint_loss_weight=$FIRST_CLOSE_JOINT_LOSS_WEIGHT",
+        "++action_head_cfg.config.first_close_joint_loss_weight=$FIRST_CLOSE_JOINT_LOSS_WEIGHT",
+        "++action_head_cfg.config.first_close_joint_loss_window_before=$FIRST_CLOSE_JOINT_LOSS_WINDOW_BEFORE",
+        "++action_head_cfg.config.first_close_joint_loss_window_after=$FIRST_CLOSE_JOINT_LOSS_WINDOW_AFTER",
+    ):
+        assert marker in script
+
+
 def test_robofactory_training_script_uses_full_dataset_sampling_by_default():
     script = SCRIPT_PATH.read_text()
 

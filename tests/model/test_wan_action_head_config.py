@@ -28,6 +28,9 @@ def test_wan_action_head_yaml_parses_and_contains_gripper_clean_defaults():
     assert head_cfg["gripper_binary_close_action_loss_weight"] == 1.0
     assert head_cfg["gripper_binary_logit_scale"] == 4.0
     assert head_cfg["gripper_binary_max_sigma"] == 1.0
+    assert head_cfg["first_close_joint_loss_weight"] == 1.0
+    assert head_cfg["first_close_joint_loss_window_before"] == 0
+    assert head_cfg["first_close_joint_loss_window_after"] == 0
     assert "gripper_clean_action_loss_weight" not in cfg
     assert "gripper_binary_action_loss_weight" not in cfg
 
@@ -49,3 +52,6 @@ def test_wan_action_head_config_imports_with_gripper_defaults():
     cfg = WANPolicyHeadConfig()
 
     assert tuple(cfg.gripper_action_dims) == (7,)
+    assert cfg.first_close_joint_loss_weight == 1.0
+    assert cfg.first_close_joint_loss_window_before == 0
+    assert cfg.first_close_joint_loss_window_after == 0

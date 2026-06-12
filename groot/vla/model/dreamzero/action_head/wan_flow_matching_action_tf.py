@@ -200,6 +200,20 @@ class WANPolicyHeadConfig(PretrainedConfig):
         default=0,
         metadata={"help": "Number of early action steps to upweight."},
     )
+    first_close_joint_loss_weight: float = field(
+        default=1.0,
+        metadata={
+            "help": "Extra multiplier for non-gripper joint action loss near each agent's first close target."
+        },
+    )
+    first_close_joint_loss_window_before: int = field(
+        default=0,
+        metadata={"help": "Number of steps before first close to upweight for joint action loss."},
+    )
+    first_close_joint_loss_window_after: int = field(
+        default=0,
+        metadata={"help": "Number of steps after first close to upweight for joint action loss."},
+    )
     max_num_embodiments: int = field(default=32, metadata={"help": "Number of embodiments."})
     tune_projector: bool = field(default=True, metadata={"help": "Whether to tune the projector."})
     tune_diffusion_model: bool = field(
@@ -525,6 +539,18 @@ class WANPolicyHead(ActionHead):
         gripper_close_threshold = self._config_float("gripper_close_threshold", 0.0)
         prefix_weight = self._config_float("action_prefix_loss_weight", 1.0)
         prefix_len = self._config_int("action_prefix_loss_len", 0)
+        first_close_joint_weight = self._config_float(
+            "first_close_joint_loss_weight",
+            1.0,
+        )
+        first_close_window_before = self._config_int(
+            "first_close_joint_loss_window_before",
+            0,
+        )
+        first_close_window_after = self._config_int(
+            "first_close_joint_loss_window_after",
+            0,
+        )
         gripper_dims = [int(dim) for dim in getattr(self.config, "gripper_action_dims", [7])]
 
         weighted = action_loss
@@ -573,9 +599,89 @@ class WANPolicyHead(ActionHead):
                 view_shape[time_dim] = weighted.shape[time_dim]
                 weighted = weighted * time_weights.view(*view_shape)
 
+        if (
+            first_close_joint_weight != 1.0
+            and actions is not None
+            and weighted.shape == actions.shape
+            and weighted.ndim >= 2
+            and weighted.shape[-1] > 0
+            and first_close_window_before >= 0
+            and first_close_window_after >= 0
+        ):
+            close_phase_mask = self._first_close_phase_mask(
+                actions=actions,
+                gripper_dims=gripper_dims,
+                close_threshold=gripper_close_threshold,
+                window_before=first_close_window_before,
+                window_after=first_close_window_after,
+            )
+            if close_phase_mask is not None:
+                joint_dim_mask = torch.ones(
+                    weighted.shape[-1],
+                    device=weighted.device,
+                    dtype=torch.bool,
+                )
+                for dim in gripper_dims:
+                    if -weighted.shape[-1] <= dim < weighted.shape[-1]:
+                        joint_dim_mask[dim % weighted.shape[-1]] = False
+                if joint_dim_mask.any():
+                    view_shape = [1] * weighted.ndim
+                    view_shape[-1] = weighted.shape[-1]
+                    phase_joint_mask = close_phase_mask.unsqueeze(-1) & joint_dim_mask.view(
+                        *view_shape
+                    )
+                    phase_weight = torch.as_tensor(
+                        first_close_joint_weight,
+                        device=weighted.device,
+                        dtype=weighted.dtype,
+                    )
+                    weighted = torch.where(
+                        phase_joint_mask,
+                        weighted * phase_weight,
+                        weighted,
+                    )
+
         if action_weight != 1.0:
             weighted = weighted * action_weight
         return weighted
+
+    def _first_close_phase_mask(
+        self,
+        actions: torch.Tensor,
+        gripper_dims: list[int],
+        close_threshold: float,
+        window_before: int,
+        window_after: int,
+    ) -> torch.Tensor | None:
+        """Return a mask over action time steps around each trajectory's first close."""
+        if actions.ndim < 2 or actions.shape[-1] <= 0:
+            return None
+
+        close_mask = torch.zeros(
+            actions.shape[:-1],
+            device=actions.device,
+            dtype=torch.bool,
+        )
+        has_gripper_dim = False
+        for dim in gripper_dims:
+            if -actions.shape[-1] <= dim < actions.shape[-1]:
+                has_gripper_dim = True
+                close_mask |= actions[..., dim % actions.shape[-1]] < close_threshold
+        if not has_gripper_dim:
+            return None
+
+        time_steps = close_mask.shape[-1]
+        if time_steps <= 0:
+            return None
+
+        flat_close = close_mask.reshape(-1, time_steps)
+        has_close = flat_close.any(dim=1)
+        first_close = flat_close.to(torch.int64).argmax(dim=1)
+        time_idx = torch.arange(time_steps, device=actions.device).unsqueeze(0)
+        start = (first_close - window_before).unsqueeze(1)
+        end = (first_close + window_after).unsqueeze(1)
+        flat_phase = has_close.unsqueeze(1) & (time_idx >= start) & (time_idx <= end)
+        return flat_phase.reshape(close_mask.shape)
 
     def _config_float(self, name: str, default: float) -> float:
         value = getattr(self.config, name, default)
