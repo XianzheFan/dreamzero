@@ -288,6 +288,8 @@ def _env_trace_debug(trace: np.ndarray, columns: tuple[str, ...]) -> dict[str, A
     margin = _finite(_trace_column(trace, columns, "success_margin"))
     left_dist = _finite(_trace_column(trace, columns, "left_tcp_to_barrier"))
     right_dist = _finite(_trace_column(trace, columns, "right_tcp_to_barrier"))
+    left_target_dist = _finite(_trace_column(trace, columns, "left_tcp_to_grasp_target"))
+    right_target_dist = _finite(_trace_column(trace, columns, "right_tcp_to_grasp_target"))
     left_grasp = _trace_column(trace, columns, "left_grasping")
     right_grasp = _trace_column(trace, columns, "right_grasping")
 
@@ -311,6 +313,8 @@ def _env_trace_debug(trace: np.ndarray, columns: tuple[str, ...]) -> dict[str, A
         "success_margin": _start_final_max(margin),
         "left_tcp_to_barrier": _min_final(left_dist),
         "right_tcp_to_barrier": _min_final(right_dist),
+        "left_tcp_to_grasp_target": _min_final(left_target_dist),
+        "right_tcp_to_grasp_target": _min_final(right_target_dist),
         "left_grasp_count": int(np.sum(np.isfinite(left_grasp) & (left_grasp > 0.5)))
         if left_grasp is not None
         else None,
@@ -608,6 +612,13 @@ def analyze_episode(
             f"right_count={trace_debug['right_grasp_count']} "
             f"right_first={trace_debug['right_first_grasp_step']}"
         )
+        print(
+            "  tcp->grasp target: "
+            f"{arm_labels[0] if arm_labels else 'arm0'} "
+            f"{_fmt_min_final(trace_debug['left_tcp_to_grasp_target'])} | "
+            f"{arm_labels[1] if len(arm_labels) > 1 else 'arm1'} "
+            f"{_fmt_min_final(trace_debug['right_tcp_to_grasp_target'])}"
+        )
 
     return episode
 
@@ -682,12 +693,24 @@ def _aggregate(episodes: list[dict[str, Any]]) -> dict[str, Any]:
             for t in trace_episodes
             if t["right_tcp_to_barrier"]["min"] is not None
         ]
+        left_target_min = [
+            t["left_tcp_to_grasp_target"]["min"]
+            for t in trace_episodes
+            if t["left_tcp_to_grasp_target"]["min"] is not None
+        ]
+        right_target_min = [
+            t["right_tcp_to_grasp_target"]["min"]
+            for t in trace_episodes
+            if t["right_tcp_to_grasp_target"]["min"] is not None
+        ]
         summary["env_trace"] = {
             "episodes": len(trace_episodes),
             "success_margin_max_mean": _safe_float(np.mean(margin_max)) if margin_max else None,
             "success_margin_max_best": _safe_float(np.max(margin_max)) if margin_max else None,
             "left_tcp_to_barrier_min_mean": _safe_float(np.mean(left_min)) if left_min else None,
             "right_tcp_to_barrier_min_mean": _safe_float(np.mean(right_min)) if right_min else None,
+            "left_tcp_to_grasp_target_min_mean": _safe_float(np.mean(left_target_min)) if left_target_min else None,
+            "right_tcp_to_grasp_target_min_mean": _safe_float(np.mean(right_target_min)) if right_target_min else None,
             "left_grasp_episodes": sum(
                 int((t["left_grasp_count"] or 0) > 0) for t in trace_episodes
             ),
@@ -800,6 +823,8 @@ def main() -> None:
             f"success_margin_max_best={trace['success_margin_max_best']} "
             f"left_tcp_min_mean={trace['left_tcp_to_barrier_min_mean']} "
             f"right_tcp_min_mean={trace['right_tcp_to_barrier_min_mean']} "
+            f"left_target_min_mean={trace['left_tcp_to_grasp_target_min_mean']} "
+            f"right_target_min_mean={trace['right_tcp_to_grasp_target_min_mean']} "
             f"left_grasp_eps={trace['left_grasp_episodes']} "
             f"right_grasp_eps={trace['right_grasp_episodes']}"
         )

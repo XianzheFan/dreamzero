@@ -146,7 +146,13 @@ def test_collect_env_trace_records_barrier_tcp_and_gripper(monkeypatch):
 
     class Pose:
         def __init__(self, p):
-            self.p = np.asarray(p, dtype=np.float32)[None, :]
+            self._p = np.asarray(p, dtype=np.float32)
+            self.p = self._p[None, :]
+
+        def to_transformation_matrix(self):
+            matrix = np.eye(4, dtype=np.float32)
+            matrix[:3, 3] = self._p
+            return matrix[None, ...]
 
     class Body:
         def __init__(self, p):
@@ -172,6 +178,17 @@ def test_collect_env_trace_records_barrier_tcp_and_gripper(monkeypatch):
 
     env = Env()
     env.barrier = Body([0.1, 0.2, 0.25])
+    contact0 = np.eye(4, dtype=np.float32)
+    contact1 = np.eye(4, dtype=np.float32)
+    contact2 = np.eye(4, dtype=np.float32)
+    contact1[:3, 3] = [0.0, 0.0, 0.05]
+    contact2[:3, 3] = [0.0, 0.1, 0.0]
+    env.annotation_data = {
+        "barrier": {
+            "scale": 1.0,
+            "contact_points_pose": [contact0, contact1, contact2],
+        }
+    }
     env.agent = MultiAgent(
         [
             Agent([0.0, 0.0, 0.0], [0.1, 0.2, 0.30], True),
@@ -196,3 +213,5 @@ def test_collect_env_trace_records_barrier_tcp_and_gripper(monkeypatch):
     np.testing.assert_allclose(values["success_margin"], 0.10, atol=1e-6)
     np.testing.assert_allclose(values["left_tcp_to_barrier"], 0.05, atol=1e-6)
     np.testing.assert_allclose(values["right_tcp_to_barrier"], 0.10, atol=1e-6)
+    np.testing.assert_allclose(values["left_tcp_to_grasp_target"], 0.0, atol=1e-6)
+    np.testing.assert_allclose(values["right_tcp_to_grasp_target"], 0.0, atol=1e-6)

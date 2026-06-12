@@ -68,6 +68,8 @@ def summarize_trace(trace: np.ndarray) -> dict[str, Any]:
     margin = _finite(_trace_col(trace, "success_margin"))
     left_dist = _finite(_trace_col(trace, "left_tcp_to_barrier"))
     right_dist = _finite(_trace_col(trace, "right_tcp_to_barrier"))
+    left_target_dist = _finite(_trace_col(trace, "left_tcp_to_grasp_target"))
+    right_target_dist = _finite(_trace_col(trace, "right_tcp_to_grasp_target"))
     left_grasp = _trace_col(trace, "left_grasping")
     right_grasp = _trace_col(trace, "right_grasping")
 
@@ -93,6 +95,8 @@ def summarize_trace(trace: np.ndarray) -> dict[str, Any]:
         "success_margin": start_final_min_max(margin),
         "left_tcp_to_barrier": min_final(left_dist),
         "right_tcp_to_barrier": min_final(right_dist),
+        "left_tcp_to_grasp_target": min_final(left_target_dist),
+        "right_tcp_to_grasp_target": min_final(right_target_dist),
         "left_grasp_count": int(np.sum(np.isfinite(left_grasp) & (left_grasp > 0.5))),
         "right_grasp_count": int(np.sum(np.isfinite(right_grasp) & (right_grasp > 0.5))),
         "left_first_grasp_step": _first_true_step(trace, "left_grasping"),
@@ -109,6 +113,8 @@ def print_summary(summary: dict[str, Any]) -> None:
     margin = summary["success_margin"]
     left = summary["left_tcp_to_barrier"]
     right = summary["right_tcp_to_barrier"]
+    left_target = summary["left_tcp_to_grasp_target"]
+    right_target = summary["right_tcp_to_grasp_target"]
     print(
         "expert barrier z: "
         f"start={_fmt(bz['start'])} final={_fmt(bz['final'])} "
@@ -133,6 +139,12 @@ def print_summary(summary: dict[str, Any]) -> None:
         f"left_first={summary['left_first_grasp_step']} "
         f"right_count={summary['right_grasp_count']} "
         f"right_first={summary['right_first_grasp_step']}",
+        flush=True,
+    )
+    print(
+        "expert tcp->grasp target: "
+        f"left min={_fmt(left_target['min'])} final={_fmt(left_target['final'])} | "
+        f"right min={_fmt(right_target['min'])} final={_fmt(right_target['final'])}",
         flush=True,
     )
 
