@@ -107,6 +107,28 @@ def test_scale_joint_targets_clip_limits_joint_delta_only(monkeypatch):
     np.testing.assert_allclose(out[[7, 15]], [-1.0, 1.0])
 
 
+def test_scale_joint_targets_accepts_per_arm_scale(monkeypatch):
+    mod = _load_eval_module(monkeypatch)
+    qpos = np.zeros(16, dtype=np.float32)
+    action = np.zeros(16, dtype=np.float32)
+    action[0:7] = 0.1
+    action[8:15] = -0.1
+    action[7] = -1.0
+    action[15] = 1.0
+
+    out = mod.scale_joint_targets(
+        action,
+        qpos,
+        scale=2.0,
+        left_scale=3.0,
+        right_scale=5.0,
+    )
+
+    np.testing.assert_allclose(out[0:7], 0.3, atol=1e-6)
+    np.testing.assert_allclose(out[8:15], -0.5, atol=1e-6)
+    np.testing.assert_allclose(out[[7, 15]], [-1.0, 1.0])
+
+
 def test_prepare_env_action_target_scales_absolute_chunk_from_infer_qpos(monkeypatch):
     mod = _load_eval_module(monkeypatch)
     infer_qpos = np.zeros(16, dtype=np.float32)

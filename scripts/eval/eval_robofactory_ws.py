@@ -306,23 +306,28 @@ def scale_joint_targets(
     reference_qpos16: np.ndarray,
     scale: float,
     clip: float | None = None,
+    left_scale: float | None = None,
+    right_scale: float | None = None,
 ) -> np.ndarray:
     """Scale joint target displacement from the current 16-D qpos.
 
     This is an eval-only diagnostic for separating under-sized joint
     commands from gripper timing. Gripper commands are copied verbatim.
     """
+    effective_left = scale if left_scale is None else left_scale
+    effective_right = scale if right_scale is None else right_scale
     out = np.asarray(action16, dtype=np.float32).copy()
-    if scale == 1.0 and (clip is None or clip <= 0.0):
+    if effective_left == 1.0 and effective_right == 1.0 and (clip is None or clip <= 0.0):
         return out
-    if not np.isfinite(scale) or scale <= 0.0:
-        raise ValueError(f"joint target scale must be positive and finite, got {scale}")
+    for label, value in (("left", effective_left), ("right", effective_right)):
+        if not np.isfinite(value) or value <= 0.0:
+            raise ValueError(f"{label} joint target scale must be positive and finite, got {value}")
     if clip is not None and clip > 0.0 and not np.isfinite(clip):
         raise ValueError(f"joint target scale clip must be finite when enabled, got {clip}")
 
     qpos16 = np.asarray(reference_qpos16, dtype=np.float32)
-    left_delta = scale * (out[0:7] - qpos16[0:7])
-    right_delta = scale * (out[8:15] - qpos16[8:15])
+    left_delta = effective_left * (out[0:7] - qpos16[0:7])
+    right_delta = effective_right * (out[8:15] - qpos16[8:15])
     if clip is not None and clip > 0.0:
         left_delta = np.clip(left_delta, -clip, clip)
         right_delta = np.clip(right_delta, -clip, clip)
@@ -339,6 +344,8 @@ def prepare_env_action_target(
     joint_target_scale: float,
     joint_target_scale_reference: str = "auto",
     joint_target_scale_clip: float | None = None,
+    left_joint_target_scale: float | None = None,
+    right_joint_target_scale: float | None = None,
 ) -> np.ndarray:
     """Convert one policy action row to an env target.
 
@@ -367,6 +374,8 @@ def prepare_env_action_target(
         scale_reference,
         joint_target_scale,
         joint_target_scale_clip,
+        left_scale=left_joint_target_scale,
+        right_scale=right_joint_target_scale,
     )
 
 
@@ -427,6 +436,8 @@ def run_episode(
     joint_target_scale: float,
     joint_target_scale_reference: str,
     joint_target_scale_clip: float | None,
+    left_joint_target_scale: float | None,
+    right_joint_target_scale: float | None,
     gripper_override: str,
     gripper_close_after_step: int,
     gripper_open_value: float,
@@ -502,6 +513,8 @@ def run_episode(
                 joint_target_scale,
                 joint_target_scale_reference,
                 joint_target_scale_clip,
+                left_joint_target_scale=left_joint_target_scale,
+                right_joint_target_scale=right_joint_target_scale,
             )
             abs16 = apply_gripper_override(
                 abs16,
@@ -603,6 +616,28 @@ def main():
         ),
     )
     ap.add_argument(
+        "--left-joint-target-scale",
+        "--left-joint-delta-scale",
+        dest="left_joint_target_scale",
+        type=float,
+        default=None,
+        help=(
+            "Optional left-arm-only override for --joint-target-scale. "
+            "Useful for diagnosing asymmetric two-arm contact failures."
+        ),
+    )
+    ap.add_argument(
+        "--right-joint-target-scale",
+        "--right-joint-delta-scale",
+        dest="right_joint_target_scale",
+        type=float,
+        default=None,
+        help=(
+            "Optional right-arm-only override for --joint-target-scale. "
+            "Useful for diagnosing asymmetric two-arm contact failures."
+        ),
+    )
+    ap.add_argument(
         "--video-dir",
         default=None,
         help="If set, wrap env with RecordEpisode and write one mp4 per seed.",
@@ -634,6 +669,18 @@ def main():
     print(f"Joint scale:   {args.joint_target_scale}")
     print(f"Joint ref:     {args.joint_target_scale_reference}")
     print(f"Joint clip:    {args.joint_target_scale_clip}")
+    if args.left_joint_target_scale is not None or args.right_joint_target_scale is not None:
+        effective_left = (
+            args.joint_target_scale
+            if args.left_joint_target_scale is None
+            else args.left_joint_target_scale
+        )
+        effective_right = (
+            args.joint_target_scale
+            if args.right_joint_target_scale is None
+            else args.right_joint_target_scale
+        )
+        print(f"Arm scales:    left={effective_left} right={effective_right}")
     print(f"Gripper mode:  {args.gripper_override}")
     if args.gripper_override in ("close-after-step", "open-then-close-after-step"):
         print(f"Close after:   {args.gripper_close_after_step}")
@@ -712,6 +759,8 @@ def main():
                         "max_steps": args.max_steps,
                         "replan_every": args.replan_every,
                         "joint_target_scale": args.joint_target_scale,
+                        "left_joint_target_scale": args.left_joint_target_scale,
+                        "right_joint_target_scale": args.right_joint_target_scale,
                         "joint_target_scale_reference": args.joint_target_scale_reference,
                         "joint_target_scale_clip": args.joint_target_scale_clip,
                         "prompt": args.prompt,
@@ -773,6 +822,8 @@ def main():
                 joint_target_scale=args.joint_target_scale,
                 joint_target_scale_reference=args.joint_target_scale_reference,
                 joint_target_scale_clip=args.joint_target_scale_clip,
+                left_joint_target_scale=args.left_joint_target_scale,
+                right_joint_target_scale=args.right_joint_target_scale,
                 gripper_override=args.gripper_override,
                 gripper_close_after_step=args.gripper_close_after_step,
                 gripper_open_value=args.gripper_open_value,
