@@ -168,10 +168,16 @@ def scale_joint_target_delta(
     scale: float,
     clip: float | None,
     output_clip: float | None = None,
+    left_scale: float | None = None,
+    right_scale: float | None = None,
 ) -> np.ndarray:
     """Scale per-step joint-target changes while leaving grippers untouched."""
+    arm_scales = (
+        scale if left_scale is None else left_scale,
+        scale if right_scale is None else right_scale,
+    )
     if (
-        scale == 1.0
+        arm_scales == (1.0, 1.0)
         and (clip is None or clip <= 0.0)
         and (output_clip is None or output_clip <= 0.0)
     ):
@@ -179,11 +185,11 @@ def scale_joint_target_delta(
 
     out = np.asarray(action16, dtype=np.float32).copy()
     reference16 = np.asarray(reference16, dtype=np.float32)
-    for lo in (0, 8):
+    for lo, arm_scale in zip((0, 8), arm_scales):
         delta = out[lo:lo + 7] - reference16[lo:lo + 7]
         if clip is not None and clip > 0.0:
             delta = np.clip(delta, -clip, clip)
-        scaled_delta = scale * delta
+        scaled_delta = arm_scale * delta
         if output_clip is not None and output_clip > 0.0:
             scaled_delta = np.clip(scaled_delta, -output_clip, output_clip)
         out[lo:lo + 7] = reference16[lo:lo + 7] + scaled_delta
@@ -519,6 +525,8 @@ def run_episode(
     joint_delta_clip: float | None,
     joint_delta_output_clip: float | None,
     joint_delta_scale_reference: str,
+    left_joint_delta_scale: float | None = None,
+    right_joint_delta_scale: float | None = None,
     dump: dict | None = None,
 ):
     raw_obs, _ = env.reset(seed=seed)
@@ -586,6 +594,8 @@ def run_episode(
                 joint_delta_scale,
                 joint_delta_clip,
                 output_clip=joint_delta_output_clip,
+                left_scale=left_joint_delta_scale,
+                right_scale=right_joint_delta_scale,
             )
             abs16 = apply_gripper_override(
                 abs16,
@@ -702,6 +712,24 @@ def main():
         ),
     )
     ap.add_argument(
+        "--left-joint-delta-scale",
+        type=float,
+        default=None,
+        help=(
+            "Optional left-arm-only override for --joint-delta-scale. "
+            "Useful for diagnosing asymmetric two-arm contact failures."
+        ),
+    )
+    ap.add_argument(
+        "--right-joint-delta-scale",
+        type=float,
+        default=None,
+        help=(
+            "Optional right-arm-only override for --joint-delta-scale. "
+            "Useful for diagnosing asymmetric two-arm contact failures."
+        ),
+    )
+    ap.add_argument(
         "--joint-delta-scale-reference",
         choices=("previous", "chunk", "observed"),
         default="previous",
@@ -748,6 +776,18 @@ def main():
         f"clip={args.joint_delta_clip} output_clip={args.joint_delta_output_clip} "
         f"ref={args.joint_delta_scale_reference}"
     )
+    if args.left_joint_delta_scale is not None or args.right_joint_delta_scale is not None:
+        effective_left = (
+            args.joint_delta_scale
+            if args.left_joint_delta_scale is None
+            else args.left_joint_delta_scale
+        )
+        effective_right = (
+            args.joint_delta_scale
+            if args.right_joint_delta_scale is None
+            else args.right_joint_delta_scale
+        )
+        print(f"Arm scales:    left={effective_left} right={effective_right}", flush=True)
     if args.gripper_override in {
         "close-after-step",
         "open-until-step",
@@ -834,6 +874,8 @@ def main():
                         "gripper_open_value": args.gripper_open_value,
                         "gripper_close_value": args.gripper_close_value,
                         "joint_delta_scale": args.joint_delta_scale,
+                        "left_joint_delta_scale": args.left_joint_delta_scale,
+                        "right_joint_delta_scale": args.right_joint_delta_scale,
                         "joint_delta_clip": args.joint_delta_clip,
                         "joint_delta_output_clip": args.joint_delta_output_clip,
                         "joint_delta_scale_reference": args.joint_delta_scale_reference,
@@ -902,6 +944,8 @@ def main():
                 joint_delta_clip=args.joint_delta_clip,
                 joint_delta_output_clip=args.joint_delta_output_clip,
                 joint_delta_scale_reference=args.joint_delta_scale_reference,
+                left_joint_delta_scale=args.left_joint_delta_scale,
+                right_joint_delta_scale=args.right_joint_delta_scale,
                 dump=dump,
             )
         except Exception as e:

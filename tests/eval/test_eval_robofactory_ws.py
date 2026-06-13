@@ -76,6 +76,26 @@ def test_joint_delta_scaling_leaves_grippers_unchanged():
     assert out[15] == -1.0
 
 
+def test_joint_delta_per_arm_scale_overrides_global_scale():
+    mod = _load_eval_module()
+    ref = np.zeros(16, dtype=np.float32)
+    action = np.zeros(16, dtype=np.float32)
+    action[:7] = 0.1
+    action[8:15] = 0.1
+
+    out = mod.scale_joint_target_delta(
+        action,
+        ref,
+        scale=2.0,
+        clip=None,
+        output_clip=None,
+        right_scale=5.0,
+    )
+
+    np.testing.assert_allclose(out[:7], 0.2)
+    np.testing.assert_allclose(out[8:15], 0.5)
+
+
 def _fake_obs(qpos0, qpos1):
     return {
         "agent": {
