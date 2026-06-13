@@ -406,6 +406,10 @@ def run_episode(
     gripper_close_value: float,
     dump: dict | None = None,
 ):
+    # RoboFactory's RFSceneBuilder samples object poses with global np.random
+    # rather than ManiSkill's episode RNG. Seed it explicitly so seed labels
+    # correspond to reproducible object poses across independent eval jobs.
+    np.random.seed(seed)
     raw_obs, _ = env.reset(seed=seed)
     if dump is not None:
         dump["env_trace"].append(collect_env_trace(env, 0, None, None))

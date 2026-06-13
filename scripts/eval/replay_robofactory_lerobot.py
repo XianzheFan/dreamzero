@@ -117,6 +117,10 @@ def _bool_from(info_val: Any) -> bool:
 
 
 def _reset_qpos16(env, seed: int) -> tuple[Any, np.ndarray]:
+    # RoboFactory's scene builder uses global np.random for object pose
+    # randomization, so env.reset(seed=...) alone is not enough for replayable
+    # object initial states.
+    np.random.seed(seed)
     raw_obs, _ = env.reset(seed=seed)
     _, _, _, qpos16 = extract_obs(raw_obs)
     return raw_obs, qpos16.astype(np.float32)

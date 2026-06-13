@@ -214,6 +214,9 @@ def main() -> None:
     env.reset = traced_reset
     env.step = traced_step
 
+    # RoboFactory's RFSceneBuilder samples object poses with global np.random,
+    # while env.reset(seed=...) only seeds ManiSkill's episode RNG.
+    np.random.seed(args.seed)
     t0 = time.time()
     result = MP_SOLUTIONS[args.task](env, seed=args.seed, debug=False, vis=False)
     wall_s = time.time() - t0
