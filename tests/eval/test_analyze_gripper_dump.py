@@ -40,10 +40,15 @@ def test_env_trace_debug_summarizes_liftbarrier_contact_metrics():
     np.testing.assert_allclose(debug["barrier_z"]["start"], 0.20)
     np.testing.assert_allclose(debug["barrier_z"]["final"], 0.31)
     np.testing.assert_allclose(debug["success_margin"]["max"], 0.16)
+    assert debug["barrier_z"]["max_step"] == 6
+    assert debug["success_margin"]["max_step"] == 6
     np.testing.assert_allclose(debug["left_tcp_to_barrier"]["min"], 0.07)
+    assert debug["left_tcp_to_barrier"]["min_step"] == 6
     np.testing.assert_allclose(debug["right_tcp_to_barrier"]["final"], 0.12)
     np.testing.assert_allclose(debug["left_tcp_to_grasp_target"]["min"], 0.02)
+    assert debug["left_tcp_to_grasp_target"]["min_step"] == 6
     np.testing.assert_allclose(debug["right_tcp_to_grasp_target"]["min"], 0.03)
+    assert debug["right_tcp_to_grasp_target"]["min_step"] == 6
     assert debug["left_grasp_count"] == 2
     assert debug["right_grasp_count"] == 1
     assert debug["left_first_grasp_step"] == 5

@@ -248,29 +248,62 @@ def _env_trace_debug(trace: np.ndarray, columns: tuple[str, ...]) -> dict[str, A
         return None
 
     steps = _trace_column(trace, columns, "step")
-    barrier_z = _finite(_trace_column(trace, columns, "barrier_z"))
-    margin = _finite(_trace_column(trace, columns, "success_margin"))
-    left_dist = _finite(_trace_column(trace, columns, "left_tcp_to_barrier"))
-    right_dist = _finite(_trace_column(trace, columns, "right_tcp_to_barrier"))
-    left_target_dist = _finite(_trace_column(trace, columns, "left_tcp_to_grasp_target"))
-    right_target_dist = _finite(_trace_column(trace, columns, "right_tcp_to_grasp_target"))
+    barrier_z = _trace_column(trace, columns, "barrier_z")
+    margin = _trace_column(trace, columns, "success_margin")
+    left_dist = _trace_column(trace, columns, "left_tcp_to_barrier")
+    right_dist = _trace_column(trace, columns, "right_tcp_to_barrier")
+    left_target_dist = _trace_column(trace, columns, "left_tcp_to_grasp_target")
+    right_target_dist = _trace_column(trace, columns, "right_tcp_to_grasp_target")
     left_grasp = _trace_column(trace, columns, "left_grasping")
     right_grasp = _trace_column(trace, columns, "right_grasping")
 
-    def _start_final_max(values: np.ndarray) -> dict[str, float | None]:
-        if values.size == 0:
-            return {"start": None, "final": None, "max": None, "min": None}
+    def _step_at(index: int) -> int | None:
+        if steps is None or steps.size <= index or not np.isfinite(steps[index]):
+            return None
+        return int(steps[index])
+
+    def _finite_indices(values: np.ndarray | None) -> np.ndarray:
+        if values is None:
+            return np.asarray([], dtype=np.int64)
+        values = np.asarray(values, dtype=np.float32)
+        return np.where(np.isfinite(values))[0]
+
+    def _start_final_max(values: np.ndarray | None) -> dict[str, float | int | None]:
+        idx = _finite_indices(values)
+        if idx.size == 0 or values is None:
+            return {
+                "start": None,
+                "final": None,
+                "max": None,
+                "min": None,
+                "max_step": None,
+                "min_step": None,
+            }
+        values = np.asarray(values, dtype=np.float32)
+        finite_values = values[idx]
+        max_index = int(idx[int(np.argmax(finite_values))])
+        min_index = int(idx[int(np.argmin(finite_values))])
         return {
-            "start": float(values[0]),
-            "final": float(values[-1]),
-            "max": float(values.max()),
-            "min": float(values.min()),
+            "start": float(values[int(idx[0])]),
+            "final": float(values[int(idx[-1])]),
+            "max": float(values[max_index]),
+            "min": float(values[min_index]),
+            "max_step": _step_at(max_index),
+            "min_step": _step_at(min_index),
         }
 
-    def _min_final(values: np.ndarray) -> dict[str, float | None]:
-        if values.size == 0:
-            return {"min": None, "final": None}
-        return {"min": float(values.min()), "final": float(values[-1])}
+    def _min_final(values: np.ndarray | None) -> dict[str, float | int | None]:
+        idx = _finite_indices(values)
+        if idx.size == 0 or values is None:
+            return {"min": None, "final": None, "min_step": None}
+        values = np.asarray(values, dtype=np.float32)
+        finite_values = values[idx]
+        min_index = int(idx[int(np.argmin(finite_values))])
+        return {
+            "min": float(values[min_index]),
+            "final": float(values[int(idx[-1])]),
+            "min_step": _step_at(min_index),
+        }
 
     return {
         "barrier_z": _start_final_max(barrier_z),
@@ -294,9 +327,12 @@ def _fmt_start_final_max(stats: dict[str, float | None]) -> str:
     def fmt(value: float | None) -> str:
         return "nan" if value is None else f"{value:+.3f}"
 
+    step = ""
+    if stats.get("max_step") is not None:
+        step = f" max_step={stats['max_step']}"
     return (
         f"start={fmt(stats['start'])} final={fmt(stats['final'])} "
-        f"min={fmt(stats['min'])} max={fmt(stats['max'])}"
+        f"min={fmt(stats['min'])} max={fmt(stats['max'])}{step}"
     )
 
 
@@ -304,7 +340,10 @@ def _fmt_min_final(stats: dict[str, float | None]) -> str:
     def fmt(value: float | None) -> str:
         return "nan" if value is None else f"{value:.3f}"
 
-    return f"min={fmt(stats['min'])} final={fmt(stats['final'])}"
+    step = ""
+    if stats.get("min_step") is not None:
+        step = f" min_step={stats['min_step']}"
+    return f"min={fmt(stats['min'])} final={fmt(stats['final'])}{step}"
 
 
 def analyze_episode(
