@@ -118,9 +118,14 @@ def scale_joint_target_delta(
     reference16: np.ndarray,
     scale: float,
     clip: float | None,
+    output_clip: float | None = None,
 ) -> np.ndarray:
     """Scale per-step joint-target changes while leaving grippers untouched."""
-    if scale == 1.0 and (clip is None or clip <= 0.0):
+    if (
+        scale == 1.0
+        and (clip is None or clip <= 0.0)
+        and (output_clip is None or output_clip <= 0.0)
+    ):
         return action16
 
     out = np.asarray(action16, dtype=np.float32).copy()
@@ -129,7 +134,10 @@ def scale_joint_target_delta(
         delta = out[lo:lo + 7] - reference16[lo:lo + 7]
         if clip is not None and clip > 0.0:
             delta = np.clip(delta, -clip, clip)
-        out[lo:lo + 7] = reference16[lo:lo + 7] + (scale * delta)
+        scaled_delta = scale * delta
+        if output_clip is not None and output_clip > 0.0:
+            scaled_delta = np.clip(scaled_delta, -output_clip, output_clip)
+        out[lo:lo + 7] = reference16[lo:lo + 7] + scaled_delta
     return out
 
 
@@ -316,6 +324,7 @@ def run_episode(
     gripper_close_value: float,
     joint_delta_scale: float,
     joint_delta_clip: float | None,
+    joint_delta_output_clip: float | None,
     joint_delta_scale_reference: str,
     dump: dict | None = None,
 ):
@@ -385,6 +394,7 @@ def run_episode(
                 scale_reference,
                 joint_delta_scale,
                 joint_delta_clip,
+                output_clip=joint_delta_output_clip,
             )
             abs16 = apply_gripper_override(
                 abs16,
@@ -471,7 +481,7 @@ def main():
         default=1.0,
         help=(
             "Diagnostic closed-loop control knob. Multiplies joint target "
-            "changes relative to the previous commanded target; gripper "
+            "changes relative to --joint-delta-scale-reference; gripper "
             "dimensions are unchanged."
         ),
     )
@@ -482,6 +492,17 @@ def main():
         help=(
             "Optional per-step absolute joint delta clip applied before "
             "--joint-delta-scale. Values <=0 disable clipping."
+        ),
+    )
+    ap.add_argument(
+        "--joint-delta-output-clip",
+        type=float,
+        default=None,
+        help=(
+            "Optional per-step absolute joint delta clip applied after "
+            "--joint-delta-scale. Values <=0 disable clipping. This is useful "
+            "for bounded scale sweeps where --joint-delta-scale-reference=previous "
+            "can otherwise compound inside a replan window."
         ),
     )
     ap.add_argument(
@@ -527,7 +548,8 @@ def main():
     print(f"Gripper mode:  {args.gripper_override}")
     print(
         f"Joint scale:   {args.joint_delta_scale} "
-        f"clip={args.joint_delta_clip} ref={args.joint_delta_scale_reference}"
+        f"clip={args.joint_delta_clip} output_clip={args.joint_delta_output_clip} "
+        f"ref={args.joint_delta_scale_reference}"
     )
     if args.gripper_override in {
         "close-after-step",
@@ -616,6 +638,7 @@ def main():
                         "gripper_close_value": args.gripper_close_value,
                         "joint_delta_scale": args.joint_delta_scale,
                         "joint_delta_clip": args.joint_delta_clip,
+                        "joint_delta_output_clip": args.joint_delta_output_clip,
                         "joint_delta_scale_reference": args.joint_delta_scale_reference,
                     },
                     "n_completed": len(results),
@@ -677,6 +700,7 @@ def main():
                 gripper_close_value=args.gripper_close_value,
                 joint_delta_scale=args.joint_delta_scale,
                 joint_delta_clip=args.joint_delta_clip,
+                joint_delta_output_clip=args.joint_delta_output_clip,
                 joint_delta_scale_reference=args.joint_delta_scale_reference,
                 dump=dump,
             )
