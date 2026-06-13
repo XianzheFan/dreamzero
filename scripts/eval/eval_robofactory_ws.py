@@ -305,6 +305,7 @@ def scale_joint_targets(
     action16: np.ndarray,
     reference_qpos16: np.ndarray,
     scale: float,
+    clip: float | None = None,
 ) -> np.ndarray:
     """Scale joint target displacement from the current 16-D qpos.
 
@@ -312,14 +313,21 @@ def scale_joint_targets(
     commands from gripper timing. Gripper commands are copied verbatim.
     """
     out = np.asarray(action16, dtype=np.float32).copy()
-    if scale == 1.0:
+    if scale == 1.0 and (clip is None or clip <= 0.0):
         return out
     if not np.isfinite(scale) or scale <= 0.0:
         raise ValueError(f"joint target scale must be positive and finite, got {scale}")
+    if clip is not None and clip > 0.0 and not np.isfinite(clip):
+        raise ValueError(f"joint target scale clip must be finite when enabled, got {clip}")
 
     qpos16 = np.asarray(reference_qpos16, dtype=np.float32)
-    out[0:7] = qpos16[0:7] + scale * (out[0:7] - qpos16[0:7])
-    out[8:15] = qpos16[8:15] + scale * (out[8:15] - qpos16[8:15])
+    left_delta = scale * (out[0:7] - qpos16[0:7])
+    right_delta = scale * (out[8:15] - qpos16[8:15])
+    if clip is not None and clip > 0.0:
+        left_delta = np.clip(left_delta, -clip, clip)
+        right_delta = np.clip(right_delta, -clip, clip)
+    out[0:7] = qpos16[0:7] + left_delta
+    out[8:15] = qpos16[8:15] + right_delta
     return out
 
 
@@ -329,6 +337,8 @@ def prepare_env_action_target(
     infer_qpos16: np.ndarray,
     action_representation: str,
     joint_target_scale: float,
+    joint_target_scale_reference: str,
+    joint_target_scale_clip: float | None,
 ) -> np.ndarray:
     """Convert one policy action row to an env target.
 
@@ -337,12 +347,27 @@ def prepare_env_action_target(
     scaling compounds against the previous command and can explode.
     """
     abs16 = integrate_action(action16, rolling_qpos16, action_representation)
-    scale_reference = (
-        np.asarray(infer_qpos16, dtype=np.float32)
-        if action_representation == "absolute_qpos"
-        else np.asarray(rolling_qpos16, dtype=np.float32)
+    reference_mode = joint_target_scale_reference.replace("-", "_")
+    if reference_mode == "auto":
+        scale_reference = (
+            np.asarray(infer_qpos16, dtype=np.float32)
+            if action_representation == "absolute_qpos"
+            else np.asarray(rolling_qpos16, dtype=np.float32)
+        )
+    elif reference_mode in ("infer", "inference", "anchor"):
+        scale_reference = np.asarray(infer_qpos16, dtype=np.float32)
+    elif reference_mode in ("rolling", "previous", "current"):
+        scale_reference = np.asarray(rolling_qpos16, dtype=np.float32)
+    else:
+        raise ValueError(
+            f"unknown joint target scale reference: {joint_target_scale_reference!r}"
+        )
+    return scale_joint_targets(
+        abs16,
+        scale_reference,
+        joint_target_scale,
+        joint_target_scale_clip,
     )
-    return scale_joint_targets(abs16, scale_reference, joint_target_scale)
 
 
 def apply_gripper_override(
@@ -400,6 +425,8 @@ def run_episode(
     max_steps: int,
     action_representation: str,
     joint_target_scale: float,
+    joint_target_scale_reference: str,
+    joint_target_scale_clip: float | None,
     gripper_override: str,
     gripper_close_after_step: int,
     gripper_open_value: float,
@@ -473,6 +500,8 @@ def run_episode(
                 infer_qpos,
                 action_representation,
                 joint_target_scale,
+                joint_target_scale_reference,
+                joint_target_scale_clip,
             )
             abs16 = apply_gripper_override(
                 abs16,
@@ -540,12 +569,37 @@ def main():
     ap.add_argument("--gripper-close-value", type=float, default=-1.0)
     ap.add_argument(
         "--joint-target-scale",
+        "--joint-delta-scale",
+        dest="joint_target_scale",
         type=float,
         default=1.0,
         help=(
             "Eval-only diagnostic: scale joint target displacement relative to "
             "the current commanded qpos before gripper overrides. 1.0 preserves "
             "policy output."
+        ),
+    )
+    ap.add_argument(
+        "--joint-target-scale-reference",
+        "--joint-delta-scale-reference",
+        dest="joint_target_scale_reference",
+        default="auto",
+        choices=("auto", "infer", "inference", "anchor", "rolling", "previous", "current"),
+        help=(
+            "Reference qpos for --joint-target-scale. auto preserves the "
+            "safe default: absolute_qpos chunks use the inference-time qpos "
+            "anchor, while legacy delta chunks use the rolling commanded qpos."
+        ),
+    )
+    ap.add_argument(
+        "--joint-target-scale-clip",
+        "--joint-delta-scale-clip",
+        dest="joint_target_scale_clip",
+        type=float,
+        default=0.0,
+        help=(
+            "Optional eval-only per-joint displacement clip in radians after "
+            "scaling. 0 disables clipping."
         ),
     )
     ap.add_argument(
@@ -578,6 +632,8 @@ def main():
     print(f"Max steps:     {args.max_steps}")
     print(f"Replan every:  {args.replan_every}")
     print(f"Joint scale:   {args.joint_target_scale}")
+    print(f"Joint ref:     {args.joint_target_scale_reference}")
+    print(f"Joint clip:    {args.joint_target_scale_clip}")
     print(f"Gripper mode:  {args.gripper_override}")
     if args.gripper_override in ("close-after-step", "open-then-close-after-step"):
         print(f"Close after:   {args.gripper_close_after_step}")
@@ -656,6 +712,8 @@ def main():
                         "max_steps": args.max_steps,
                         "replan_every": args.replan_every,
                         "joint_target_scale": args.joint_target_scale,
+                        "joint_target_scale_reference": args.joint_target_scale_reference,
+                        "joint_target_scale_clip": args.joint_target_scale_clip,
                         "prompt": args.prompt,
                         "gripper_override": args.gripper_override,
                         "gripper_close_after_step": args.gripper_close_after_step,
@@ -713,6 +771,8 @@ def main():
                 env, ws, seed, args.prompt, args.replan_every, args.max_steps,
                 action_representation=action_representation,
                 joint_target_scale=args.joint_target_scale,
+                joint_target_scale_reference=args.joint_target_scale_reference,
+                joint_target_scale_clip=args.joint_target_scale_clip,
                 gripper_override=args.gripper_override,
                 gripper_close_after_step=args.gripper_close_after_step,
                 gripper_open_value=args.gripper_open_value,
