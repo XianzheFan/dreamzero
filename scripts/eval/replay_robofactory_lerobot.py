@@ -81,6 +81,31 @@ def load_episode(data_root: Path, episode_index: int) -> tuple[np.ndarray, np.nd
     return actions[:, :16], states[:, :16]
 
 
+def _load_jsonl(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                rows.append(json.loads(line))
+    return rows
+
+
+def load_source_episode_seeds(data_root: Path) -> dict[int, int]:
+    """Read source RoboFactory episode seeds from converted LeRobot metadata."""
+    seeds: dict[int, int] = {}
+    meta_dir = data_root / "meta"
+    for row in _load_jsonl(meta_dir / "robofactory_episode_metadata.jsonl"):
+        if "episode_index" in row and "episode_seed" in row:
+            seeds[int(row["episode_index"])] = int(row["episode_seed"])
+    for row in _load_jsonl(meta_dir / "episodes.jsonl"):
+        if "episode_index" in row and "source_episode_seed" in row:
+            seeds[int(row["episode_index"])] = int(row["source_episode_seed"])
+    return seeds
+
+
 def _bool_from(info_val: Any) -> bool:
     if info_val is None:
         return False
@@ -212,9 +237,13 @@ def main() -> None:
     ap.add_argument("--seed-start", type=int, default=0)
     ap.add_argument(
         "--seed-mode",
-        choices=("episode-index", "seed-start"),
+        choices=("episode-index", "seed-start", "source-episode-seed"),
         default="episode-index",
-        help="episode-index uses seed=episode_index; seed-start uses seed_start+i.",
+        help=(
+            "episode-index uses seed=episode_index; seed-start uses seed_start+i; "
+            "source-episode-seed uses RoboFactory episode_seed metadata written by "
+            "scripts/data/robofactory_to_lerobot_v2.py."
+        ),
     )
     ap.add_argument(
         "--seed-search-window",
@@ -257,11 +286,23 @@ def main() -> None:
         viewer_camera_configs=dict(shader_pack=args.shader),
     )
     dump_dir = Path(args.output_dir) if args.output_dir else None
+    source_seeds = load_source_episode_seeds(data_root)
+    if args.seed_mode == "source-episode-seed":
+        print(f"Loaded source episode seeds for {len(source_seeds)} episodes", flush=True)
     summaries = []
     try:
         for offset in range(args.num_episodes):
             episode_index = args.episode_start + offset
-            candidate_seed = episode_index if args.seed_mode == "episode-index" else args.seed_start + offset
+            if args.seed_mode == "episode-index":
+                candidate_seed = episode_index
+            elif args.seed_mode == "seed-start":
+                candidate_seed = args.seed_start + offset
+            else:
+                if episode_index not in source_seeds:
+                    raise KeyError(
+                        f"episode {episode_index} has no source_episode_seed metadata under {data_root / 'meta'}"
+                    )
+                candidate_seed = source_seeds[episode_index]
             actions16, states16 = load_episode(data_root, episode_index)
             summaries.append(
                 replay_episode(

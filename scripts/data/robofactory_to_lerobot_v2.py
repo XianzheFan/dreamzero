@@ -50,6 +50,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from typing import Any
 
 import av
 import h5py
@@ -64,6 +65,51 @@ CHUNK_SIZE = 1000
 # Per-arm state slice: qpos[:8] = 7 arm joints + 1 finger joint.
 ARM_STATE_DIM = 8
 ARM_ACTION_DIM = 8
+
+
+def _load_source_episode_metadata(h5_path: Path, json_path: Path | None) -> dict[int, dict[str, Any]]:
+    """Load RoboFactory RecordEpisodeMA sidecar metadata, keyed by source traj id.
+
+    RoboFactory's planner writes a ``.json`` next to the ``.h5`` trajectory file
+    with fields such as ``episode_seed``. Those seeds are necessary for exact
+    simulator replay because object poses are sampled from the env seed while
+    robot qpos is deterministic for LiftBarrier.
+    """
+    candidates: list[Path] = []
+    if json_path is not None:
+        candidates.append(json_path)
+    candidates.append(h5_path.with_suffix(".json"))
+
+    source_json = next((p for p in candidates if p.exists()), None)
+    if source_json is None:
+        return {}
+
+    raw = json.loads(source_json.read_text())
+    episodes = raw.get("episodes", [])
+    if not isinstance(episodes, list):
+        raise ValueError(f"{source_json} has no list-valued 'episodes' field")
+
+    by_id: dict[int, dict[str, Any]] = {}
+    for row_index, episode in enumerate(episodes):
+        if not isinstance(episode, dict):
+            continue
+        episode_id = int(episode.get("episode_id", row_index))
+        metadata = dict(episode)
+        metadata["source_json"] = str(source_json)
+        by_id[episode_id] = metadata
+    return by_id
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    return value
 
 
 def detect_num_arms(traj: h5py.Group) -> int:
@@ -189,6 +235,7 @@ def write_meta(
     actions: list[np.ndarray],
     states: list[np.ndarray],
     num_arms: int,
+    episode_metadata: list[dict[str, Any] | None],
 ) -> None:
     meta = out_root / "meta"
     meta.mkdir(parents=True, exist_ok=True)
@@ -293,11 +340,26 @@ def write_meta(
 
     with (meta / "episodes.jsonl").open("w") as f:
         for ep_idx, length in enumerate(episode_lengths):
-            f.write(json.dumps({
+            entry = {
                 "episode_index": ep_idx,
                 "tasks": [task_text],
                 "length": length,
-            }) + "\n")
+            }
+            source = episode_metadata[ep_idx] if ep_idx < len(episode_metadata) else None
+            if source:
+                if "episode_id" in source:
+                    entry["source_episode_id"] = int(source["episode_id"])
+                if "episode_seed" in source:
+                    entry["source_episode_seed"] = int(source["episode_seed"])
+            f.write(json.dumps(entry) + "\n")
+
+    if any(episode_metadata):
+        with (meta / "robofactory_episode_metadata.jsonl").open("w") as f:
+            for ep_idx, source in enumerate(episode_metadata):
+                entry: dict[str, Any] = {"episode_index": ep_idx}
+                if source:
+                    entry.update(_json_safe(source))
+                f.write(json.dumps(entry, sort_keys=True) + "\n")
 
     with (meta / "tasks.jsonl").open("w") as f:
         f.write(json.dumps({"task_index": 0, "task": task_text}) + "\n")
@@ -351,9 +413,17 @@ def main():
                         help="Number of episodes to convert (-1 for all)")
     parser.add_argument("--num-arms", type=int, default=None,
                         help="Optional sanity check: assert detected arm count matches.")
+    parser.add_argument("--metadata-json", type=Path, default=None,
+                        help="Optional RoboFactory .json sidecar with episode_seed metadata. "
+                             "Defaults to the .h5 path with a .json suffix when present.")
     args = parser.parse_args()
 
     args.out.mkdir(parents=True, exist_ok=True)
+    source_metadata = _load_source_episode_metadata(args.h5, args.metadata_json)
+    if source_metadata:
+        print(f"Loaded source metadata for {len(source_metadata)} episodes")
+    else:
+        print("No RoboFactory source episode metadata found; exact replay seeds will be unavailable")
     with h5py.File(args.h5, "r") as f:
         # Sort by integer suffix so episode_000000 corresponds to traj_0.
         traj_keys = sorted(f.keys(), key=lambda k: int(k.split("_")[1]))
@@ -372,11 +442,13 @@ def main():
         episode_lengths: list[int] = []
         actions_buf: list[np.ndarray] = []
         states_buf: list[np.ndarray] = []
+        episode_metadata: list[dict[str, Any] | None] = []
         cumulative = 0
         sample_hw: tuple[int, int] | None = None
 
         for ep_idx, key in enumerate(tqdm(traj_keys, desc="episodes")):
             traj = f[key]
+            source_traj_id = int(key.split("_")[1])
             if sample_hw is None:
                 rgb_shape = traj[f"obs/sensor_data/head_camera_global/rgb"].shape
                 sample_hw = (rgb_shape[1], rgb_shape[2])
@@ -392,6 +464,11 @@ def main():
             episode_lengths.append(length)
             actions_buf.append(action)
             states_buf.append(state)
+            source = source_metadata.get(source_traj_id)
+            if source is not None:
+                source = dict(source)
+                source["source_traj_key"] = key
+            episode_metadata.append(source)
 
     assert sample_hw is not None
     write_meta(
@@ -404,6 +481,7 @@ def main():
         actions=actions_buf,
         states=states_buf,
         num_arms=num_arms,
+        episode_metadata=episode_metadata,
     )
     print(f"Done. {len(episode_lengths)} episodes / {cumulative} frames -> {args.out}")
 
