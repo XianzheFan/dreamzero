@@ -212,6 +212,101 @@ def _range_stats(values: np.ndarray) -> dict[str, float]:
     }
 
 
+def _trace_column(
+    trace: np.ndarray,
+    columns: tuple[str, ...],
+    name: str,
+) -> np.ndarray | None:
+    if trace.size == 0 or name not in columns:
+        return None
+    return trace[:, columns.index(name)]
+
+
+def _finite(values: np.ndarray | None) -> np.ndarray:
+    if values is None:
+        return np.asarray([], dtype=np.float32)
+    values = np.asarray(values, dtype=np.float32)
+    return values[np.isfinite(values)]
+
+
+def _first_true_step(
+    steps: np.ndarray | None,
+    values: np.ndarray | None,
+    threshold: float = 0.5,
+) -> int | None:
+    if steps is None or values is None:
+        return None
+    mask = np.isfinite(values) & (values > threshold)
+    idx = np.where(mask)[0]
+    if idx.size == 0:
+        return None
+    return int(steps[idx[0]])
+
+
+def _env_trace_debug(trace: np.ndarray, columns: tuple[str, ...]) -> dict[str, Any] | None:
+    if trace.size == 0 or not columns:
+        return None
+
+    steps = _trace_column(trace, columns, "step")
+    barrier_z = _finite(_trace_column(trace, columns, "barrier_z"))
+    margin = _finite(_trace_column(trace, columns, "success_margin"))
+    left_dist = _finite(_trace_column(trace, columns, "left_tcp_to_barrier"))
+    right_dist = _finite(_trace_column(trace, columns, "right_tcp_to_barrier"))
+    left_target_dist = _finite(_trace_column(trace, columns, "left_tcp_to_grasp_target"))
+    right_target_dist = _finite(_trace_column(trace, columns, "right_tcp_to_grasp_target"))
+    left_grasp = _trace_column(trace, columns, "left_grasping")
+    right_grasp = _trace_column(trace, columns, "right_grasping")
+
+    def _start_final_max(values: np.ndarray) -> dict[str, float | None]:
+        if values.size == 0:
+            return {"start": None, "final": None, "max": None, "min": None}
+        return {
+            "start": float(values[0]),
+            "final": float(values[-1]),
+            "max": float(values.max()),
+            "min": float(values.min()),
+        }
+
+    def _min_final(values: np.ndarray) -> dict[str, float | None]:
+        if values.size == 0:
+            return {"min": None, "final": None}
+        return {"min": float(values.min()), "final": float(values[-1])}
+
+    return {
+        "barrier_z": _start_final_max(barrier_z),
+        "success_margin": _start_final_max(margin),
+        "left_tcp_to_barrier": _min_final(left_dist),
+        "right_tcp_to_barrier": _min_final(right_dist),
+        "left_tcp_to_grasp_target": _min_final(left_target_dist),
+        "right_tcp_to_grasp_target": _min_final(right_target_dist),
+        "left_grasp_count": int(np.sum(np.isfinite(left_grasp) & (left_grasp > 0.5)))
+        if left_grasp is not None
+        else None,
+        "right_grasp_count": int(np.sum(np.isfinite(right_grasp) & (right_grasp > 0.5)))
+        if right_grasp is not None
+        else None,
+        "left_first_grasp_step": _first_true_step(steps, left_grasp),
+        "right_first_grasp_step": _first_true_step(steps, right_grasp),
+    }
+
+
+def _fmt_start_final_max(stats: dict[str, float | None]) -> str:
+    def fmt(value: float | None) -> str:
+        return "nan" if value is None else f"{value:+.3f}"
+
+    return (
+        f"start={fmt(stats['start'])} final={fmt(stats['final'])} "
+        f"min={fmt(stats['min'])} max={fmt(stats['max'])}"
+    )
+
+
+def _fmt_min_final(stats: dict[str, float | None]) -> str:
+    def fmt(value: float | None) -> str:
+        return "nan" if value is None else f"{value:.3f}"
+
+    return f"min={fmt(stats['min'])} final={fmt(stats['final'])}"
+
+
 def analyze_episode(
     path: str,
     close_threshold: float,
@@ -240,6 +335,10 @@ def analyze_episode(
     )
     infer_step = np.asarray(d["infer_step"] if "infer_step" in d.files else [], dtype=np.int64)
     obs_qpos = np.asarray(d["obs_qpos"] if "obs_qpos" in d.files else [], dtype=np.float32)
+    env_trace = np.asarray(d["env_trace"] if "env_trace" in d.files else [], dtype=np.float32)
+    env_trace_columns = tuple(
+        str(x) for x in np.asarray(d["env_trace_columns"] if "env_trace_columns" in d.files else [])
+    )
     steps = int(exec_action.shape[0])
 
     if exec_action.ndim != 2:
@@ -314,6 +413,8 @@ def analyze_episode(
             "clamp_delta_max": float(clamp_delta.max()),
         }
 
+    trace_debug = _env_trace_debug(env_trace, env_trace_columns)
+
     episode = {
         "file": os.path.basename(path),
         "seed": seed,
@@ -332,6 +433,7 @@ def analyze_episode(
         "first_cmd_delta_mean": first_cmd_delta_mean,
         "first_cmd_delta_max": first_cmd_delta_max,
         "norm_debug": norm_debug,
+        "env_trace_debug": trace_debug,
     }
 
     print(
@@ -389,6 +491,36 @@ def analyze_episode(
             f"sat_frac={norm_debug['raw_gripper_saturation_frac']:.2f} "
             f"clamp_delta_mean={norm_debug['clamp_delta_mean']:.3f} "
             f"clamp_delta_max={norm_debug['clamp_delta_max']:.3f}"
+        )
+    if trace_debug is not None:
+        print(
+            "  barrier z: "
+            f"{_fmt_start_final_max(trace_debug['barrier_z'])}"
+        )
+        print(
+            "  success margin: "
+            f"{_fmt_start_final_max(trace_debug['success_margin'])}"
+        )
+        print(
+            "  tcp->barrier: "
+            f"{arm_labels[0] if arm_labels else 'arm0'} "
+            f"{_fmt_min_final(trace_debug['left_tcp_to_barrier'])} | "
+            f"{arm_labels[1] if len(arm_labels) > 1 else 'arm1'} "
+            f"{_fmt_min_final(trace_debug['right_tcp_to_barrier'])}"
+        )
+        print(
+            "  grasping: "
+            f"left_count={trace_debug['left_grasp_count']} "
+            f"left_first={trace_debug['left_first_grasp_step']} "
+            f"right_count={trace_debug['right_grasp_count']} "
+            f"right_first={trace_debug['right_first_grasp_step']}"
+        )
+        print(
+            "  tcp->grasp target: "
+            f"{arm_labels[0] if arm_labels else 'arm0'} "
+            f"{_fmt_min_final(trace_debug['left_tcp_to_grasp_target'])} | "
+            f"{arm_labels[1] if len(arm_labels) > 1 else 'arm1'} "
+            f"{_fmt_min_final(trace_debug['right_tcp_to_grasp_target'])}"
         )
 
     return episode
@@ -457,6 +589,48 @@ def _aggregate(episodes: list[dict[str, Any]]) -> dict[str, Any]:
                 "right_never_closes": per_gripper_never_closes["right"],
             }
         )
+    trace_episodes = [e["env_trace_debug"] for e in episodes if e.get("env_trace_debug") is not None]
+    if trace_episodes:
+        margin_max = [
+            t["success_margin"]["max"]
+            for t in trace_episodes
+            if t["success_margin"]["max"] is not None
+        ]
+        left_min = [
+            t["left_tcp_to_barrier"]["min"]
+            for t in trace_episodes
+            if t["left_tcp_to_barrier"]["min"] is not None
+        ]
+        right_min = [
+            t["right_tcp_to_barrier"]["min"]
+            for t in trace_episodes
+            if t["right_tcp_to_barrier"]["min"] is not None
+        ]
+        left_target_min = [
+            t["left_tcp_to_grasp_target"]["min"]
+            for t in trace_episodes
+            if t["left_tcp_to_grasp_target"]["min"] is not None
+        ]
+        right_target_min = [
+            t["right_tcp_to_grasp_target"]["min"]
+            for t in trace_episodes
+            if t["right_tcp_to_grasp_target"]["min"] is not None
+        ]
+        summary["env_trace"] = {
+            "episodes": len(trace_episodes),
+            "success_margin_max_mean": _safe_float(np.mean(margin_max)) if margin_max else None,
+            "success_margin_max_best": _safe_float(np.max(margin_max)) if margin_max else None,
+            "left_tcp_to_barrier_min_mean": _safe_float(np.mean(left_min)) if left_min else None,
+            "right_tcp_to_barrier_min_mean": _safe_float(np.mean(right_min)) if right_min else None,
+            "left_tcp_to_grasp_target_min_mean": _safe_float(np.mean(left_target_min)) if left_target_min else None,
+            "right_tcp_to_grasp_target_min_mean": _safe_float(np.mean(right_target_min)) if right_target_min else None,
+            "left_grasp_episodes": sum(
+                int((t["left_grasp_count"] or 0) > 0) for t in trace_episodes
+            ),
+            "right_grasp_episodes": sum(
+                int((t["right_grasp_count"] or 0) > 0) for t in trace_episodes
+            ),
+        }
     return summary
 
 
@@ -543,6 +717,17 @@ def main() -> None:
         f"mean_abs={summary['mean_joint_step_delta']:.3f} "
         f"max_abs={summary['max_joint_step_delta']:.3f}"
     )
+    if "env_trace" in summary:
+        trace = summary["env_trace"]
+        print(
+            "  env trace: "
+            f"margin_best={trace['success_margin_max_best']} "
+            f"margin_mean={trace['success_margin_max_mean']} "
+            f"left_tcp_min_mean={trace['left_tcp_to_barrier_min_mean']} "
+            f"right_tcp_min_mean={trace['right_tcp_to_barrier_min_mean']} "
+            f"left_grasp_eps={trace['left_grasp_episodes']} "
+            f"right_grasp_eps={trace['right_grasp_episodes']}"
+        )
 
     if args.json_out:
         payload = {"summary": summary, "episodes": episodes}

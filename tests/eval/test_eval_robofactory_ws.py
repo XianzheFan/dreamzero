@@ -119,3 +119,69 @@ def test_commanded_reference_modes_keep_commanded_target():
         )
         np.testing.assert_allclose(out, commanded)
         assert out is not commanded
+
+
+class _Pose:
+    def __init__(self, p):
+        self.p = np.asarray(p, dtype=np.float32)
+
+    def to_transformation_matrix(self):
+        mat = np.eye(4, dtype=np.float32)
+        mat[:3, 3] = self.p
+        return mat
+
+
+class _Actor:
+    def __init__(self, p):
+        self.pose = _Pose(p)
+
+
+class _Agent:
+    def __init__(self, robot_p, tcp_p, grasping):
+        self.robot = _Actor(robot_p)
+        self.tcp = _Actor(tcp_p)
+        self._grasping = grasping
+
+    def is_grasping(self, _actor):
+        return self._grasping
+
+
+def test_collect_env_trace_records_liftbarrier_geometry():
+    mod = _load_eval_module()
+    contact0 = np.eye(4, dtype=np.float32)
+    contact1 = np.eye(4, dtype=np.float32)
+    contact2 = np.eye(4, dtype=np.float32)
+    contact1[:3, 3] = [0.05, 0.0, 0.0]
+    contact2[:3, 3] = [0.0, 0.10, 0.0]
+    root = types.SimpleNamespace(
+        barrier=_Actor([0.0, 0.0, 0.25]),
+        annotation_data={
+            "barrier": {
+                "contact_points_pose": [contact0, contact1, contact2],
+                "scale": 1.0,
+            }
+        },
+    )
+    left = _Agent([0.0, 0.0, 0.0], [0.05, 0.0, 0.25], True)
+    right = _Agent([0.0, 0.0, 0.0], [0.0, 0.10, 0.25], False)
+    root.agent = types.SimpleNamespace(agents=[left, right])
+    env = types.SimpleNamespace(unwrapped=root)
+    action = np.zeros(16, dtype=np.float32)
+    action[7] = -1.0
+    action[15] = 1.0
+
+    trace = mod.collect_env_trace(env, 5, action, {"success": True})
+    columns = tuple(str(x) for x in mod.ENV_TRACE_COLUMNS)
+
+    assert trace[columns.index("step")] == 5.0
+    assert trace[columns.index("success")] == 1.0
+    np.testing.assert_allclose(trace[columns.index("barrier_z")], 0.25)
+    np.testing.assert_allclose(trace[columns.index("success_margin")], 0.10)
+    np.testing.assert_allclose(trace[columns.index("left_tcp_to_barrier")], 0.05)
+    np.testing.assert_allclose(trace[columns.index("right_tcp_to_barrier")], 0.10)
+    assert trace[columns.index("left_grasping")] == 1.0
+    assert trace[columns.index("right_grasping")] == 0.0
+    assert trace[columns.index("cmd_left_gripper")] == -1.0
+    assert trace[columns.index("cmd_right_gripper")] == 1.0
+    np.testing.assert_allclose(trace[columns.index("left_tcp_to_grasp_target")], 0.0)
+    np.testing.assert_allclose(trace[columns.index("right_tcp_to_grasp_target")], 0.0)
