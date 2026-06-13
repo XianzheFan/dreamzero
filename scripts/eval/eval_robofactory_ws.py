@@ -337,8 +337,8 @@ def prepare_env_action_target(
     infer_qpos16: np.ndarray,
     action_representation: str,
     joint_target_scale: float,
-    joint_target_scale_reference: str,
-    joint_target_scale_clip: float | None,
+    joint_target_scale_reference: str = "auto",
+    joint_target_scale_clip: float | None = None,
 ) -> np.ndarray:
     """Convert one policy action row to an env target.
 

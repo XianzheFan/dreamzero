@@ -91,6 +91,22 @@ def test_scale_joint_targets_one_is_noop(monkeypatch):
     np.testing.assert_allclose(out, action)
 
 
+def test_scale_joint_targets_clip_limits_joint_delta_only(monkeypatch):
+    mod = _load_eval_module(monkeypatch)
+    qpos = np.zeros(16, dtype=np.float32)
+    action = np.zeros(16, dtype=np.float32)
+    action[0:7] = 1.0
+    action[8:15] = -1.0
+    action[7] = -1.0
+    action[15] = 1.0
+
+    out = mod.scale_joint_targets(action, qpos, scale=2.0, clip=0.25)
+
+    np.testing.assert_allclose(out[0:7], 0.25, atol=1e-6)
+    np.testing.assert_allclose(out[8:15], -0.25, atol=1e-6)
+    np.testing.assert_allclose(out[[7, 15]], [-1.0, 1.0])
+
+
 def test_prepare_env_action_target_scales_absolute_chunk_from_infer_qpos(monkeypatch):
     mod = _load_eval_module(monkeypatch)
     infer_qpos = np.zeros(16, dtype=np.float32)
