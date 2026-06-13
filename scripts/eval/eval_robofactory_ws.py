@@ -73,18 +73,35 @@ def _to_np(arr):
     return np.asarray(arr).reshape(-1)
 
 
+def extract_qpos(obs) -> np.ndarray:
+    """RoboFactory raw obs -> qpos[16]."""
+    q0 = _to_np(obs["agent"]["panda-0"]["qpos"]).astype(np.float32)
+    q1 = _to_np(obs["agent"]["panda-1"]["qpos"]).astype(np.float32)
+    # Training used qpos[:8] per arm (7 arm joints + 1 finger joint).
+    qpos = np.concatenate([q0[:8], q1[:8]]).astype(np.float32)
+    assert qpos.shape == (16,)
+    return qpos
+
+
 def extract_obs(obs):
     """RoboFactory raw obs -> (head_rgb, left_rgb, right_rgb, qpos[16])."""
     sd = obs["sensor_data"]
     head = _to_uint8_rgb(sd["head_camera_global"])
     left = _to_uint8_rgb(sd["head_camera_agent0"])
     right = _to_uint8_rgb(sd["head_camera_agent1"])
-    q0 = _to_np(obs["agent"]["panda-0"]["qpos"]).astype(np.float32)
-    q1 = _to_np(obs["agent"]["panda-1"]["qpos"]).astype(np.float32)
-    # Training used qpos[:8] per arm (7 arm joints + 1 finger joint).
-    qpos = np.concatenate([q0[:8], q1[:8]]).astype(np.float32)
-    assert qpos.shape == (16,)
+    qpos = extract_qpos(obs)
     return head, left, right, qpos
+
+
+def update_loop_qpos_after_step(
+    obs_after,
+    commanded16: np.ndarray,
+    joint_delta_scale_reference: str,
+) -> np.ndarray:
+    """Choose the qpos reference for the next substep in a replan window."""
+    if joint_delta_scale_reference == "observed":
+        return extract_qpos(obs_after)
+    return np.asarray(commanded16, dtype=np.float32).copy()
 
 
 def integrate_action(
@@ -384,11 +401,7 @@ def run_episode(
         chunk_reference = qpos.copy()
         for da in actions[:replan_every]:
             abs16 = integrate_action(da, cur, action_representation)
-            scale_reference = (
-                chunk_reference
-                if joint_delta_scale_reference == "chunk"
-                else cur
-            )
+            scale_reference = chunk_reference if joint_delta_scale_reference == "chunk" else cur
             abs16 = scale_joint_target_delta(
                 abs16,
                 scale_reference,
@@ -406,7 +419,6 @@ def run_episode(
             )
             qpos_before_step = cur.copy()
             raw_obs, reward, term, trunc, info = env.step(env_action_dict(abs16))
-            cur = abs16
             steps += 1
             if dump is not None:
                 dump["exec_action"].append(abs16.copy())
@@ -424,6 +436,11 @@ def run_episode(
                         raw_obs,
                     )
                 )
+            cur = update_loop_qpos_after_step(
+                raw_obs,
+                abs16,
+                joint_delta_scale_reference,
+            )
             if _bool_from(info.get("success", False)):
                 return True, steps
             if _bool_from(term) or _bool_from(trunc):
@@ -507,13 +524,14 @@ def main():
     )
     ap.add_argument(
         "--joint-delta-scale-reference",
-        choices=("previous", "chunk"),
+        choices=("previous", "chunk", "observed"),
         default="previous",
         help=(
             "Reference for --joint-delta-scale. 'previous' scales each target "
             "relative to the previous commanded target; 'chunk' scales every "
             "target in a replan window relative to the qpos observed at that "
-            "replan."
+            "replan; 'observed' scales each target relative to the latest "
+            "post-step observed qpos."
         ),
     )
     ap.add_argument(

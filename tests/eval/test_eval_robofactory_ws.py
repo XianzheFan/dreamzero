@@ -74,3 +74,48 @@ def test_joint_delta_scaling_leaves_grippers_unchanged():
 
     assert out[7] == 1.0
     assert out[15] == -1.0
+
+
+def _fake_obs(qpos0, qpos1):
+    return {
+        "agent": {
+            "panda-0": {"qpos": np.asarray(qpos0, dtype=np.float32)},
+            "panda-1": {"qpos": np.asarray(qpos1, dtype=np.float32)},
+        }
+    }
+
+
+def test_observed_reference_uses_post_step_qpos():
+    mod = _load_eval_module()
+    commanded = np.arange(16, dtype=np.float32)
+    obs_after = _fake_obs(
+        np.arange(9, dtype=np.float32) + 100.0,
+        np.arange(9, dtype=np.float32) + 200.0,
+    )
+
+    out = mod.update_loop_qpos_after_step(
+        obs_after,
+        commanded,
+        joint_delta_scale_reference="observed",
+    )
+
+    np.testing.assert_allclose(out[:8], np.arange(8, dtype=np.float32) + 100.0)
+    np.testing.assert_allclose(out[8:16], np.arange(8, dtype=np.float32) + 200.0)
+
+
+def test_commanded_reference_modes_keep_commanded_target():
+    mod = _load_eval_module()
+    commanded = np.arange(16, dtype=np.float32)
+    obs_after = _fake_obs(
+        np.arange(9, dtype=np.float32) + 100.0,
+        np.arange(9, dtype=np.float32) + 200.0,
+    )
+
+    for mode in ("previous", "chunk"):
+        out = mod.update_loop_qpos_after_step(
+            obs_after,
+            commanded,
+            joint_delta_scale_reference=mode,
+        )
+        np.testing.assert_allclose(out, commanded)
+        assert out is not commanded
