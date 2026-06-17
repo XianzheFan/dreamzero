@@ -196,6 +196,40 @@ def scale_joint_target_delta(
     return out
 
 
+def resolve_joint_delta_controls(
+    action_representation: str,
+    *,
+    scale: float,
+    clip: float | None,
+    output_clip: float | None,
+    left_scale: float | None,
+    right_scale: float | None,
+    allow_absolute_scale: bool,
+) -> tuple[float, float | None, float | None, float | None, float | None, bool]:
+    """Return joint-delta controls that match the server action semantics.
+
+    The bimanual policy server reports ``absolute_qpos`` after it has already
+    converted DreamZero relative outputs back to absolute joint targets. Applying
+    the diagnostic delta-scale knob again at that point turns small absolute
+    target corrections into large per-step jumps. Keep the legacy knob available
+    for explicit diagnostics, but make the safe behavior the default.
+    """
+    if action_representation != "absolute_qpos" or allow_absolute_scale:
+        return scale, clip, output_clip, left_scale, right_scale, False
+
+    has_non_default = (
+        scale != 1.0
+        or (clip is not None and clip > 0.0)
+        or (output_clip is not None and output_clip > 0.0)
+        or left_scale is not None
+        or right_scale is not None
+    )
+    if not has_non_default:
+        return scale, clip, output_clip, left_scale, right_scale, False
+
+    return 1.0, None, None, None, None, True
+
+
 def env_action_dict(abs16: np.ndarray) -> dict:
     return {
         "panda-0": np.asarray(abs16[0:8], dtype=np.float32),
@@ -742,6 +776,15 @@ def main():
         ),
     )
     ap.add_argument(
+        "--allow-absolute-joint-delta-scale",
+        action="store_true",
+        help=(
+            "Allow --joint-delta-* controls even when the policy server reports "
+            "absolute_qpos. This preserves the old diagnostic behavior, but it "
+            "can create very large absolute joint-target jumps."
+        ),
+    )
+    ap.add_argument(
         "--video-dir",
         default=None,
         help="If set, wrap env with RecordEpisode and write one mp4 per seed.",
@@ -846,6 +889,29 @@ def main():
     print(f"Server meta: {meta}", flush=True)
     assert meta.get("num_agents") == 2, f"server reports num_agents={meta.get('num_agents')}"
     action_representation = meta.get("action_representation", "robotwin_delta")
+    (
+        effective_joint_delta_scale,
+        effective_joint_delta_clip,
+        effective_joint_delta_output_clip,
+        effective_left_joint_delta_scale,
+        effective_right_joint_delta_scale,
+        ignored_absolute_delta_controls,
+    ) = resolve_joint_delta_controls(
+        action_representation,
+        scale=args.joint_delta_scale,
+        clip=args.joint_delta_clip,
+        output_clip=args.joint_delta_output_clip,
+        left_scale=args.left_joint_delta_scale,
+        right_scale=args.right_joint_delta_scale,
+        allow_absolute_scale=args.allow_absolute_joint_delta_scale,
+    )
+    if ignored_absolute_delta_controls:
+        print(
+            "Ignoring --joint-delta-* controls because the policy server reports "
+            "absolute_qpos. Pass --allow-absolute-joint-delta-scale only for "
+            "intentional diagnostics.",
+            flush=True,
+        )
 
     results = []
     def _write_partial() -> None:
@@ -879,6 +945,13 @@ def main():
                         "joint_delta_clip": args.joint_delta_clip,
                         "joint_delta_output_clip": args.joint_delta_output_clip,
                         "joint_delta_scale_reference": args.joint_delta_scale_reference,
+                        "effective_joint_delta_scale": effective_joint_delta_scale,
+                        "effective_left_joint_delta_scale": effective_left_joint_delta_scale,
+                        "effective_right_joint_delta_scale": effective_right_joint_delta_scale,
+                        "effective_joint_delta_clip": effective_joint_delta_clip,
+                        "effective_joint_delta_output_clip": effective_joint_delta_output_clip,
+                        "ignored_absolute_delta_controls": ignored_absolute_delta_controls,
+                        "allow_absolute_joint_delta_scale": args.allow_absolute_joint_delta_scale,
                     },
                     "n_completed": len(results),
                     "n_target": args.num_episodes,
@@ -940,12 +1013,12 @@ def main():
                 gripper_close_after_step=args.gripper_close_after_step,
                 gripper_open_value=args.gripper_open_value,
                 gripper_close_value=args.gripper_close_value,
-                joint_delta_scale=args.joint_delta_scale,
-                joint_delta_clip=args.joint_delta_clip,
-                joint_delta_output_clip=args.joint_delta_output_clip,
+                joint_delta_scale=effective_joint_delta_scale,
+                joint_delta_clip=effective_joint_delta_clip,
+                joint_delta_output_clip=effective_joint_delta_output_clip,
                 joint_delta_scale_reference=args.joint_delta_scale_reference,
-                left_joint_delta_scale=args.left_joint_delta_scale,
-                right_joint_delta_scale=args.right_joint_delta_scale,
+                left_joint_delta_scale=effective_left_joint_delta_scale,
+                right_joint_delta_scale=effective_right_joint_delta_scale,
                 dump=dump,
             )
         except Exception as e:

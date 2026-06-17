@@ -96,6 +96,54 @@ def test_joint_delta_per_arm_scale_overrides_global_scale():
     np.testing.assert_allclose(out[8:15], 0.5)
 
 
+def test_absolute_qpos_ignores_joint_delta_controls_by_default():
+    mod = _load_eval_module()
+
+    resolved = mod.resolve_joint_delta_controls(
+        "absolute_qpos",
+        scale=12.0,
+        clip=0.2,
+        output_clip=1.5,
+        left_scale=4.0,
+        right_scale=8.0,
+        allow_absolute_scale=False,
+    )
+
+    assert resolved == (1.0, None, None, None, None, True)
+
+
+def test_absolute_qpos_can_opt_into_joint_delta_controls_for_diagnostics():
+    mod = _load_eval_module()
+
+    resolved = mod.resolve_joint_delta_controls(
+        "absolute_qpos",
+        scale=12.0,
+        clip=0.2,
+        output_clip=1.5,
+        left_scale=4.0,
+        right_scale=8.0,
+        allow_absolute_scale=True,
+    )
+
+    assert resolved == (12.0, 0.2, 1.5, 4.0, 8.0, False)
+
+
+def test_legacy_delta_representation_keeps_joint_delta_controls():
+    mod = _load_eval_module()
+
+    resolved = mod.resolve_joint_delta_controls(
+        "robotwin_delta",
+        scale=3.0,
+        clip=None,
+        output_clip=0.5,
+        left_scale=None,
+        right_scale=4.0,
+        allow_absolute_scale=False,
+    )
+
+    assert resolved == (3.0, None, 0.5, None, 4.0, False)
+
+
 def _fake_obs(qpos0, qpos1):
     return {
         "agent": {
