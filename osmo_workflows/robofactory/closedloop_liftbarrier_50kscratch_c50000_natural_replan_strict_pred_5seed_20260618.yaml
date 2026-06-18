@@ -26,7 +26,7 @@ workflow:
 
           exec > >(tee /tmp/closedloop_openphasejoint_50kscratch_c50000_natural_replan_strict_pred_5seed_h100.log) 2>&1
 
-          RUN_NAME="dz-rf2-lb50k-c50000-natural-replan-strict-pred5seed1000-xz-20260618"
+          RUN_NAME="dz-rf2-lb50k-c50000-natural-replan-strict-pred5seed1000-skip020-xz-20260618"
           DREAMZERO_GIT_URL="https://github.com/XianzheFan/dreamzero.git"
           DREAMZERO_GIT_COMMIT="97e1d5ca1e5698d0c1390fea682d9b2c0592cdeb"
           ROBOFACTORY_GIT_URL="https://github.com/MARS-EAI/RoboFactory.git"
@@ -794,7 +794,7 @@ workflow:
       image: nvcr.io/nvidian/groot-ci-base-eval:latest@sha256:de6e59614be213f06f95c8c1e8311f0b700c963aed6c39eeec1fb56cd40c6ee7
       lead: true
       name: eval
-  name: dz-rf2-lb50k-c50000-natural-replan-strict-pred5seed1000-xz-20260618
+  name: dz-rf2-lb50k-c50000-natural-replan-strict-pred5seed1000-skip020-xz-20260618
   resources:
     default:
       cpu: 84
@@ -808,6 +808,7 @@ workflow:
       - aks-gpu-61109112-vmss00007l
       - aks-gpu-92777625-vmss00000k
       - aks-gpu-92777625-vmss00002n
+      - aks-gpu-92777625-vmss000020
       platform: dgx-h100
       storage: 620Gi
   timeout:
