@@ -787,6 +787,7 @@ workflow:
       - aks-gpu-61109112-vmss00002e
       - aks-gpu-61109112-vmss00007l
       - aks-gpu-92777625-vmss00000k
+      - aks-gpu-92777625-vmss00002n
       platform: dgx-h100
       storage: 620Gi
   timeout:
