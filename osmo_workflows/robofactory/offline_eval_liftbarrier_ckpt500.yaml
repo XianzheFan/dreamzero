@@ -501,6 +501,6 @@ default-values:
   gripper_class_threshold: "0.0"
   disable_torch_compile: "true"
   skip_train_forward: "true"
-  attention_backend: FA2
+  attention_backend: flex
   ckpt_wait_timeout_seconds: "7200"
   ckpt_wait_interval_seconds: "120"

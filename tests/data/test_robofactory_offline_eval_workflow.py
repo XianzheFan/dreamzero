@@ -46,7 +46,7 @@ def test_liftbarrier_offline_eval_workflow_defaults_to_ckpt500_and_cached_code()
     assert defaults["gripper_class_threshold"] == "0.0"
     assert defaults["disable_torch_compile"] == "true"
     assert defaults["skip_train_forward"] == "true"
-    assert defaults["attention_backend"] == "FA2"
+    assert defaults["attention_backend"] == "flex"
     assert defaults["ckpt_wait_timeout_seconds"] == "7200"
     assert defaults["ckpt_wait_interval_seconds"] == "120"
 
