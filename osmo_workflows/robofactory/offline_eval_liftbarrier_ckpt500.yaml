@@ -474,14 +474,14 @@ workflow:
             } > /workspace/offline_eval_outputs/summary.txt
 
 default-values:
-  workflow_name: dz-rf2-lb500-motionw4-th02-offline-ckpt500-xz-20260618
-  source_train_run_name: dz-rf2-lb500-motionw4-th02-50k-scratch-xz-20260618
-  code_s3_uri: swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_liftbarrier_offlinefix_e796630_20260618
-  expected_code_commit: e7966307c17f034f6497a2cac3d4d20619f962b1
+  workflow_name: dz-rf2-lb500-motionw4-th02-fresh-offline-ckpt500-xz-20260618
+  source_train_run_name: dz-rf2-lb500-motionw4-th02-50k-fresh-xz-20260618
+  code_s3_uri: swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_liftbarrier_offlinefix_979c032_20260618
+  expected_code_commit: 979c032218fe6075c6013e796d52511a4f7d11ca
   data_variant: LiftBarrier-rf-500
   data_s3_uri: s3://GearHome/users/xianzhef/oci-migration/data/robofactory_lerobot_v2/LiftBarrier-rf-500
-  eval_ckpt_s3_uri: s3://GearHome/users/xianzhef/oci-migration/dreamzero_s3cache/bootstrap_checkpoints/dz-rf2-lb500-motionw4-th02-50k-scratch-xz-20260618
-  eval_ckpt_fallback_s3_uri: s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/dz-rf2-lb500-motionw4-th02-50k-scratch-xz-20260618/checkpoints
+  eval_ckpt_s3_uri: s3://GearHome/users/xianzhef/oci-migration/dreamzero_s3cache/bootstrap_checkpoints/dz-rf2-lb500-motionw4-th02-50k-fresh-xz-20260618
+  eval_ckpt_fallback_s3_uri: s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/dz-rf2-lb500-motionw4-th02-50k-fresh-xz-20260618/checkpoints
   ckpt_setting: checkpoint-500
   min_model_bytes: "100000000"
   num_batches: "4"

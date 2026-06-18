@@ -7,10 +7,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW_PATH = REPO_ROOT / "osmo_workflows/robofactory/offline_eval_liftbarrier_ckpt500.yaml"
 CODE_CACHE_URI = (
     "swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/"
-    "dreamzero_code_liftbarrier_offlinefix_e796630_20260618"
+    "dreamzero_code_liftbarrier_offlinefix_979c032_20260618"
 )
-EXPECTED_CODE_COMMIT = "e7966307c17f034f6497a2cac3d4d20619f962b1"
-SOURCE_TRAIN_RUN_NAME = "dz-rf2-lb500-motionw4-th02-50k-scratch-xz-20260618"
+EXPECTED_CODE_COMMIT = "979c032218fe6075c6013e796d52511a4f7d11ca"
+SOURCE_TRAIN_RUN_NAME = "dz-rf2-lb500-motionw4-th02-50k-fresh-xz-20260618"
 
 
 def _task_by_name(workflow, name):
@@ -22,7 +22,7 @@ def test_liftbarrier_offline_eval_workflow_defaults_to_ckpt500_and_cached_code()
         workflow = yaml.safe_load(f)
 
     defaults = workflow["default-values"]
-    assert defaults["workflow_name"] == "dz-rf2-lb500-motionw4-th02-offline-ckpt500-xz-20260618"
+    assert defaults["workflow_name"] == "dz-rf2-lb500-motionw4-th02-fresh-offline-ckpt500-xz-20260618"
     assert defaults["source_train_run_name"] == SOURCE_TRAIN_RUN_NAME
     assert defaults["code_s3_uri"] == CODE_CACHE_URI
     assert defaults["expected_code_commit"] == EXPECTED_CODE_COMMIT
