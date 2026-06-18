@@ -9,6 +9,8 @@
   policy samples before/after inference-time clipping to ``[-1, 1]``.
 * ``exec_action``: commands actually executed in the env, shape
   ``[n_steps, D]``.
+* ``exec_chunk_start_index`` (optional): per-inference first predicted horizon
+  index that was executed. Missing legacy dumps default to zero.
 * ``obs_qpos``: qpos observed at each policy call, shape ``[n_infer, D]``.
 
 By default, the script assumes each arm occupies an 8-D block:
@@ -373,6 +375,10 @@ def analyze_episode(
         else None
     )
     infer_step = np.asarray(d["infer_step"] if "infer_step" in d.files else [], dtype=np.int64)
+    exec_chunk_start_index = np.asarray(
+        d["exec_chunk_start_index"] if "exec_chunk_start_index" in d.files else [],
+        dtype=np.int64,
+    )
     obs_qpos = np.asarray(d["obs_qpos"] if "obs_qpos" in d.files else [], dtype=np.float32)
     env_trace = np.asarray(d["env_trace"] if "env_trace" in d.files else [], dtype=np.float32)
     env_trace_columns = tuple(
@@ -415,13 +421,31 @@ def analyze_episode(
 
     first_cmd_delta_mean = None
     first_cmd_delta_max = None
+    first_cmd_chunk_index_min = None
+    first_cmd_chunk_index_max = None
     if (
         joint_dims
         and obs_qpos.ndim == 2
         and obs_qpos.shape[0] == pred_chunk.shape[0]
         and obs_qpos.shape[1] >= action_dim
     ):
-        first_cmd_delta = np.abs(pred_chunk[:, 0, joint_dims] - obs_qpos[:, joint_dims])
+        if exec_chunk_start_index.size == 0:
+            exec_chunk_start_index = np.zeros(pred_chunk.shape[0], dtype=np.int64)
+        if exec_chunk_start_index.shape[0] != pred_chunk.shape[0]:
+            raise ValueError(
+                f"{path}: exec_chunk_start_index length {exec_chunk_start_index.shape[0]} "
+                f"does not match pred_chunk count {pred_chunk.shape[0]}"
+            )
+        if np.any(exec_chunk_start_index < 0) or np.any(exec_chunk_start_index >= pred_chunk.shape[1]):
+            raise ValueError(
+                f"{path}: exec_chunk_start_index must be in [0, {pred_chunk.shape[1] - 1}], "
+                f"got min={int(exec_chunk_start_index.min())} "
+                f"max={int(exec_chunk_start_index.max())}"
+            )
+        first_cmd_chunk_index_min = int(exec_chunk_start_index.min())
+        first_cmd_chunk_index_max = int(exec_chunk_start_index.max())
+        first_exec_cmd = pred_chunk[np.arange(pred_chunk.shape[0]), exec_chunk_start_index]
+        first_cmd_delta = np.abs(first_exec_cmd[:, joint_dims] - obs_qpos[:, joint_dims])
         first_cmd_delta_mean = float(first_cmd_delta.mean())
         first_cmd_delta_max = float(first_cmd_delta.max())
 
@@ -471,6 +495,8 @@ def analyze_episode(
         "mean_joint_step_delta": mean_joint_step_delta,
         "first_cmd_delta_mean": first_cmd_delta_mean,
         "first_cmd_delta_max": first_cmd_delta_max,
+        "first_cmd_chunk_index_min": first_cmd_chunk_index_min,
+        "first_cmd_chunk_index_max": first_cmd_chunk_index_max,
         "norm_debug": norm_debug,
         "env_trace_debug": trace_debug,
     }
@@ -514,8 +540,15 @@ def analyze_episode(
         f"max_abs={max_joint_step_delta:.3f}"
     )
     if first_cmd_delta_mean is not None:
+        chunk_idx_msg = ""
+        if first_cmd_chunk_index_min is not None:
+            chunk_idx_msg = (
+                f"[chunk {first_cmd_chunk_index_min}"
+                if first_cmd_chunk_index_min == first_cmd_chunk_index_max
+                else f"[chunk {first_cmd_chunk_index_min}-{first_cmd_chunk_index_max}"
+            ) + "]"
         delta_msg += (
-            f" | first_cmd_vs_obs: mean_abs={first_cmd_delta_mean:.3f} "
+            f" | first_exec_cmd_vs_obs{chunk_idx_msg}: mean_abs={first_cmd_delta_mean:.3f} "
             f"max_abs={first_cmd_delta_max:.3f}"
         )
     print(delta_msg)
