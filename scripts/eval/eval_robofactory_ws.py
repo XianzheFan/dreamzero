@@ -223,16 +223,21 @@ def resolve_joint_delta_controls(
     left_scale: float | None,
     right_scale: float | None,
     allow_absolute_scale: bool,
+    unsafe_absolute_scale: bool = False,
 ) -> tuple[float, float | None, float | None, float | None, float | None, bool]:
     """Return joint-delta controls that match the server action semantics.
 
     The bimanual policy server reports ``absolute_qpos`` after it has already
     converted DreamZero relative outputs back to absolute joint targets. Applying
-    the diagnostic delta-scale knob again at that point turns small absolute
-    target corrections into large per-step jumps. Keep the legacy knob available
-    for explicit diagnostics, but make the safe behavior the default.
+    the delta-scale knob again at that point turns small absolute target
+    corrections into large per-step jumps. The old
+    ``--allow-absolute-joint-delta-scale`` flag is intentionally ignored for
+    absolute-qpos policies so stale workflows cannot reintroduce that jitter;
+    the deliberately named ``--unsafe-absolute-joint-delta-scale`` flag is
+    required for one-off diagnostics.
     """
-    if action_representation != "absolute_qpos" or allow_absolute_scale:
+    del allow_absolute_scale
+    if action_representation != "absolute_qpos" or unsafe_absolute_scale:
         return scale, clip, output_clip, left_scale, right_scale, False
 
     has_non_default = (
@@ -927,9 +932,17 @@ def main():
         "--allow-absolute-joint-delta-scale",
         action="store_true",
         help=(
-            "Allow --joint-delta-* controls even when the policy server reports "
-            "absolute_qpos. This preserves the old diagnostic behavior, but it "
-            "can create very large absolute joint-target jumps."
+            "Deprecated compatibility flag. It is ignored for absolute_qpos "
+            "policies because it can create very large joint-target jumps."
+        ),
+    )
+    ap.add_argument(
+        "--unsafe-absolute-joint-delta-scale",
+        action="store_true",
+        help=(
+            "Diagnostic-only escape hatch: allow --joint-delta-* controls even "
+            "when the policy server reports absolute_qpos. This can create "
+            "large joint-target jumps and visible arm jitter."
         ),
     )
     ap.add_argument(
@@ -1064,12 +1077,14 @@ def main():
         left_scale=args.left_joint_delta_scale,
         right_scale=args.right_joint_delta_scale,
         allow_absolute_scale=args.allow_absolute_joint_delta_scale,
+        unsafe_absolute_scale=args.unsafe_absolute_joint_delta_scale,
     )
     if ignored_absolute_delta_controls:
         print(
             "Ignoring --joint-delta-* controls because the policy server reports "
-            "absolute_qpos. Pass --allow-absolute-joint-delta-scale only for "
-            "intentional diagnostics.",
+            "absolute_qpos. The legacy --allow-absolute-joint-delta-scale flag "
+            "is ignored; pass --unsafe-absolute-joint-delta-scale only for "
+            "one-off jitter diagnostics.",
             flush=True,
         )
 
@@ -1117,6 +1132,7 @@ def main():
                         "effective_joint_delta_output_clip": effective_joint_delta_output_clip,
                         "ignored_absolute_delta_controls": ignored_absolute_delta_controls,
                         "allow_absolute_joint_delta_scale": args.allow_absolute_joint_delta_scale,
+                        "unsafe_absolute_joint_delta_scale": args.unsafe_absolute_joint_delta_scale,
                     },
                     "n_completed": len(results),
                     "n_target": args.num_episodes,

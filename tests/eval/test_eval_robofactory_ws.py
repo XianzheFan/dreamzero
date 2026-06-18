@@ -244,7 +244,7 @@ def test_absolute_qpos_ignores_joint_delta_controls_by_default():
     assert resolved == (1.0, None, None, None, None, True)
 
 
-def test_absolute_qpos_can_opt_into_joint_delta_controls_for_diagnostics():
+def test_absolute_qpos_legacy_allow_flag_is_ignored():
     mod = _load_eval_module()
 
     resolved = mod.resolve_joint_delta_controls(
@@ -255,6 +255,23 @@ def test_absolute_qpos_can_opt_into_joint_delta_controls_for_diagnostics():
         left_scale=4.0,
         right_scale=8.0,
         allow_absolute_scale=True,
+    )
+
+    assert resolved == (1.0, None, None, None, None, True)
+
+
+def test_absolute_qpos_requires_unsafe_flag_for_joint_delta_diagnostics():
+    mod = _load_eval_module()
+
+    resolved = mod.resolve_joint_delta_controls(
+        "absolute_qpos",
+        scale=12.0,
+        clip=0.2,
+        output_clip=1.5,
+        left_scale=4.0,
+        right_scale=8.0,
+        allow_absolute_scale=True,
+        unsafe_absolute_scale=True,
     )
 
     assert resolved == (12.0, 0.2, 1.5, 4.0, 8.0, False)
