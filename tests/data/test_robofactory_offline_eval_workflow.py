@@ -39,7 +39,7 @@ def test_liftbarrier_offline_eval_workflow_defaults_to_ckpt500_and_cached_code()
         f"{SOURCE_TRAIN_RUN_NAME}/checkpoints"
     )
     assert defaults["ckpt_setting"] == "checkpoint-500"
-    assert defaults["min_model_bytes"] == "80000000000"
+    assert defaults["min_model_bytes"] == "100000000"
     assert defaults["num_batches"] == "4"
     assert defaults["gripper_class_threshold"] == "0.0"
     assert defaults["ckpt_wait_timeout_seconds"] == "7200"
