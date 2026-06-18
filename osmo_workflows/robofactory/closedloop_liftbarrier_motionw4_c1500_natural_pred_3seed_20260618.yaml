@@ -26,7 +26,7 @@ workflow:
 
           exec > >(tee /tmp/closedloop_motionw4_c1500_natural_pred_3seed_h100.log) 2>&1
 
-          RUN_NAME="dz-rf2-lb500-motionw4-c1500-natural-pred3seed1000-xz-20260618"
+          RUN_NAME="dz-rf2-lb500-motionw4-c1500-slew004-natural-pred3seed1000-xz-20260618"
           DREAMZERO_GIT_URL="https://github.com/XianzheFan/dreamzero.git"
           DREAMZERO_GIT_COMMIT="1331de27d4114a9bae1935926b7b3b94858f968e"
           ROBOFACTORY_GIT_URL="https://github.com/MARS-EAI/RoboFactory.git"
@@ -56,7 +56,7 @@ workflow:
           GRIPPER_CLOSE_AFTER_STEPS="0"
           JOINT_DELTA_SCALES="1.0"
           JOINT_DELTA_SCALE_REFERENCE="observed"
-          JOINT_TARGET_SLEW_RATES="0.35"
+          JOINT_TARGET_SLEW_RATES="0.04"
           CLIENT_CUDA_VISIBLE_DEVICES="2"
           SUCCESS_MODE="strict-lift"
           STRICT_SUCCESS_MIN_GRASP_COUNT=1
@@ -793,14 +793,14 @@ workflow:
           sha256sum "$ARCHIVE" > "${ARCHIVE}.sha256"
           split -b 1m -d -a 4 "$ARCHIVE" "${ARCHIVE}.part."
           find "$SERVE_ROOT" -maxdepth 1 -type f -print -exec ls -lh {} \; | sort
-          echo "motion-weight fresh checkpoint-1500 seed1000-1002 3-seed natural strict-lift pred-video eval complete"
+          echo "motion-weight fresh checkpoint-1500 seed1000-1002 3-seed slew004 natural strict-lift pred-video eval complete"
           echo "Serving split artifacts from ${SERVE_ROOT} on 0.0.0.0:8765"
           python -m http.server 8765 --bind 0.0.0.0 --directory "$SERVE_ROOT"
         path: /tmp/run_closedloop_motionw4_c1500_natural_pred_3seed_h100.sh
       image: nvcr.io/nvidian/groot-ci-base-eval:latest@sha256:de6e59614be213f06f95c8c1e8311f0b700c963aed6c39eeec1fb56cd40c6ee7
       lead: true
       name: eval
-  name: dz-rf2-lb500-motionw4-c1500-natural-pred3seed1000-xz-20260618
+  name: dz-rf2-lb500-motionw4-c1500-slew004-natural-pred3seed1000-xz-20260618
   resources:
     default:
       cpu: 84
