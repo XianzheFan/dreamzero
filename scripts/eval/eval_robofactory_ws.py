@@ -196,6 +196,23 @@ def scale_joint_target_delta(
     return out
 
 
+def limit_joint_target_slew(
+    action16: np.ndarray,
+    previous16: np.ndarray,
+    max_delta: float | None,
+) -> np.ndarray:
+    """Limit per-joint target changes between consecutive executed actions."""
+    if max_delta is None or max_delta <= 0.0:
+        return action16
+
+    out = np.asarray(action16, dtype=np.float32).copy()
+    previous16 = np.asarray(previous16, dtype=np.float32)
+    for lo in (0, 8):
+        delta = out[lo:lo + 7] - previous16[lo:lo + 7]
+        out[lo:lo + 7] = previous16[lo:lo + 7] + np.clip(delta, -max_delta, max_delta)
+    return out
+
+
 def resolve_joint_delta_controls(
     action_representation: str,
     *,
@@ -559,6 +576,7 @@ def run_episode(
     joint_delta_clip: float | None,
     joint_delta_output_clip: float | None,
     joint_delta_scale_reference: str,
+    joint_target_slew_rate: float | None,
     left_joint_delta_scale: float | None = None,
     right_joint_delta_scale: float | None = None,
     dump: dict | None = None,
@@ -575,6 +593,7 @@ def run_episode(
     )
     _ = ws.recv()  # ack
 
+    last_commanded = extract_qpos(raw_obs)
     steps = 0
     while steps < max_steps:
         head, left, right, qpos = extract_obs(raw_obs)
@@ -639,9 +658,11 @@ def run_episode(
                 gripper_open_value,
                 gripper_close_value,
             )
+            abs16 = limit_joint_target_slew(abs16, last_commanded, joint_target_slew_rate)
             qpos_before_step = cur.copy()
             raw_obs, reward, term, trunc, info = env.step(env_action_dict(abs16))
             steps += 1
+            last_commanded = abs16.copy()
             if dump is not None:
                 dump["exec_action"].append(abs16.copy())
                 dump["env_trace"].append(collect_env_trace(env, steps, abs16, info))
@@ -776,6 +797,18 @@ def main():
         ),
     )
     ap.add_argument(
+        "--joint-target-slew-rate",
+        type=float,
+        default=None,
+        help=(
+            "Optional per-step per-joint target slew-rate limit applied to arm "
+            "joints after joint-delta diagnostics. Values <=0 disable it. "
+            "Unlike --joint-delta-output-clip, this limits changes between "
+            "consecutive executed targets, so it can smooth oscillation while "
+            "still allowing cumulative motion."
+        ),
+    )
+    ap.add_argument(
         "--allow-absolute-joint-delta-scale",
         action="store_true",
         help=(
@@ -819,6 +852,7 @@ def main():
         f"clip={args.joint_delta_clip} output_clip={args.joint_delta_output_clip} "
         f"ref={args.joint_delta_scale_reference}"
     )
+    print(f"Target slew:   {args.joint_target_slew_rate}", flush=True)
     if args.left_joint_delta_scale is not None or args.right_joint_delta_scale is not None:
         effective_left = (
             args.joint_delta_scale
@@ -945,6 +979,7 @@ def main():
                         "joint_delta_clip": args.joint_delta_clip,
                         "joint_delta_output_clip": args.joint_delta_output_clip,
                         "joint_delta_scale_reference": args.joint_delta_scale_reference,
+                        "joint_target_slew_rate": args.joint_target_slew_rate,
                         "effective_joint_delta_scale": effective_joint_delta_scale,
                         "effective_left_joint_delta_scale": effective_left_joint_delta_scale,
                         "effective_right_joint_delta_scale": effective_right_joint_delta_scale,
@@ -1017,6 +1052,7 @@ def main():
                 joint_delta_clip=effective_joint_delta_clip,
                 joint_delta_output_clip=effective_joint_delta_output_clip,
                 joint_delta_scale_reference=args.joint_delta_scale_reference,
+                joint_target_slew_rate=args.joint_target_slew_rate,
                 left_joint_delta_scale=effective_left_joint_delta_scale,
                 right_joint_delta_scale=effective_right_joint_delta_scale,
                 dump=dump,

@@ -96,6 +96,33 @@ def test_joint_delta_per_arm_scale_overrides_global_scale():
     np.testing.assert_allclose(out[8:15], 0.5)
 
 
+def test_joint_target_slew_rate_caps_arm_targets_only():
+    mod = _load_eval_module()
+    previous = np.zeros(16, dtype=np.float32)
+    action = np.ones(16, dtype=np.float32)
+    action[:7] = 0.8
+    action[8:15] = -0.9
+    action[7] = 1.0
+    action[15] = -1.0
+
+    out = mod.limit_joint_target_slew(action, previous, max_delta=0.25)
+
+    np.testing.assert_allclose(out[:7], 0.25)
+    np.testing.assert_allclose(out[8:15], -0.25)
+    assert out[7] == 1.0
+    assert out[15] == -1.0
+
+
+def test_joint_target_slew_rate_disabled_returns_input():
+    mod = _load_eval_module()
+    previous = np.zeros(16, dtype=np.float32)
+    action = np.arange(16, dtype=np.float32)
+
+    out = mod.limit_joint_target_slew(action, previous, max_delta=None)
+
+    assert out is action
+
+
 def test_absolute_qpos_ignores_joint_delta_controls_by_default():
     mod = _load_eval_module()
 
