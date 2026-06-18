@@ -262,6 +262,9 @@ def apply_gripper_override(
     close_after_step: int,
     open_value: float,
     close_value: float,
+    *,
+    latch_state: dict[str, bool] | None = None,
+    policy_close_threshold: float = 0.0,
 ) -> np.ndarray:
     """Optionally override RoboFactory gripper commands.
 
@@ -272,6 +275,15 @@ def apply_gripper_override(
     """
     out = np.asarray(action16, dtype=np.float32).copy()
     if mode == "none":
+        return out
+    if mode == "policy-close-latch":
+        if latch_state is None:
+            raise ValueError("policy-close-latch requires latch_state")
+        for label, dim in (("left", 7), ("right", 15)):
+            if out[dim] < policy_close_threshold:
+                latch_state[label] = True
+            if latch_state.get(label, False):
+                out[dim] = close_value
         return out
     if mode == "open":
         target = open_value
@@ -607,6 +619,7 @@ def run_episode(
     gripper_close_after_step: int,
     gripper_open_value: float,
     gripper_close_value: float,
+    gripper_policy_close_threshold: float,
     joint_delta_scale: float,
     joint_delta_clip: float | None,
     joint_delta_output_clip: float | None,
@@ -632,6 +645,7 @@ def run_episode(
 
     last_commanded = extract_qpos(raw_obs)
     grasp_counts = {"left": 0, "right": 0}
+    gripper_latch_state = {"left": False, "right": False}
     steps = 0
     while steps < max_steps:
         head, left, right, qpos = extract_obs(raw_obs)
@@ -695,6 +709,8 @@ def run_episode(
                 gripper_close_after_step,
                 gripper_open_value,
                 gripper_close_value,
+                latch_state=gripper_latch_state,
+                policy_close_threshold=gripper_policy_close_threshold,
             )
             abs16 = limit_joint_target_slew(abs16, last_commanded, joint_target_slew_rate)
             qpos_before_step = cur.copy()
@@ -774,9 +790,14 @@ def main():
             "close-after-step",
             "open-until-step",
             "open-then-close-after-step",
+            "policy-close-latch",
         ),
         default="none",
-        help="Diagnostic RoboFactory gripper override. RoboFactory uses +1=open, -1=close.",
+        help=(
+            "Diagnostic RoboFactory gripper override. RoboFactory uses +1=open, -1=close. "
+            "policy-close-latch leaves policy commands untouched until each arm first "
+            "predicts close, then keeps that arm closed for the rest of the episode."
+        ),
     )
     ap.add_argument(
         "--gripper-close-after-step",
@@ -790,6 +811,15 @@ def main():
     )
     ap.add_argument("--gripper-open-value", type=float, default=1.0)
     ap.add_argument("--gripper-close-value", type=float, default=-1.0)
+    ap.add_argument(
+        "--gripper-policy-close-threshold",
+        type=float,
+        default=0.0,
+        help=(
+            "For --gripper-override=policy-close-latch, latch an arm closed once "
+            "its policy gripper command is below this threshold."
+        ),
+    )
     ap.add_argument(
         "--joint-delta-scale",
         type=float,
@@ -949,6 +979,11 @@ def main():
         "open-then-close-after-step",
     }:
         print(f"Schedule step: {args.gripper_close_after_step}")
+    if args.gripper_override == "policy-close-latch":
+        print(
+            f"Policy close latch threshold: {args.gripper_policy_close_threshold}",
+            flush=True,
+        )
 
     # Build env FIRST (sapien init takes ~30-60s); only then open the
     # ws connection. The sync ws client doesn't service pings while
@@ -1051,6 +1086,7 @@ def main():
                         "gripper_close_after_step": args.gripper_close_after_step,
                         "gripper_open_value": args.gripper_open_value,
                         "gripper_close_value": args.gripper_close_value,
+                        "gripper_policy_close_threshold": args.gripper_policy_close_threshold,
                         "joint_delta_scale": args.joint_delta_scale,
                         "left_joint_delta_scale": args.left_joint_delta_scale,
                         "right_joint_delta_scale": args.right_joint_delta_scale,
@@ -1128,6 +1164,7 @@ def main():
                 gripper_close_after_step=args.gripper_close_after_step,
                 gripper_open_value=args.gripper_open_value,
                 gripper_close_value=args.gripper_close_value,
+                gripper_policy_close_threshold=args.gripper_policy_close_threshold,
                 joint_delta_scale=effective_joint_delta_scale,
                 joint_delta_clip=effective_joint_delta_clip,
                 joint_delta_output_clip=effective_joint_delta_output_clip,
