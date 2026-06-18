@@ -1129,6 +1129,12 @@ class BimanualPolicy:
         # (matches the LeRobot v2 camera naming written by
         # ``scripts/data/robofactory_to_lerobot_v2.py``).
         global_video, agent0_video, agent1_video = self._build_video_windows(history)
+        self._record_observed_video_debug(
+            sess,
+            global_video=global_video,
+            agent0_video=agent0_video,
+            agent1_video=agent1_video,
+        )
 
         # Per-arm state slices (T_s=1, current step only).
         T_s = 1
@@ -1372,6 +1378,54 @@ class BimanualPolicy:
                 for packet in stream.encode():
                     container.mux(packet)
 
+    @staticmethod
+    def _record_observed_video_debug(
+        sess: dict,
+        *,
+        global_video: np.ndarray,
+        agent0_video: np.ndarray,
+        agent1_video: np.ndarray,
+    ) -> None:
+        """Keep a copy of the exact RGB windows fed to the transform."""
+        sess["last_observed_video_debug"] = {
+            "global": np.asarray(global_video, dtype=np.uint8).copy(),
+            "agent0": np.asarray(agent0_video, dtype=np.uint8).copy(),
+            "agent1": np.asarray(agent1_video, dtype=np.uint8).copy(),
+        }
+
+    def _write_observed_video_windows(
+        self,
+        videos: dict[str, np.ndarray],
+        out_dir: Path,
+        prefix: str,
+    ) -> None:
+        import av
+
+        out_dir.mkdir(parents=True, exist_ok=True)
+        for name, frames in videos.items():
+            frames = np.asarray(frames, dtype=np.uint8)
+            if frames.ndim != 4 or frames.shape[-1] != 3:
+                logging.warning(
+                    "Skipping observed video %s with unexpected shape %s",
+                    name,
+                    tuple(frames.shape),
+                )
+                continue
+            T, H, W = frames.shape[0], frames.shape[1], frames.shape[2]
+            out_path = out_dir / f"{prefix}_observed_{name}.mp4"
+            with av.open(str(out_path), mode="w") as container:
+                stream = container.add_stream("h264", rate=20)
+                stream.width = W
+                stream.height = H
+                stream.pix_fmt = "yuv420p"
+                stream.options = {"crf": "23"}
+                for t in range(T):
+                    av_frame = av.VideoFrame.from_ndarray(frames[t], format="rgb24")
+                    for packet in stream.encode(av_frame):
+                        container.mux(packet)
+                for packet in stream.encode():
+                    container.mux(packet)
+
     def _dump_conditioning_pred(self, sess: dict, sid: str) -> None:
         """Decode the I2V conditioning latents once for debugging.
 
@@ -1387,6 +1441,20 @@ class BimanualPolicy:
         action_head = self._model.action_head
         out_dir = self.video_pred_dir or (self.ckpt_dir / "video_pred")
         out_dir = Path(out_dir) / f"session_{sid[:12]}" / "conditioning"
+
+        observed_videos = sess.get("last_observed_video_debug")
+        if isinstance(observed_videos, dict):
+            self._write_observed_video_windows(
+                observed_videos,
+                out_dir,
+                f"step{step:04d}",
+            )
+            logging.info(
+                "wrote observed RGB conditioning videos: step=%d session=%s dir=%s",
+                step,
+                sid[:12],
+                out_dir,
+            )
 
         clean_latents = getattr(action_head, "_last_clean_video_cond", None)
         if clean_latents is not None:

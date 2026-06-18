@@ -510,6 +510,57 @@ def test_default_eval_resolution_keeps_checkpoint_config():
     assert policy._cfg.action_head_cfg.config.target_video_width is None
 
 
+def test_observed_video_debug_stores_uint8_copies():
+    mod = _load_server_module()
+    sess = {}
+    global_video = np.zeros((2, 3, 4, 3), dtype=np.uint8)
+    agent0_video = np.ones((2, 3, 4, 3), dtype=np.uint8)
+    agent1_video = np.full((2, 3, 4, 3), 2, dtype=np.uint8)
+
+    mod.BimanualPolicy._record_observed_video_debug(
+        sess,
+        global_video=global_video,
+        agent0_video=agent0_video,
+        agent1_video=agent1_video,
+    )
+    global_video[:] = 255
+
+    debug = sess["last_observed_video_debug"]
+    assert set(debug) == {"global", "agent0", "agent1"}
+    assert debug["global"].dtype == np.uint8
+    assert int(debug["global"].max()) == 0
+    assert int(debug["agent0"].max()) == 1
+    assert int(debug["agent1"].max()) == 2
+
+
+def test_conditioning_pred_dumps_observed_windows(monkeypatch, tmp_path):
+    policy = _make_policy(_metadata_with_action_stats())
+    policy.video_pred_dir = tmp_path
+    policy.ckpt_dir = tmp_path
+    policy._model = SimpleNamespace(action_head=SimpleNamespace())
+    observed = {
+        "global": np.zeros((2, 3, 4, 3), dtype=np.uint8),
+        "agent0": np.ones((2, 3, 4, 3), dtype=np.uint8),
+        "agent1": np.full((2, 3, 4, 3), 2, dtype=np.uint8),
+    }
+    calls = []
+
+    def fake_write(videos, out_dir, prefix):
+        calls.append((videos, out_dir, prefix))
+
+    monkeypatch.setattr(policy, "_write_observed_video_windows", fake_write)
+
+    policy._dump_conditioning_pred(
+        {"infer_idx": 0, "last_observed_video_debug": observed},
+        "abcdef1234567890",
+    )
+
+    assert len(calls) == 1
+    assert calls[0][0] is observed
+    assert calls[0][1] == tmp_path / "session_abcdef123456" / "conditioning"
+    assert calls[0][2] == "step0000"
+
+
 def test_model_resolution_override_updates_config_and_resize_transform(caplog):
     OmegaConf = pytest.importorskip("omegaconf").OmegaConf
     policy = _make_policy(_metadata_with_action_stats())
