@@ -46,10 +46,10 @@ def test_liftbarrier_offline_eval_workflow_defaults_to_ckpt500_and_cached_code()
     assert defaults["ckpt_wait_interval_seconds"] == "120"
 
     resources = workflow["workflow"]["resources"]["default"]
-    assert resources["cpu"] == 16
+    assert resources["cpu"] == 15
     assert resources["gpu"] == 1
     assert resources["platform"] == "ovx-l40"
-    assert resources["memory"] == "320Gi"
+    assert resources["memory"] == "120Gi"
     assert resources["storage"] == "620Gi"
 
 

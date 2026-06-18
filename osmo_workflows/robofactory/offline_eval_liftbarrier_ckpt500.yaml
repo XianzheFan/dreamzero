@@ -5,9 +5,9 @@ workflow:
   name: "{{workflow_name}}"
   resources:
     default:
-      cpu: 16
+      cpu: 15
       gpu: 1
-      memory: 320Gi
+      memory: 120Gi
       storage: 620Gi
       platform: ovx-l40
   tasks:
