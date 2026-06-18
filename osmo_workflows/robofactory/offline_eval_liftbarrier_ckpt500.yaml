@@ -9,7 +9,7 @@ workflow:
       gpu: 1
       memory: 320Gi
       storage: 620Gi
-      platform: dgx-h100
+      platform: ovx-l40
   tasks:
     - name: offline-eval
       image: nvcr.io/nvidian/gear-h100-train:latest

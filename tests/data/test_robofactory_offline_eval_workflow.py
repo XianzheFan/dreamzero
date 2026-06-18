@@ -48,7 +48,7 @@ def test_liftbarrier_offline_eval_workflow_defaults_to_ckpt500_and_cached_code()
     resources = workflow["workflow"]["resources"]["default"]
     assert resources["cpu"] == 16
     assert resources["gpu"] == 1
-    assert resources["platform"] == "dgx-h100"
+    assert resources["platform"] == "ovx-l40"
     assert resources["memory"] == "320Gi"
     assert resources["storage"] == "620Gi"
 
