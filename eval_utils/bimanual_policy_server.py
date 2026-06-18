@@ -94,7 +94,7 @@ class BimanualServerConfig:
     gripper_convention: str = "auto"
     gripper_close_value: float = 0.0
     gripper_open_value: float = 1.0
-    shared_global_wrist_window_mode: str = "repeat-current"
+    shared_global_wrist_window_mode: str = "history-current-first"
 
 
 _SHARED_GLOBAL_WRIST_WINDOW_MODES = (
@@ -453,10 +453,10 @@ class BimanualPolicy:
         if shared_global_wrist_window_mode is None:
             shared_global_wrist_window_mode = os.environ.get(
                 "DREAMZERO_SHARED_GLOBAL_WRIST_WINDOW_MODE",
-                "repeat-current",
+                "history-current-first",
             )
         self.shared_global_wrist_window_mode = str(
-            shared_global_wrist_window_mode or "repeat-current"
+            shared_global_wrist_window_mode or "history-current-first"
         ).strip().lower()
         if self.shared_global_wrist_window_mode not in _SHARED_GLOBAL_WRIST_WINDOW_MODES:
             raise ValueError(
@@ -1105,6 +1105,10 @@ class BimanualPolicy:
         sess = self._session(sid)
         if obs.get("prompt"):
             sess["prompt"] = self._effective_prompt(obs["prompt"])
+        if "step" in obs and obs["step"] is not None:
+            sess["last_env_step"] = int(obs["step"])
+        else:
+            sess["last_env_step"] = None
 
         qpos = np.asarray(obs["qpos"], dtype=np.float32).reshape(-1)
         assert qpos.shape == (16,), f"need 16-dim qpos, got {qpos.shape}"
@@ -1265,6 +1269,23 @@ class BimanualPolicy:
             )
         return reply
 
+    @staticmethod
+    def _video_pred_context(sess: dict) -> tuple[int, int | None, str]:
+        infer_idx = int(sess.get("infer_idx", 0))
+        raw_env_step = sess.get("last_env_step")
+        env_step = None if raw_env_step is None else int(raw_env_step)
+        if env_step is None:
+            prefix = f"infer{infer_idx:04d}_envunknown"
+        else:
+            prefix = f"infer{infer_idx:04d}_env{env_step:04d}"
+        return infer_idx, env_step, prefix
+
+    @staticmethod
+    def _append_video_pred_manifest(out_dir: Path, entry: dict[str, Any]) -> None:
+        manifest_path = out_dir / "manifest.jsonl"
+        with manifest_path.open("a") as f:
+            f.write(json.dumps(entry, sort_keys=True) + "\n")
+
     def _dump_video_pred(self, sess: dict, sid: str) -> None:
         """VAE-decode the action_head's last denoised video latents and
         write one mp4 per agent. Called from infer() when save_video_pred
@@ -1315,10 +1336,12 @@ class BimanualPolicy:
         out_dir = self.video_pred_dir or (self.ckpt_dir / "video_pred")
         out_dir = Path(out_dir) / f"session_{sid[:12]}"
         out_dir.mkdir(parents=True, exist_ok=True)
-        step = sess.get("infer_idx", 0)
+        infer_idx, env_step, prefix = self._video_pred_context(sess)
         T, H, W = frames.shape[1], frames.shape[2], frames.shape[3]
+        pred_files: list[str] = []
         for p in range(P):
-            out_path = out_dir / f"step{step:04d}_agent{p}.mp4"
+            out_path = out_dir / f"{prefix}_agent{p}.mp4"
+            pred_files.append(out_path.name)
             with av.open(str(out_path), mode="w") as container:
                 stream = container.add_stream("h264", rate=20)
                 stream.width = W
@@ -1332,8 +1355,38 @@ class BimanualPolicy:
                         container.mux(packet)
                 for packet in stream.encode():
                     container.mux(packet)
-        logging.info("wrote predicted video: step=%d session=%s dir=%s",
-                     step, sid[:12], out_dir)
+        observed_files: list[str] = []
+        observed_videos = sess.get("last_observed_video_debug")
+        if isinstance(observed_videos, dict):
+            observed_dir = out_dir / "observed"
+            observed_files = [
+                str(Path("observed") / name)
+                for name in self._write_observed_video_windows(
+                    observed_videos,
+                    observed_dir,
+                    prefix,
+                )
+            ]
+        self._append_video_pred_manifest(
+            out_dir,
+            {
+                "infer_idx": infer_idx,
+                "env_step": env_step,
+                "session_id_prefix": sid[:12],
+                "latent_shape": list(latents.shape),
+                "decoded_shape": [int(P), int(T), int(H), int(W), 3],
+                "pred_files": pred_files,
+                "observed_files": observed_files,
+                "shared_global_wrist_window_mode": self.shared_global_wrist_window_mode,
+            },
+        )
+        logging.info(
+            "wrote predicted video: infer_idx=%d env_step=%s session=%s dir=%s",
+            infer_idx,
+            "unknown" if env_step is None else env_step,
+            sid[:12],
+            out_dir,
+        )
 
     def _decode_latent_video(self, latents):
         """Decode VAE latents in ``[B, P, C, F, H, W]`` layout."""
@@ -1398,10 +1451,11 @@ class BimanualPolicy:
         videos: dict[str, np.ndarray],
         out_dir: Path,
         prefix: str,
-    ) -> None:
+    ) -> list[str]:
         import av
 
         out_dir.mkdir(parents=True, exist_ok=True)
+        written: list[str] = []
         for name, frames in videos.items():
             frames = np.asarray(frames, dtype=np.uint8)
             if frames.ndim != 4 or frames.shape[-1] != 3:
@@ -1412,7 +1466,8 @@ class BimanualPolicy:
                 )
                 continue
             T, H, W = frames.shape[0], frames.shape[1], frames.shape[2]
-            out_path = out_dir / f"{prefix}_observed_{name}.mp4"
+            out_name = f"{prefix}_observed_{name}.mp4"
+            out_path = out_dir / out_name
             with av.open(str(out_path), mode="w") as container:
                 stream = container.add_stream("h264", rate=20)
                 stream.width = W
@@ -1425,6 +1480,8 @@ class BimanualPolicy:
                         container.mux(packet)
                 for packet in stream.encode():
                     container.mux(packet)
+            written.append(out_name)
+        return written
 
     def _dump_conditioning_pred(self, sess: dict, sid: str) -> None:
         """Decode the I2V conditioning latents once for debugging.
@@ -1434,8 +1491,8 @@ class BimanualPolicy:
         ``stepXXXX_agent*.mp4`` is noise, the denoising/video-conditioning
         path is the problem, not the VAE diagnostic decode path.
         """
-        step = sess.get("infer_idx", 0)
-        if step != 0 or sess.get("condition_debug_dumped", False):
+        infer_idx, env_step, prefix = self._video_pred_context(sess)
+        if infer_idx != 0 or sess.get("condition_debug_dumped", False):
             return
 
         action_head = self._model.action_head
@@ -1447,11 +1504,12 @@ class BimanualPolicy:
             self._write_observed_video_windows(
                 observed_videos,
                 out_dir,
-                f"step{step:04d}",
+                prefix,
             )
             logging.info(
-                "wrote observed RGB conditioning videos: step=%d session=%s dir=%s",
-                step,
+                "wrote observed RGB conditioning videos: infer_idx=%d env_step=%s session=%s dir=%s",
+                infer_idx,
+                "unknown" if env_step is None else env_step,
                 sid[:12],
                 out_dir,
             )
@@ -1460,11 +1518,11 @@ class BimanualPolicy:
         if clean_latents is not None:
             clean_frames = self._decode_latent_video(clean_latents)
             self._write_decoded_video_set(
-                clean_frames, out_dir, f"step{step:04d}_clean_x"
+                clean_frames, out_dir, f"{prefix}_clean_x"
             )
             logging.info(
-                "wrote conditioning clean_x video: step=%d session=%s dir=%s",
-                step, sid[:12], out_dir,
+                "wrote conditioning clean_x video: infer_idx=%d env_step=%s session=%s dir=%s",
+                infer_idx, "unknown" if env_step is None else env_step, sid[:12], out_dir,
             )
 
         # ``y`` is [B, P, mask_channels + latent_channels, F, H, W].
@@ -1477,11 +1535,11 @@ class BimanualPolicy:
                 y_tail = y_latents[:, :, -c_lat:]
                 y_frames = self._decode_latent_video(y_tail)
                 self._write_decoded_video_set(
-                    y_frames, out_dir, f"step{step:04d}_y_latent"
+                    y_frames, out_dir, f"{prefix}_y_latent"
                 )
                 logging.info(
-                    "wrote conditioning y-latent video: step=%d session=%s dir=%s",
-                    step, sid[:12], out_dir,
+                    "wrote conditioning y-latent video: infer_idx=%d env_step=%s session=%s dir=%s",
+                    infer_idx, "unknown" if env_step is None else env_step, sid[:12], out_dir,
                 )
 
         sess["condition_debug_dumped"] = True
@@ -2053,13 +2111,13 @@ def main():
         "--shared-global-wrist-window-mode",
         default=os.environ.get(
             "DREAMZERO_SHARED_GLOBAL_WRIST_WINDOW_MODE",
-            "repeat-current",
+            "history-current-first",
         ),
         choices=_SHARED_GLOBAL_WRIST_WINDOW_MODES,
-        help="Eval diagnostic for shared-global checkpoints. repeat-current "
-             "matches the historical server behavior; history-current-first "
+        help="Eval diagnostic for shared-global checkpoints. history-current-first "
              "keeps the current wrist frame at index 0 and appends rolling "
-             "history; history-chronological keeps wrist history unchanged.",
+             "history; repeat-current matches the historical server behavior; "
+             "history-chronological keeps wrist history unchanged.",
     )
     args = parser.parse_args()
 

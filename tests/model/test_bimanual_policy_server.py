@@ -34,7 +34,7 @@ def _make_policy(metadata):
     policy.gripper_close_after_infer = 0
     policy.gripper_close_value = 0.0
     policy.gripper_force_open_until_infer = 0
-    policy.shared_global_wrist_window_mode = "repeat-current"
+    policy.shared_global_wrist_window_mode = "history-current-first"
     return policy
 
 
@@ -708,9 +708,53 @@ def _constant_rgb(value: int) -> np.ndarray:
     return np.full((2, 3, 3), value, dtype=np.uint8)
 
 
-def test_shared_global_video_window_repeats_current_frame_for_default_mode():
+def test_video_pred_context_records_infer_and_env_step():
+    mod = _load_server_module()
+
+    infer_idx, env_step, prefix = mod.BimanualPolicy._video_pred_context(
+        {"infer_idx": 7, "last_env_step": 168}
+    )
+
+    assert infer_idx == 7
+    assert env_step == 168
+    assert prefix == "infer0007_env0168"
+
+
+def test_video_pred_context_allows_missing_env_step():
+    mod = _load_server_module()
+
+    infer_idx, env_step, prefix = mod.BimanualPolicy._video_pred_context(
+        {"infer_idx": 2, "last_env_step": None}
+    )
+
+    assert infer_idx == 2
+    assert env_step is None
+    assert prefix == "infer0002_envunknown"
+
+
+def test_shared_global_video_window_keeps_current_first_wrist_history_by_default():
     policy = _make_policy(_metadata_with_action_stats())
     policy.num_frames = 3
+    shared_global_transform = _DummyTransform()
+    shared_global_transform.global_views = [0]
+    policy._transform = _DummyTransform(transforms=[shared_global_transform])
+    history = [
+        (_constant_rgb(0), _constant_rgb(10), _constant_rgb(20)),
+        (_constant_rgb(1), _constant_rgb(11), _constant_rgb(21)),
+        (_constant_rgb(2), _constant_rgb(12), _constant_rgb(22)),
+    ]
+
+    global_video, agent0_video, agent1_video = policy._build_video_windows(history)
+
+    np.testing.assert_array_equal(global_video[:, 0, 0, 0], [2, 2, 2])
+    np.testing.assert_array_equal(agent0_video[:, 0, 0, 0], [12, 10, 11])
+    np.testing.assert_array_equal(agent1_video[:, 0, 0, 0], [22, 20, 21])
+
+
+def test_shared_global_video_window_can_repeat_current_frame():
+    policy = _make_policy(_metadata_with_action_stats())
+    policy.num_frames = 3
+    policy.shared_global_wrist_window_mode = "repeat-current"
     shared_global_transform = _DummyTransform()
     shared_global_transform.global_views = [0]
     policy._transform = _DummyTransform(transforms=[shared_global_transform])
