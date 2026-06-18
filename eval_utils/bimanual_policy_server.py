@@ -96,6 +96,7 @@ class BimanualServerConfig:
     gripper_open_value: float = 1.0
     shared_global_wrist_window_mode: str = "history-current-first"
     reset_causal_state_each_infer: bool = False
+    video_pred_rollout_mode: str = "action"
 
 
 _SHARED_GLOBAL_WRIST_WINDOW_MODES = (
@@ -103,6 +104,18 @@ _SHARED_GLOBAL_WRIST_WINDOW_MODES = (
     "history-current-first",
     "history-chronological",
 )
+
+_VIDEO_PRED_ROLLOUT_MODES = ("action", "noncausal")
+
+
+def _resolve_video_pred_rollout_mode(value: str | None) -> str:
+    mode = str(value or "action").strip().lower()
+    if mode not in _VIDEO_PRED_ROLLOUT_MODES:
+        raise ValueError(
+            "video_pred_rollout_mode must be one of "
+            f"{_VIDEO_PRED_ROLLOUT_MODES}; got {value!r}"
+        )
+    return mode
 
 
 def _make_packer():
@@ -374,6 +387,7 @@ class BimanualPolicy:
         action_dim: int = 16,
         save_video_pred: bool = False,
         video_pred_dir: str | None = None,
+        video_pred_rollout_mode: str | None = None,
         return_action_debug: bool = False,
         prompt_override: str | None = None,
         gripper_binarize_threshold: float | None = None,
@@ -398,6 +412,14 @@ class BimanualPolicy:
         self.action_dim = action_dim
         self.save_video_pred = save_video_pred
         self.video_pred_dir = Path(video_pred_dir) if video_pred_dir else None
+        if video_pred_rollout_mode is None:
+            video_pred_rollout_mode = os.environ.get(
+                "DREAMZERO_VIDEO_PRED_ROLLOUT_MODE",
+                "action",
+            )
+        self.video_pred_rollout_mode = _resolve_video_pred_rollout_mode(
+            video_pred_rollout_mode
+        )
         self.return_action_debug = return_action_debug
         self.prompt_override = (
             prompt_override
@@ -494,6 +516,10 @@ class BimanualPolicy:
         logging.info(
             "Reset causal state each infer: %s",
             self.reset_causal_state_each_infer,
+        )
+        logging.info(
+            "Predicted-video rollout mode: %s",
+            self.video_pred_rollout_mode,
         )
 
     def _effective_prompt(self, prompt: str | None) -> str:
@@ -1281,6 +1307,8 @@ class BimanualPolicy:
 
         if self.save_video_pred:
             try:
+                if self.video_pred_rollout_mode == "noncausal":
+                    self._run_noncausal_video_pred_rollout(inputs_gpu)
                 self._dump_video_pred(sess, sid)
                 self._dump_conditioning_pred(sess, sid)
             except Exception:
@@ -1313,6 +1341,30 @@ class BimanualPolicy:
         manifest_path = out_dir / "manifest.jsonl"
         with manifest_path.open("a") as f:
             f.write(json.dumps(entry, sort_keys=True) + "\n")
+
+    def _run_noncausal_video_pred_rollout(self, inputs_gpu: dict[str, Any]) -> None:
+        """Refresh ``_last_video_pred`` with noncausal flowmatch for diagnostics.
+
+        The control action has already been computed before this runs; this
+        second pass only makes the saved pred video legible when causal/unipc
+        inference is the rollout mode used for action generation.
+        """
+        import torch
+
+        old_causal = os.environ.get("MAI_USE_CAUSAL_INFERENCE")
+        os.environ["MAI_USE_CAUSAL_INFERENCE"] = "0"
+        logging.info(
+            "Running noncausal predicted-video diagnostic rollout; control "
+            "action remains from the primary action rollout"
+        )
+        try:
+            with torch.inference_mode():
+                self._model.get_action(inputs_gpu)
+        finally:
+            if old_causal is None:
+                os.environ.pop("MAI_USE_CAUSAL_INFERENCE", None)
+            else:
+                os.environ["MAI_USE_CAUSAL_INFERENCE"] = old_causal
 
     def _dump_video_pred(self, sess: dict, sid: str) -> None:
         """VAE-decode the action_head's last denoised video latents and
@@ -1382,6 +1434,7 @@ class BimanualPolicy:
                 "chunk_start_index": sess.get("last_chunk_start_index"),
                 "shared_global_wrist_window_mode": self.shared_global_wrist_window_mode,
                 "reset_causal_state_each_infer": self.reset_causal_state_each_infer,
+                "video_pred_rollout_mode": self.video_pred_rollout_mode,
                 "pred_video_semantics": (
                     "decoded denoised wrist-future latents; comparison panels use "
                     "the observed conditioning-window frame at the same displayed "
@@ -1997,6 +2050,8 @@ class BimanualWebsocketServer:
             gripper_close_value=policy._gripper_close_target(),
             gripper_open_value=policy._gripper_open_target(),
             shared_global_wrist_window_mode=policy.shared_global_wrist_window_mode,
+            reset_causal_state_each_infer=policy.reset_causal_state_each_infer,
+            video_pred_rollout_mode=policy.video_pred_rollout_mode,
         )
         logging.getLogger("websockets.server").setLevel(logging.INFO)
 
@@ -2188,6 +2243,15 @@ def main():
              "{ckpt_dir}/video_pred/session_{sid}.",
     )
     parser.add_argument(
+        "--video-pred-rollout-mode",
+        default=os.environ.get("DREAMZERO_VIDEO_PRED_ROLLOUT_MODE", "action"),
+        choices=_VIDEO_PRED_ROLLOUT_MODES,
+        help="Which model rollout supplies saved predicted-video latents. "
+             "'action' uses the same rollout that produced the control action; "
+             "'noncausal' keeps control action unchanged but runs a second "
+             "noncausal flowmatch pass only for diagnostic video artifacts.",
+    )
+    parser.add_argument(
         "--return-action-debug",
         action="store_true",
         help="Include raw and clipped normalized action chunks in infer replies.",
@@ -2294,6 +2358,7 @@ def main():
         action_horizon=args.action_horizon,
         save_video_pred=args.save_video_pred,
         video_pred_dir=args.video_pred_dir,
+        video_pred_rollout_mode=args.video_pred_rollout_mode,
         return_action_debug=args.return_action_debug,
         prompt_override=args.prompt_override,
         gripper_binarize_threshold=args.gripper_binarize_threshold,

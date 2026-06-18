@@ -1,3 +1,4 @@
+import os
 import sys
 from types import SimpleNamespace
 
@@ -38,6 +39,7 @@ def _make_policy(metadata):
     policy.gripper_force_open_until_infer = 0
     policy.shared_global_wrist_window_mode = "history-current-first"
     policy.reset_causal_state_each_infer = False
+    policy.video_pred_rollout_mode = "action"
     return policy
 
 
@@ -122,6 +124,15 @@ def test_resolve_inference_parallel_size_rejects_unsupported_world_size():
         mod._resolve_inference_parallel_size(2, 1)
 
 
+def test_resolve_video_pred_rollout_mode_rejects_unknown_mode():
+    mod = _load_server_module()
+
+    assert mod._resolve_video_pred_rollout_mode(None) == "action"
+    assert mod._resolve_video_pred_rollout_mode(" noncausal ") == "noncausal"
+    with pytest.raises(ValueError, match="video_pred_rollout_mode"):
+        mod._resolve_video_pred_rollout_mode("causal")
+
+
 def test_distributed_policy_proxy_broadcasts_leader_commands():
     mod = _load_server_module()
     policy = _ProxyPolicy()
@@ -191,6 +202,61 @@ def test_reset_causal_state_each_infer_gate_can_keep_streaming_state():
     assert policy._maybe_reset_action_head_causal_state_for_infer() is False
 
     assert action_head.reset_calls == 0
+
+
+class _FakeInferenceMode:
+    def __enter__(self):
+        return None
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
+def test_noncausal_video_pred_rollout_temporarily_disables_causal_env(monkeypatch):
+    policy = _make_policy(_metadata_with_action_stats())
+    calls = []
+
+    class _FakeModel:
+        def get_action(self, inputs):
+            calls.append((inputs, os.environ.get("MAI_USE_CAUSAL_INFERENCE")))
+            return SimpleNamespace()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        SimpleNamespace(inference_mode=lambda: _FakeInferenceMode()),
+    )
+    monkeypatch.setenv("MAI_USE_CAUSAL_INFERENCE", "1")
+    policy._model = _FakeModel()
+    inputs = {"video": object()}
+
+    policy._run_noncausal_video_pred_rollout(inputs)
+
+    assert calls == [(inputs, "0")]
+    assert os.environ["MAI_USE_CAUSAL_INFERENCE"] == "1"
+
+
+def test_noncausal_video_pred_rollout_restores_absent_causal_env(monkeypatch):
+    policy = _make_policy(_metadata_with_action_stats())
+    calls = []
+
+    class _FakeModel:
+        def get_action(self, inputs):
+            calls.append(os.environ.get("MAI_USE_CAUSAL_INFERENCE"))
+            return SimpleNamespace()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        SimpleNamespace(inference_mode=lambda: _FakeInferenceMode()),
+    )
+    monkeypatch.delenv("MAI_USE_CAUSAL_INFERENCE", raising=False)
+    policy._model = _FakeModel()
+
+    policy._run_noncausal_video_pred_rollout({"video": object()})
+
+    assert calls == ["0"]
+    assert "MAI_USE_CAUSAL_INFERENCE" not in os.environ
 
 
 def test_metadata_tag_prefers_robotwin_over_legacy_robofactory():
@@ -599,6 +665,7 @@ def test_dump_video_pred_manifest_records_comparison_and_eval_context(monkeypatc
     policy.video_pred_dir = tmp_path
     policy.ckpt_dir = tmp_path
     policy.reset_causal_state_each_infer = True
+    policy.video_pred_rollout_mode = "noncausal"
     action_head = SimpleNamespace(
         _last_video_pred=np.zeros((1, 2, 16, 2, 3, 4), dtype=np.float32),
         current_start_frame=3,
@@ -663,6 +730,7 @@ def test_dump_video_pred_manifest_records_comparison_and_eval_context(monkeypatc
     assert entry["replan_every"] == 8
     assert entry["chunk_start_index"] == 16
     assert entry["reset_causal_state_each_infer"] is True
+    assert entry["video_pred_rollout_mode"] == "noncausal"
     assert entry["comparison_files"] == [
         "comparison/infer0002_env0048_agent0_compare.mp4",
         "comparison/infer0002_env0048_agent1_compare.mp4",
