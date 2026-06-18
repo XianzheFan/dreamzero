@@ -39,7 +39,7 @@ import torch._dynamo  # noqa: F401 -- needed before config access
 torch._dynamo.config.cache_size_limit = 64
 
 from hydra.utils import instantiate
-from omegaconf import OmegaConf, open_dict
+from omegaconf import DictConfig, OmegaConf, open_dict
 from safetensors.torch import load_file
 from torch.utils.data import DataLoader
 
@@ -178,22 +178,20 @@ def override_dataset_root(cfg, data_root: Path | None) -> None:
 
     root_str = str(data_root)
     with open_dict(cfg):
-        if "robofactory_data_root" in cfg:
-            old = cfg.get("robofactory_data_root")
-            cfg.robofactory_data_root = root_str
-            if old != root_str:
-                print(f"[data] robofactory_data_root: {old!r} -> {root_str!r}")
+        old = cfg.get("robofactory_data_root") if "robofactory_data_root" in cfg else None
+        cfg.robofactory_data_root = root_str
+        if old != root_str:
+            print(f"[data] robofactory_data_root: {old!r} -> {root_str!r}")
 
     with open_dict(cfg):
         train_dataset = cfg.get("train_dataset", None)
         mixture_spec = getattr(train_dataset, "mixture_spec", None)
         if mixture_spec is None:
-            print("[data] no train_dataset.mixture_spec found; --data-root was unused")
-            return
+            raise ValueError("--data-root was provided, but cfg.train_dataset.mixture_spec is missing")
 
         changed = False
         for idx, spec in enumerate(mixture_spec):
-            dataset_path = spec.get("dataset_path") if hasattr(spec, "get") else None
+            dataset_path = spec.get("dataset_path") if isinstance(spec, DictConfig) else None
             if dataset_path is None:
                 continue
             if "robofactory" in dataset_path:
@@ -207,7 +205,18 @@ def override_dataset_root(cfg, data_root: Path | None) -> None:
                     )
 
     if not changed:
-        print("[data] no robofactory dataset_path entry found; --data-root was unused")
+        with open_dict(cfg):
+            train_dataset.mixture_spec = [
+                {
+                    "dataset_path": {"robofactory": [root_str]},
+                    "dataset_weight": 1.0,
+                    "distribute_weights": True,
+                }
+            ]
+        print(
+            "[data] rebuilt train_dataset.mixture_spec for local RoboFactory root: "
+            f"{root_str!r}"
+        )
 
 
 def load_model(ckpt_dir: Path, ckpt_setting: str, cfg, device: str):

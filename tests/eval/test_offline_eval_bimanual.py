@@ -48,6 +48,33 @@ def test_override_dataset_root_updates_robofactory_mixture_spec():
     ]
 
 
+def test_override_dataset_root_rebuilds_unrecognized_mixture_spec():
+    cfg = OmegaConf.create(
+        {
+            "train_dataset": {
+                "mixture_spec": [
+                    {
+                        "dataset_path": {
+                            "robotwin": ["/old/robotwin/root"],
+                        },
+                        "dataset_weight": 0.5,
+                        "distribute_weights": False,
+                    }
+                ]
+            },
+        }
+    )
+
+    override_dataset_root(cfg, "/workspace/data/robofactory_lerobot_v2/LiftBarrier-rf-500")
+
+    assert cfg.robofactory_data_root == "/workspace/data/robofactory_lerobot_v2/LiftBarrier-rf-500"
+    assert cfg.train_dataset.mixture_spec[0].dataset_path.robofactory == [
+        "/workspace/data/robofactory_lerobot_v2/LiftBarrier-rf-500"
+    ]
+    assert cfg.train_dataset.mixture_spec[0].dataset_weight == 1.0
+    assert cfg.train_dataset.mixture_spec[0].distribute_weights is True
+
+
 def test_gripper_open_close_metrics_reports_confusion_counts():
     pred = np.array([-0.8, 0.2, 0.6, -0.4, -0.1, 0.9], dtype=np.float32)
     gt = np.array([-1.0, 1.0, -1.0, 1.0, -1.0, 1.0], dtype=np.float32)
