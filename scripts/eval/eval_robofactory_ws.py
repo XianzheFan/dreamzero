@@ -265,6 +265,7 @@ def apply_gripper_override(
     *,
     latch_state: dict[str, bool] | None = None,
     policy_close_threshold: float = 0.0,
+    policy_close_min_step: int = 0,
 ) -> np.ndarray:
     """Optionally override RoboFactory gripper commands.
 
@@ -280,7 +281,7 @@ def apply_gripper_override(
         if latch_state is None:
             raise ValueError("policy-close-latch requires latch_state")
         for label, dim in (("left", 7), ("right", 15)):
-            if out[dim] < policy_close_threshold:
+            if step >= policy_close_min_step and out[dim] < policy_close_threshold:
                 latch_state[label] = True
             if latch_state.get(label, False):
                 out[dim] = close_value
@@ -620,6 +621,7 @@ def run_episode(
     gripper_open_value: float,
     gripper_close_value: float,
     gripper_policy_close_threshold: float,
+    gripper_policy_close_min_step: int,
     joint_delta_scale: float,
     joint_delta_clip: float | None,
     joint_delta_output_clip: float | None,
@@ -711,6 +713,7 @@ def run_episode(
                 gripper_close_value,
                 latch_state=gripper_latch_state,
                 policy_close_threshold=gripper_policy_close_threshold,
+                policy_close_min_step=gripper_policy_close_min_step,
             )
             abs16 = limit_joint_target_slew(abs16, last_commanded, joint_target_slew_rate)
             qpos_before_step = cur.copy()
@@ -818,6 +821,15 @@ def main():
         help=(
             "For --gripper-override=policy-close-latch, latch an arm closed once "
             "its policy gripper command is below this threshold."
+        ),
+    )
+    ap.add_argument(
+        "--gripper-policy-close-min-step",
+        type=int,
+        default=0,
+        help=(
+            "For --gripper-override=policy-close-latch, ignore policy close "
+            "commands before this environment step."
         ),
     )
     ap.add_argument(
@@ -981,7 +993,8 @@ def main():
         print(f"Schedule step: {args.gripper_close_after_step}")
     if args.gripper_override == "policy-close-latch":
         print(
-            f"Policy close latch threshold: {args.gripper_policy_close_threshold}",
+            f"Policy close latch threshold: {args.gripper_policy_close_threshold} "
+            f"min_step={args.gripper_policy_close_min_step}",
             flush=True,
         )
 
@@ -1087,6 +1100,7 @@ def main():
                         "gripper_open_value": args.gripper_open_value,
                         "gripper_close_value": args.gripper_close_value,
                         "gripper_policy_close_threshold": args.gripper_policy_close_threshold,
+                        "gripper_policy_close_min_step": args.gripper_policy_close_min_step,
                         "joint_delta_scale": args.joint_delta_scale,
                         "left_joint_delta_scale": args.left_joint_delta_scale,
                         "right_joint_delta_scale": args.right_joint_delta_scale,
@@ -1165,6 +1179,7 @@ def main():
                 gripper_open_value=args.gripper_open_value,
                 gripper_close_value=args.gripper_close_value,
                 gripper_policy_close_threshold=args.gripper_policy_close_threshold,
+                gripper_policy_close_min_step=args.gripper_policy_close_min_step,
                 joint_delta_scale=effective_joint_delta_scale,
                 joint_delta_clip=effective_joint_delta_clip,
                 joint_delta_output_clip=effective_joint_delta_output_clip,

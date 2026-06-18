@@ -146,6 +146,41 @@ def test_policy_close_latch_requires_state():
         raise AssertionError("policy-close-latch should require latch_state")
 
 
+def test_policy_close_latch_respects_min_step():
+    mod = _load_eval_module()
+    action = np.ones(16, dtype=np.float32)
+    action[7] = -0.5
+    latch = {"left": False, "right": False}
+
+    out = mod.apply_gripper_override(
+        action,
+        step=9,
+        mode="policy-close-latch",
+        close_after_step=0,
+        open_value=1.0,
+        close_value=-1.0,
+        latch_state=latch,
+        policy_close_threshold=0.0,
+        policy_close_min_step=10,
+    )
+    assert out[7] == -0.5
+    assert latch == {"left": False, "right": False}
+
+    out = mod.apply_gripper_override(
+        action,
+        step=10,
+        mode="policy-close-latch",
+        close_after_step=0,
+        open_value=1.0,
+        close_value=-1.0,
+        latch_state=latch,
+        policy_close_threshold=0.0,
+        policy_close_min_step=10,
+    )
+    assert out[7] == -1.0
+    assert latch == {"left": True, "right": False}
+
+
 def test_joint_delta_per_arm_scale_overrides_global_scale():
     mod = _load_eval_module()
     ref = np.zeros(16, dtype=np.float32)
