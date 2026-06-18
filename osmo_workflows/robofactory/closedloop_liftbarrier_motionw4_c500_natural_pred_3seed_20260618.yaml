@@ -57,6 +57,7 @@ workflow:
           JOINT_DELTA_SCALES="1.0"
           JOINT_DELTA_SCALE_REFERENCE="observed"
           JOINT_TARGET_SLEW_RATES="0.35"
+          CLIENT_CUDA_VISIBLE_DEVICES="2"
           SUCCESS_MODE="strict-lift"
           STRICT_SUCCESS_MIN_GRASP_COUNT=1
           RUN_OFFLINE=0
@@ -691,9 +692,9 @@ workflow:
             slew_tag="$(echo "${JOINT_TARGET_SLEW_RATE}" | tr . p)"
             out_dir="/workspace/eval_outputs/rp${REPLAN_EVERY}_${GRIPPER_OVERRIDE}_oc${GRIPPER_CLOSE_AFTER_STEP}_jscale_${scale_tag}_slew_${slew_tag}_${SUCCESS_MODE}"
             mkdir -p "${out_dir}/action_dump" "${out_dir}/videos"
-            echo "Running direct closed-loop RoboFactory eval replan=${REPLAN_EVERY}, scale=${JOINT_DELTA_SCALE}, ref=${JOINT_DELTA_SCALE_REFERENCE}, slew_rate=${JOINT_TARGET_SLEW_RATE}, gripper override ${GRIPPER_OVERRIDE} after step ${GRIPPER_CLOSE_AFTER_STEP}, success_mode ${SUCCESS_MODE}, binarize threshold ${GRIPPER_BINARIZE_THRESHOLD}"
+            echo "Running direct closed-loop RoboFactory eval replan=${REPLAN_EVERY}, scale=${JOINT_DELTA_SCALE}, ref=${JOINT_DELTA_SCALE_REFERENCE}, slew_rate=${JOINT_TARGET_SLEW_RATE}, client_cuda=${CLIENT_CUDA_VISIBLE_DEVICES}, gripper override ${GRIPPER_OVERRIDE} after step ${GRIPPER_CLOSE_AFTER_STEP}, success_mode ${SUCCESS_MODE}, binarize threshold ${GRIPPER_BINARIZE_THRESHOLD}"
             set +e
-            timeout 10800 env CUDA_VISIBLE_DEVICES=1 python /workspace/code/dreamzero/scripts/eval/eval_robofactory_ws.py \
+            timeout 10800 env CUDA_VISIBLE_DEVICES="${CLIENT_CUDA_VISIBLE_DEVICES}" python /workspace/code/dreamzero/scripts/eval/eval_robofactory_ws.py \
               --host 127.0.0.1 \
               --port "$PORT" \
               --task "$TASK" \
@@ -806,6 +807,7 @@ workflow:
       gpu: 8
       memory: 1681Gi
       nodesExcluded:
+      - aks-gpu-61109112-vmss000000
       - aks-gpu-61109112-vmss000012
       - aks-gpu-61109112-vmss00004c
       - aks-gpu-61109112-vmss00000r
