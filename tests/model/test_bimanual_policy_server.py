@@ -259,6 +259,63 @@ def test_noncausal_video_pred_rollout_restores_absent_causal_env(monkeypatch):
     assert "MAI_USE_CAUSAL_INFERENCE" not in os.environ
 
 
+def test_noncausal_video_pred_rollout_restores_action_head_control_state(monkeypatch):
+    policy = _make_policy(_metadata_with_action_stats())
+    action_head = SimpleNamespace(
+        current_start_frame=9,
+        language="cached-language",
+        kv_cache1=["original-cache"],
+        kv_cache_neg=None,
+        crossattn_cache=["original-cross"],
+        crossattn_cache_neg=None,
+        clip_feas="original-clip",
+        ys="original-y",
+        _ma_cached_token_agent_id="agent-cache",
+        _ma_cached_token_agent_id_neg=None,
+        skip_countdown=3,
+        _last_video_pred="primary-video",
+        model=SimpleNamespace(_cached_token_agent_id="model-token-cache"),
+    )
+
+    class _FakeModel:
+        def __init__(self, head):
+            self.action_head = head
+
+        def get_action(self, inputs):
+            del inputs
+            action_head.current_start_frame = 999
+            action_head.language = "diagnostic-language"
+            action_head.kv_cache1 = ["diagnostic-cache"]
+            action_head.crossattn_cache = ["diagnostic-cross"]
+            action_head.clip_feas = "diagnostic-clip"
+            action_head.ys = "diagnostic-y"
+            action_head._ma_cached_token_agent_id = "diagnostic-agent-cache"
+            action_head.skip_countdown = 0
+            action_head.model._cached_token_agent_id = "diagnostic-model-cache"
+            action_head._last_video_pred = "diagnostic-video"
+            return SimpleNamespace()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        SimpleNamespace(inference_mode=lambda: _FakeInferenceMode()),
+    )
+    policy._model = _FakeModel(action_head)
+
+    policy._run_noncausal_video_pred_rollout({"video": object()})
+
+    assert action_head.current_start_frame == 9
+    assert action_head.language == "cached-language"
+    assert action_head.kv_cache1 == ["original-cache"]
+    assert action_head.crossattn_cache == ["original-cross"]
+    assert action_head.clip_feas == "original-clip"
+    assert action_head.ys == "original-y"
+    assert action_head._ma_cached_token_agent_id == "agent-cache"
+    assert action_head.skip_countdown == 3
+    assert action_head.model._cached_token_agent_id == "model-token-cache"
+    assert action_head._last_video_pred == "diagnostic-video"
+
+
 def test_metadata_tag_prefers_robotwin_over_legacy_robofactory():
     metadata = {
         **_metadata_with_action_stats("robofactory"),

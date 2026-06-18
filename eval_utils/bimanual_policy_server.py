@@ -61,6 +61,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import copy
 import dataclasses
 import gc
 import json
@@ -106,6 +107,21 @@ _SHARED_GLOBAL_WRIST_WINDOW_MODES = (
 )
 
 _VIDEO_PRED_ROLLOUT_MODES = ("action", "noncausal")
+_MISSING = object()
+
+_ACTION_HEAD_CONTROL_STATE_ATTRS = (
+    "current_start_frame",
+    "language",
+    "kv_cache1",
+    "kv_cache_neg",
+    "crossattn_cache",
+    "crossattn_cache_neg",
+    "clip_feas",
+    "ys",
+    "_ma_cached_token_agent_id",
+    "_ma_cached_token_agent_id_neg",
+    "skip_countdown",
+)
 
 
 def _resolve_video_pred_rollout_mode(value: str | None) -> str:
@@ -1342,6 +1358,70 @@ class BimanualPolicy:
         with manifest_path.open("a") as f:
             f.write(json.dumps(entry, sort_keys=True) + "\n")
 
+    @staticmethod
+    def _clone_action_head_state_value(value: Any) -> Any:
+        import torch
+
+        torch_tensor = getattr(torch, "Tensor", ())
+        if torch_tensor and isinstance(value, torch_tensor):
+            return value.detach().clone()
+        if isinstance(value, list):
+            return [BimanualPolicy._clone_action_head_state_value(v) for v in value]
+        if isinstance(value, tuple):
+            return tuple(BimanualPolicy._clone_action_head_state_value(v) for v in value)
+        if isinstance(value, dict):
+            return {
+                copy.deepcopy(k): BimanualPolicy._clone_action_head_state_value(v)
+                for k, v in value.items()
+            }
+        try:
+            return copy.deepcopy(value)
+        except Exception:
+            return value
+
+    def _snapshot_action_head_control_state(self) -> dict[str, Any]:
+        action_head = getattr(getattr(self, "_model", None), "action_head", None)
+        if action_head is None:
+            return {}
+        snapshot: dict[str, Any] = {}
+        for attr in _ACTION_HEAD_CONTROL_STATE_ATTRS:
+            if hasattr(action_head, attr):
+                snapshot[attr] = self._clone_action_head_state_value(getattr(action_head, attr))
+            else:
+                snapshot[attr] = _MISSING
+        model = getattr(action_head, "model", None)
+        if model is not None:
+            if hasattr(model, "_cached_token_agent_id"):
+                snapshot["model._cached_token_agent_id"] = self._clone_action_head_state_value(
+                    getattr(model, "_cached_token_agent_id")
+                )
+            else:
+                snapshot["model._cached_token_agent_id"] = _MISSING
+        return snapshot
+
+    def _restore_action_head_control_state(self, snapshot: dict[str, Any]) -> None:
+        if not snapshot:
+            return
+        action_head = getattr(getattr(self, "_model", None), "action_head", None)
+        if action_head is None:
+            return
+        for attr in _ACTION_HEAD_CONTROL_STATE_ATTRS:
+            value = snapshot.get(attr, _MISSING)
+            if value is _MISSING:
+                if hasattr(action_head, attr):
+                    delattr(action_head, attr)
+                continue
+            setattr(action_head, attr, value)
+        if "model._cached_token_agent_id" in snapshot:
+            model = getattr(action_head, "model", None)
+            if model is not None:
+                value = snapshot["model._cached_token_agent_id"]
+                if value is _MISSING:
+                    if hasattr(model, "_cached_token_agent_id"):
+                        delattr(model, "_cached_token_agent_id")
+                else:
+                    setattr(model, "_cached_token_agent_id", value)
+
     def _run_noncausal_video_pred_rollout(self, inputs_gpu: dict[str, Any]) -> None:
         """Refresh ``_last_video_pred`` with noncausal flowmatch for diagnostics.
 
@@ -1351,6 +1431,7 @@ class BimanualPolicy:
         """
         import torch
 
+        control_state = self._snapshot_action_head_control_state()
         old_causal = os.environ.get("MAI_USE_CAUSAL_INFERENCE")
         os.environ["MAI_USE_CAUSAL_INFERENCE"] = "0"
         logging.info(
@@ -1365,6 +1446,7 @@ class BimanualPolicy:
                 os.environ.pop("MAI_USE_CAUSAL_INFERENCE", None)
             else:
                 os.environ["MAI_USE_CAUSAL_INFERENCE"] = old_causal
+            self._restore_action_head_control_state(control_state)
 
     def _dump_video_pred(self, sess: dict, sid: str) -> None:
         """VAE-decode the action_head's last denoised video latents and
