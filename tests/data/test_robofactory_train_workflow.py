@@ -10,7 +10,7 @@ CODE_CACHE_URI = (
     "dreamzero_code_liftbarrier_motionfix_950b11b_20260618"
 )
 EXPECTED_CODE_COMMIT = "950b11ba09dcfa8c02ee962d458872244f25b0ba"
-RUN_NAME = "dz-rf2-lb500-motionw4-th02-50k-scratch-xz-20260618"
+RUN_NAME = "dz-rf2-lb500-motionw4-th02-50k-fresh-xz-20260618"
 
 
 def _task_by_name(workflow, name):
@@ -174,6 +174,9 @@ def test_liftbarrier_train_workflow_restores_and_uploads_run_and_s3cache_checkpo
     assert "No usable complete checkpoint-* directories found under ${src_uri}/." in script
     assert "No previous checkpoints restored; training will start fresh." in script
     assert '[ -f "${ckpt_dir}/trainer_state.json" ]' in script
+    assert '[ -f "${ckpt_dir}/latest" ]' in script
+    assert "-name '*_optim_states.pt'" in script
+    assert "-name '*_model_states.pt'" in script
 
 
 def test_liftbarrier_train_workflow_embedded_python_blocks_compile():
