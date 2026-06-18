@@ -10,8 +10,9 @@ CODE_CACHE_URI = (
     "dreamzero_code_liftbarrier_motionfix_950b11b_20260618"
 )
 EXPECTED_CODE_COMMIT = "950b11ba09dcfa8c02ee962d458872244f25b0ba"
-RUN_NAME = "dz-rf2-lb500-motionw4-th02-50k-fresh-xz-20260618"
-WORKFLOW_NAME = "dz-rf2-lb500-motionw4-th02-50k-fresh-storagefix-xz-20260618"
+RUN_NAME = "dz-rf2-lb500-motionw4-th02-50k-fresh-storagefix3-xz-20260618"
+RESTORE_RUN_NAME = "dz-rf2-lb500-motionw4-th02-50k-fresh-xz-20260618"
+WORKFLOW_NAME = "dz-rf2-lb500-motionw4-th02-50k-fresh-storagefix3-xz-20260618"
 
 
 def _task_by_name(workflow, name):
@@ -42,7 +43,7 @@ def test_liftbarrier_train_workflow_defaults_to_cached_code_and_500_episode_data
     defaults = workflow["default-values"]
     assert defaults["workflow_name"] == WORKFLOW_NAME
     assert defaults["run_name"] == RUN_NAME
-    assert defaults["restore_run_name"] == RUN_NAME
+    assert defaults["restore_run_name"] == RESTORE_RUN_NAME
     assert defaults["code_s3_uri"] == CODE_CACHE_URI
     assert defaults["expected_code_commit"] == EXPECTED_CODE_COMMIT
     assert defaults["data_variant"] == "LiftBarrier-rf-500"
@@ -51,6 +52,7 @@ def test_liftbarrier_train_workflow_defaults_to_cached_code_and_500_episode_data
         "s3://GearHome/users/xianzhef/oci-migration/data/robofactory_lerobot_v2/LiftBarrier-rf-500"
     )
     assert defaults["max_steps"] == "50000"
+    assert int(defaults["save_total_limit"]) >= 4
     assert defaults["joint_motion_action_loss_weight"] == "4.0"
     assert defaults["joint_motion_action_loss_threshold"] == "0.2"
 
@@ -68,6 +70,8 @@ def test_liftbarrier_train_workflow_cleans_checkpoint_staging_to_avoid_eviction(
     script = _task_by_name(workflow, "train")["files"][0]["contents"]
 
     assert 'CHECKPOINT_UPLOAD_MAX_COUNT="${CHECKPOINT_UPLOAD_MAX_COUNT:-1}"' in script
+    assert 'CHECKPOINT_LOCAL_KEEP_COUNT="${CHECKPOINT_LOCAL_KEEP_COUNT:-4}"' in script
+    assert 'keep_count="${CHECKPOINT_LOCAL_KEEP_COUNT:-4}"' in script
     assert 'rm -rf "$stage_root"' in script
     assert 'tail -n "$CHECKPOINT_UPLOAD_MAX_COUNT"' in script
     assert 'rm -rf "$stage_dir"' in script

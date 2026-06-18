@@ -54,6 +54,8 @@ workflow:
             RESTORE_CACHE_S3_URI="${RESTORE_CACHE_S3_URI:-s3://GearHome/users/xianzhef/oci-migration/dreamzero_s3cache/bootstrap_checkpoints/${RESTORE_RUN_NAME}}"
             CHECKPOINT_UPLOAD_INTERVAL_SECONDS="${CHECKPOINT_UPLOAD_INTERVAL_SECONDS:-900}"
             CHECKPOINT_UPLOAD_MAX_COUNT="${CHECKPOINT_UPLOAD_MAX_COUNT:-1}"
+            CHECKPOINT_PRUNE_INTERVAL_SECONDS="${CHECKPOINT_PRUNE_INTERVAL_SECONDS:-180}"
+            CHECKPOINT_LOCAL_KEEP_COUNT="${CHECKPOINT_LOCAL_KEEP_COUNT:-4}"
 
             for uri in "$CODE_S3_URI" "$DATA_S3_URI" "$MODEL_CACHE_S3_URI" "$RUN_S3_ROOT" "$OUTPUT_S3_URI" "$LOG_S3_URI" "$CACHE_OUTPUT_S3_URI" "$RESTORE_S3_URI" "$RESTORE_CACHE_S3_URI"; do
               case "$uri" in
@@ -73,6 +75,11 @@ workflow:
                 echo "Stopping periodic checkpoint uploader pid=${PERIODIC_UPLOADER_PID}"
                 kill "$PERIODIC_UPLOADER_PID" 2>/dev/null || true
                 wait "$PERIODIC_UPLOADER_PID" 2>/dev/null || true
+              fi
+              if [ -n "${PERIODIC_PRUNER_PID:-}" ] && kill -0 "$PERIODIC_PRUNER_PID" 2>/dev/null; then
+                echo "Stopping periodic checkpoint pruner pid=${PERIODIC_PRUNER_PID}"
+                kill "$PERIODIC_PRUNER_PID" 2>/dev/null || true
+                wait "$PERIODIC_PRUNER_PID" 2>/dev/null || true
               fi
               echo "Training workflow exit status: $status"
               osmo data upload "${LOG_S3_URI}/" /tmp/train_liftbarrier_shared_global.log
@@ -460,7 +467,7 @@ workflow:
             mkdir -p "$OUTPUT_DIR"
 
             stage_checkpoints_for_upload() {
-              stage_root="/workspace/rf_checkpoint_upload"
+              stage_root="/workspace/rf_checkpoint_upload_slim"
               stage_dir="${stage_root}/${RUN_NAME}"
               rm -rf "$stage_root"
               mkdir -p "$stage_dir"
@@ -481,7 +488,12 @@ workflow:
                    { [ -f "${ckpt_dir}/model.safetensors" ] || [ -f "${ckpt_dir}/model.safetensors.index.json" ]; }; then
                   ckpt_name="$(basename "$ckpt_dir")"
                   mkdir -p "${stage_dir}/${ckpt_name}"
-                  cp -a "${ckpt_dir}/." "${stage_dir}/${ckpt_name}/"
+                  while IFS= read -r ckpt_file; do
+                    cp -a "$ckpt_file" "${stage_dir}/${ckpt_name}/"
+                  done < <(find "$ckpt_dir" -maxdepth 1 \( -type f -o -type l \) | sort)
+                  if [ -d "${ckpt_dir}/experiment_cfg" ]; then
+                    cp -a "${ckpt_dir}/experiment_cfg" "${stage_dir}/${ckpt_name}/"
+                  fi
                   found=1
                 else
                   echo "Skipping incomplete checkpoint ${ckpt_dir}; need model weights plus trainer_state.json."
@@ -493,7 +505,39 @@ workflow:
                 return 1
               fi
               echo "$stage_dir"
+              du -sh "$stage_dir" >&2 || true
               return 0
+            }
+
+            prune_old_checkpoints() {
+              keep_count="${CHECKPOINT_LOCAL_KEEP_COUNT:-4}"
+              case "$keep_count" in
+                ''|*[!0-9]*)
+                  echo "Invalid CHECKPOINT_LOCAL_KEEP_COUNT=${keep_count}; skipping checkpoint prune." >&2
+                  return 0
+                  ;;
+              esac
+              if [ "$keep_count" -le 0 ]; then
+                echo "CHECKPOINT_LOCAL_KEEP_COUNT=${keep_count}; skipping checkpoint prune."
+                return 0
+              fi
+
+              ckpt_list="$(mktemp)"
+              find "$OUTPUT_DIR" -maxdepth 1 -type d -name 'checkpoint-*' | sort -V > "$ckpt_list"
+              n_ckpts="$(wc -l < "$ckpt_list" | tr -d ' ')"
+              if [ "$n_ckpts" -le "$keep_count" ]; then
+                rm -f "$ckpt_list"
+                return 0
+              fi
+              n_delete=$((n_ckpts - keep_count))
+              echo "Pruning ${n_delete} old local checkpoint(s), keeping latest ${keep_count}."
+              head -n "$n_delete" "$ckpt_list" | while IFS= read -r old_ckpt; do
+                [ -n "$old_ckpt" ] || continue
+                echo "Removing old local checkpoint ${old_ckpt}"
+                rm -rf "$old_ckpt"
+              done
+              rm -f "$ckpt_list"
+              du -sh "$OUTPUT_DIR" || true
             }
 
             upload_checkpoints_once() {
@@ -513,6 +557,15 @@ workflow:
                 echo "Periodic checkpoint upload tick: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
                 osmo data upload "${LOG_S3_URI}/" /tmp/train_liftbarrier_shared_global.log || true
                 upload_checkpoints_once || true
+                prune_old_checkpoints || true
+              done
+            }
+
+            periodic_checkpoint_prune() {
+              while true; do
+                sleep "$CHECKPOINT_PRUNE_INTERVAL_SECONDS" || break
+                echo "Periodic checkpoint prune tick: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+                prune_old_checkpoints || true
               done
             }
 
@@ -544,24 +597,24 @@ workflow:
                 rm -rf "$import_dir"
                 return 1
               fi
-              found=0
+              latest_complete_ckpt=""
               while IFS= read -r ckpt_dir; do
                 [ -n "$ckpt_dir" ] || continue
-                ckpt_name="$(basename "$ckpt_dir")"
                 if is_complete_resume_checkpoint "$ckpt_dir"; then
-                  echo "Promoting restored checkpoint ${ckpt_dir} -> ${OUTPUT_DIR}/${ckpt_name}"
-                  mkdir -p "${OUTPUT_DIR}/${ckpt_name}"
-                  cp -an "${ckpt_dir}/." "${OUTPUT_DIR}/${ckpt_name}/"
-                  found=1
+                  latest_complete_ckpt="$ckpt_dir"
                 else
                   echo "Skipping incomplete restored checkpoint ${ckpt_dir}; need model weights, trainer_state.json, latest tag, and DeepSpeed state files."
                 fi
-              done < <(find "$import_dir" -type d -name 'checkpoint-*' | sort)
-              if [ "$found" -eq 0 ]; then
+              done < <(find "$import_dir" -type d -name 'checkpoint-*' | sort -V)
+              if [ -z "$latest_complete_ckpt" ]; then
                 echo "No usable complete checkpoint-* directories found under ${src_uri}/."
                 rm -rf "$import_dir"
                 return 1
               fi
+              ckpt_name="$(basename "$latest_complete_ckpt")"
+              echo "Promoting latest restored checkpoint ${latest_complete_ckpt} -> ${OUTPUT_DIR}/${ckpt_name}"
+              rm -rf "${OUTPUT_DIR}/${ckpt_name}"
+              mv "$latest_complete_ckpt" "${OUTPUT_DIR}/${ckpt_name}"
               rm -rf "$import_dir"
               return 0
             }
@@ -575,6 +628,9 @@ workflow:
             periodic_checkpoint_upload &
             PERIODIC_UPLOADER_PID=$!
             echo "Started periodic checkpoint uploader pid=${PERIODIC_UPLOADER_PID}, interval=${CHECKPOINT_UPLOAD_INTERVAL_SECONDS}s"
+            periodic_checkpoint_prune &
+            PERIODIC_PRUNER_PID=$!
+            echo "Started periodic checkpoint pruner pid=${PERIODIC_PRUNER_PID}, interval=${CHECKPOINT_PRUNE_INTERVAL_SECONDS}s, keep=${CHECKPOINT_LOCAL_KEEP_COUNT}"
 
             require_wandb
 
@@ -596,8 +652,8 @@ workflow:
             bash scripts/train/robofactory_bimanual_training.sh
 
 default-values:
-  workflow_name: dz-rf2-lb500-motionw4-th02-50k-fresh-storagefix-xz-20260618
-  run_name: dz-rf2-lb500-motionw4-th02-50k-fresh-xz-20260618
+  workflow_name: dz-rf2-lb500-motionw4-th02-50k-fresh-storagefix3-xz-20260618
+  run_name: dz-rf2-lb500-motionw4-th02-50k-fresh-storagefix3-xz-20260618
   restore_run_name: dz-rf2-lb500-motionw4-th02-50k-fresh-xz-20260618
   code_s3_uri: swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_liftbarrier_motionfix_950b11b_20260618
   expected_code_commit: 950b11ba09dcfa8c02ee962d458872244f25b0ba
