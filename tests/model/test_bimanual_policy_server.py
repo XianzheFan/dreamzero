@@ -37,6 +37,7 @@ def _make_policy(metadata):
     policy.gripper_close_value = 0.0
     policy.gripper_force_open_until_infer = 0
     policy.shared_global_wrist_window_mode = "history-current-first"
+    policy.reset_causal_state_each_infer = False
     return policy
 
 
@@ -83,6 +84,14 @@ class _ProxyPolicy:
     def infer(self, payload):
         self.calls.append(("infer", payload))
         return {"action_chunk": payload["qpos"]}
+
+
+class _FakeActionHead:
+    def __init__(self):
+        self.reset_calls = 0
+
+    def reset_causal_state(self):
+        self.reset_calls += 1
 
 
 def _metadata_with_action_stats(tag="robofactory"):
@@ -160,6 +169,28 @@ def test_distributed_policy_proxy_worker_executes_received_commands():
         ("reset", {"session_id": "abc"}),
         ("infer", {"qpos": [4, 5, 6]}),
     ]
+
+
+def test_reset_causal_state_each_infer_gate_resets_action_head():
+    policy = _make_policy(_metadata_with_action_stats())
+    action_head = _FakeActionHead()
+    policy._model = SimpleNamespace(action_head=action_head)
+    policy.reset_causal_state_each_infer = True
+
+    assert policy._maybe_reset_action_head_causal_state_for_infer() is True
+
+    assert action_head.reset_calls == 1
+
+
+def test_reset_causal_state_each_infer_gate_can_keep_streaming_state():
+    policy = _make_policy(_metadata_with_action_stats())
+    action_head = _FakeActionHead()
+    policy._model = SimpleNamespace(action_head=action_head)
+    policy.reset_causal_state_each_infer = False
+
+    assert policy._maybe_reset_action_head_causal_state_for_infer() is False
+
+    assert action_head.reset_calls == 0
 
 
 def test_metadata_tag_prefers_robotwin_over_legacy_robofactory():
@@ -567,6 +598,7 @@ def test_dump_video_pred_manifest_records_comparison_and_eval_context(monkeypatc
     policy = _make_policy(_metadata_with_action_stats())
     policy.video_pred_dir = tmp_path
     policy.ckpt_dir = tmp_path
+    policy.reset_causal_state_each_infer = True
     action_head = SimpleNamespace(
         _last_video_pred=np.zeros((1, 2, 16, 2, 3, 4), dtype=np.float32),
         current_start_frame=3,
@@ -630,6 +662,7 @@ def test_dump_video_pred_manifest_records_comparison_and_eval_context(monkeypatc
     assert entry["decoded_shape"] == [2, 3, 4, 5, 3]
     assert entry["replan_every"] == 8
     assert entry["chunk_start_index"] == 16
+    assert entry["reset_causal_state_each_infer"] is True
     assert entry["comparison_files"] == [
         "comparison/infer0002_env0048_agent0_compare.mp4",
         "comparison/infer0002_env0048_agent1_compare.mp4",

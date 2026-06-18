@@ -95,6 +95,7 @@ class BimanualServerConfig:
     gripper_close_value: float = 0.0
     gripper_open_value: float = 1.0
     shared_global_wrist_window_mode: str = "history-current-first"
+    reset_causal_state_each_infer: bool = False
 
 
 _SHARED_GLOBAL_WRIST_WINDOW_MODES = (
@@ -382,6 +383,7 @@ class BimanualPolicy:
         gripper_force_open_until_infer: int | None = None,
         gripper_convention: str = "auto",
         shared_global_wrist_window_mode: str | None = None,
+        reset_causal_state_each_infer: bool | None = None,
         device: str | None = None,
         device_mesh: Any | None = None,
     ):
@@ -464,6 +466,11 @@ class BimanualPolicy:
                 f"{_SHARED_GLOBAL_WRIST_WINDOW_MODES}; got "
                 f"{shared_global_wrist_window_mode!r}"
             )
+        if reset_causal_state_each_infer is None:
+            reset_causal_state_each_infer = self._parse_bool(
+                os.environ.get("DREAMZERO_RESET_CAUSAL_STATE_EACH_INFER", "0")
+            )
+        self.reset_causal_state_each_infer = bool(reset_causal_state_each_infer)
         self._last_action_debug: dict[str, np.ndarray] = {}
         self._relative_action = False
         self._relative_action_per_horizon = False
@@ -483,6 +490,10 @@ class BimanualPolicy:
         logging.info(
             "Shared-global wrist window mode: %s",
             self.shared_global_wrist_window_mode,
+        )
+        logging.info(
+            "Reset causal state each infer: %s",
+            self.reset_causal_state_each_infer,
         )
 
     def _effective_prompt(self, prompt: str | None) -> str:
@@ -970,11 +981,22 @@ class BimanualPolicy:
         sess["history"].clear()
         sess["prompt"] = prompt
         sess["infer_idx"] = 0
+        self._reset_action_head_causal_state("episode reset")
+        return "reset successful"
+
+    def _reset_action_head_causal_state(self, reason: str) -> bool:
         model = getattr(self, "_model", None)
         action_head = getattr(model, "action_head", None)
         if action_head is not None and hasattr(action_head, "reset_causal_state"):
             action_head.reset_causal_state()
-        return "reset successful"
+            logging.debug("Reset action-head causal state for %s", reason)
+            return True
+        return False
+
+    def _maybe_reset_action_head_causal_state_for_infer(self) -> bool:
+        if not self.reset_causal_state_each_infer:
+            return False
+        return self._reset_action_head_causal_state("infer")
 
     def _uses_shared_global(self) -> bool:
         """Whether the loaded transform emits ``video_global``.
@@ -1113,6 +1135,7 @@ class BimanualPolicy:
             sess["last_replan_every"] = int(obs["replan_every"])
         if obs.get("chunk_start_index") is not None:
             sess["last_chunk_start_index"] = int(obs["chunk_start_index"])
+        self._maybe_reset_action_head_causal_state_for_infer()
 
         qpos = np.asarray(obs["qpos"], dtype=np.float32).reshape(-1)
         assert qpos.shape == (16,), f"need 16-dim qpos, got {qpos.shape}"
@@ -1358,6 +1381,7 @@ class BimanualPolicy:
                 "replan_every": sess.get("last_replan_every"),
                 "chunk_start_index": sess.get("last_chunk_start_index"),
                 "shared_global_wrist_window_mode": self.shared_global_wrist_window_mode,
+                "reset_causal_state_each_infer": self.reset_causal_state_each_infer,
                 "pred_video_semantics": (
                     "decoded denoised wrist-future latents; comparison panels use "
                     "the observed conditioning-window frame at the same displayed "
@@ -2231,6 +2255,15 @@ def main():
              "history; repeat-current matches the historical server behavior; "
              "history-chronological keeps wrist history unchanged.",
     )
+    parser.add_argument(
+        "--reset-causal-state-each-infer",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Reset the WAN causal video/KV state before every infer() call. "
+             "Useful for closed-loop replanning where each request supplies the "
+             "current observation window. If unset, "
+             "DREAMZERO_RESET_CAUSAL_STATE_EACH_INFER is honored.",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -2270,6 +2303,7 @@ def main():
         gripper_force_open_until_infer=args.gripper_force_open_until_infer,
         gripper_convention=args.gripper_convention,
         shared_global_wrist_window_mode=args.shared_global_wrist_window_mode,
+        reset_causal_state_each_infer=args.reset_causal_state_each_infer,
         device=dist_ctx.device,
         device_mesh=dist_ctx.device_mesh,
     )
