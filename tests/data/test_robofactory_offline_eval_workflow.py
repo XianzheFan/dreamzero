@@ -43,6 +43,8 @@ def test_liftbarrier_offline_eval_workflow_defaults_to_ckpt500_and_cached_code()
     assert defaults["num_batches"] == "4"
     assert defaults["gripper_class_threshold"] == "0.0"
     assert defaults["disable_torch_compile"] == "true"
+    assert defaults["skip_train_forward"] == "true"
+    assert defaults["attention_backend"] == "FA2"
     assert defaults["ckpt_wait_timeout_seconds"] == "7200"
     assert defaults["ckpt_wait_interval_seconds"] == "120"
 
@@ -65,7 +67,11 @@ def test_liftbarrier_offline_eval_workflow_restores_complete_checkpoint_safely()
     assert 'CKPT_WAIT_TIMEOUT_SECONDS="${CKPT_WAIT_TIMEOUT_SECONDS:-{{ckpt_wait_timeout_seconds}}}"' in script
     assert 'CKPT_WAIT_INTERVAL_SECONDS="${CKPT_WAIT_INTERVAL_SECONDS:-{{ckpt_wait_interval_seconds}}}"' in script
     assert 'DISABLE_DREAMZERO_TORCH_COMPILE="${DISABLE_DREAMZERO_TORCH_COMPILE:-{{disable_torch_compile}}}"' in script
+    assert 'SKIP_TRAIN_FORWARD="${SKIP_TRAIN_FORWARD:-{{skip_train_forward}}}"' in script
+    assert 'ATTENTION_BACKEND="${ATTENTION_BACKEND:-{{attention_backend}}}"' in script
     assert "export DISABLE_DREAMZERO_TORCH_COMPILE" in script
+    assert "export ATTENTION_BACKEND" in script
+    assert 'export OFFLINE_EVAL_SKIP_TRAIN_FORWARD="$SKIP_TRAIN_FORWARD"' in script
     assert 'restore_checkpoint_from_uri "$EVAL_CKPT_S3_URI" "s3cache"' in script
     assert 'restore_checkpoint_from_uri "$EVAL_CKPT_FALLBACK_S3_URI" "primary"' in script
     assert "restore_checkpoint_when_available()" in script
@@ -117,8 +123,13 @@ def test_liftbarrier_offline_eval_workflow_checks_robofactory_data_and_runs_eval
         "--num-batches \"$NUM_BATCHES\"",
         "--data-root \"$CANONICAL_DATA_ROOT\"",
         "--gripper-class-threshold \"$GRIPPER_CLASS_THRESHOLD\"",
+        "SKIP_TRAIN_FORWARD_ARGS=()",
+        "SKIP_TRAIN_FORWARD_ARGS+=(--skip-train-forward)",
+        '"${SKIP_TRAIN_FORWARD_ARGS[@]}"',
         "gripper_class_threshold=${GRIPPER_CLASS_THRESHOLD}",
         "disable_torch_compile=${DISABLE_DREAMZERO_TORCH_COMPILE}",
+        "skip_train_forward=${SKIP_TRAIN_FORWARD}",
+        "attention_backend=${ATTENTION_BACKEND}",
         "canonical_data_root=${CANONICAL_DATA_ROOT}",
         "open rate",
     ):

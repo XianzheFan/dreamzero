@@ -154,6 +154,16 @@ def parse_args() -> argparse.Namespace:
             "classification. close < threshold, open >= threshold."
         ),
     )
+    p.add_argument(
+        "--skip-train-forward",
+        action="store_true",
+        default=_env_flag("OFFLINE_EVAL_SKIP_TRAIN_FORWARD"),
+        help=(
+            "Skip the expensive model.forward(batch) sanity check and run only "
+            "get_action(). Useful for single-GPU offline eval where the training "
+            "forward can OOM before inference is measured."
+        ),
+    )
     return p.parse_args()
 
 
@@ -360,6 +370,11 @@ def move_to_device(batch, device, dtype):
         else:
             out[k] = v
     return out
+
+
+def empty_cuda_cache(device: str) -> None:
+    if device.startswith("cuda") and torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 def find_gt_action(batch: dict) -> tuple[torch.Tensor, torch.Tensor] | tuple[None, None]:
@@ -606,15 +621,20 @@ def main():
             # action_loss for this checkpoint. If THIS number is way off
             # 0.02-0.03, the model isn't loaded correctly. If it's right
             # but inference still gives garbage, the rollout is broken.
-            with torch.no_grad():
-                train_out = model.forward(batch_gpu)
-            train_data = train_out.data if hasattr(train_out, "data") else train_out
-            print(
-                f"[batch {i}] train-mode forward "
-                f"loss={float(train_data['loss']):.4f} "
-                f"dynamics_loss={float(train_data['dynamics_loss']):.4f} "
-                f"action_loss={float(train_data['action_loss']):.4f}"
-            )
+            if args.skip_train_forward:
+                print(f"[batch {i}] train-mode forward skipped")
+            else:
+                with torch.no_grad():
+                    train_out = model.forward(batch_gpu)
+                train_data = train_out.data if hasattr(train_out, "data") else train_out
+                print(
+                    f"[batch {i}] train-mode forward "
+                    f"loss={float(train_data['loss']):.4f} "
+                    f"dynamics_loss={float(train_data['dynamics_loss']):.4f} "
+                    f"action_loss={float(train_data['action_loss']):.4f}"
+                )
+                del train_out, train_data
+            empty_cuda_cache(args.device)
 
             t0 = time.time()
             outputs = model.get_action(batch_gpu)
