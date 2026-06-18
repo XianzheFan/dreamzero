@@ -1,6 +1,8 @@
+import sys
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
-from types import SimpleNamespace
 
 
 def _load_server_module():
@@ -632,6 +634,86 @@ def test_dump_video_pred_manifest_records_comparison_and_eval_context(monkeypatc
         "comparison/infer0002_env0048_agent0_compare.mp4",
         "comparison/infer0002_env0048_agent1_compare.mp4",
     ]
+    assert "observed conditioning-window frame" in entry["pred_video_semantics"]
+
+
+def test_pred_observed_comparison_uses_temporal_observed_window(monkeypatch, tmp_path):
+    policy = _make_policy(_metadata_with_action_stats())
+    mod = _load_server_module()
+    captured_canvases = []
+
+    class _FakeStream:
+        width = 0
+        height = 0
+        pix_fmt = ""
+        options = {}
+
+        def encode(self, frame=None):
+            return []
+
+    class _FakeContainer:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def add_stream(self, *args, **kwargs):
+            return _FakeStream()
+
+        def mux(self, packet):
+            return None
+
+    class _FakeVideoFrame:
+        @staticmethod
+        def from_ndarray(array, format):
+            captured_canvases.append(np.asarray(array).copy())
+            return SimpleNamespace()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "av",
+        SimpleNamespace(
+            open=lambda *args, **kwargs: _FakeContainer(),
+            VideoFrame=_FakeVideoFrame,
+        ),
+    )
+    monkeypatch.setattr(
+        mod.BimanualPolicy,
+        "_label_rgb_frame",
+        staticmethod(lambda frame, label: np.asarray(frame, dtype=np.uint8).copy()),
+    )
+
+    h, w = 32, 16
+    pred = np.full((1, 3, h, w, 3), 220, dtype=np.uint8)
+    observed = {
+        "global": np.stack(
+            [np.full((h, w, 3), v, dtype=np.uint8) for v in (10, 20, 30)],
+            axis=0,
+        ),
+        "agent0": np.stack(
+            [np.full((h, w, 3), v, dtype=np.uint8) for v in (110, 120, 130)],
+            axis=0,
+        ),
+    }
+
+    written = policy._write_pred_observed_comparison(
+        pred_frames=pred,
+        observed_videos=observed,
+        out_dir=tmp_path,
+        prefix="infer0000_env0000",
+    )
+
+    assert written == ["infer0000_env0000_agent0_compare.mp4"]
+    assert len(captured_canvases) == 3
+    np.testing.assert_array_equal(
+        [int(canvas[-1, 0, 0]) for canvas in captured_canvases],
+        [10, 20, 30],
+    )
+    np.testing.assert_array_equal(
+        [int(canvas[-1, w, 0]) for canvas in captured_canvases],
+        [110, 120, 130],
+    )
 
 
 def test_model_resolution_override_updates_config_and_resize_transform(caplog):

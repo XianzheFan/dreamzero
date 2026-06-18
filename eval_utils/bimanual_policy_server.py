@@ -1359,8 +1359,9 @@ class BimanualPolicy:
                 "chunk_start_index": sess.get("last_chunk_start_index"),
                 "shared_global_wrist_window_mode": self.shared_global_wrist_window_mode,
                 "pred_video_semantics": (
-                    "decoded denoised wrist-future latents; comparison panels "
-                    "repeat the current observed global/wrist conditioning frame"
+                    "decoded denoised wrist-future latents; comparison panels use "
+                    "the observed conditioning-window frame at the same displayed "
+                    "index, clamped to the final observed frame"
                 ),
             },
         )
@@ -1432,6 +1433,12 @@ class BimanualPolicy:
         return frames.shape[0] - 1
 
     @staticmethod
+    def _observed_frame_index_for_pred_step(frames: np.ndarray, pred_step: int) -> int:
+        if frames.shape[0] <= 1:
+            return 0
+        return min(max(int(pred_step), 0), frames.shape[0] - 1)
+
+    @staticmethod
     def _resize_rgb_frame(frame: np.ndarray, height: int, width: int) -> np.ndarray:
         frame = np.asarray(frame, dtype=np.uint8)
         if frame.shape[:2] == (height, width):
@@ -1488,8 +1495,6 @@ class BimanualPolicy:
         global_video = np.asarray(observed_videos["global"], dtype=np.uint8)
         if global_video.ndim != 4 or global_video.shape[-1] != 3:
             return []
-        global_idx = self._current_observed_frame_index(global_video)
-        global_frame = self._resize_rgb_frame(global_video[global_idx], H, W)
         written: list[str] = []
         for p in range(P):
             wrist_name = f"agent{p}"
@@ -1501,10 +1506,6 @@ class BimanualPolicy:
                     tuple(wrist_video.shape),
                 )
                 continue
-            wrist_idx = self._current_observed_frame_index(wrist_video)
-            wrist_frame = self._resize_rgb_frame(wrist_video[wrist_idx], H, W)
-            global_panel = self._label_rgb_frame(global_frame, "global current")
-            wrist_panel = self._label_rgb_frame(wrist_frame, f"{wrist_name} current")
             out_name = f"{prefix}_agent{p}_compare.mp4"
             out_path = out_dir / out_name
             with av.open(str(out_path), mode="w") as container:
@@ -1514,6 +1515,18 @@ class BimanualPolicy:
                 stream.pix_fmt = "yuv420p"
                 stream.options = {"crf": "23"}
                 for t in range(T):
+                    global_idx = self._observed_frame_index_for_pred_step(global_video, t)
+                    wrist_idx = self._observed_frame_index_for_pred_step(wrist_video, t)
+                    global_frame = self._resize_rgb_frame(global_video[global_idx], H, W)
+                    wrist_frame = self._resize_rgb_frame(wrist_video[wrist_idx], H, W)
+                    global_panel = self._label_rgb_frame(
+                        global_frame,
+                        f"global obs[{global_idx}]",
+                    )
+                    wrist_panel = self._label_rgb_frame(
+                        wrist_frame,
+                        f"{wrist_name} obs[{wrist_idx}]",
+                    )
                     pred_panel = self._label_rgb_frame(
                         pred_frames[p, t],
                         f"{wrist_name} pred",
