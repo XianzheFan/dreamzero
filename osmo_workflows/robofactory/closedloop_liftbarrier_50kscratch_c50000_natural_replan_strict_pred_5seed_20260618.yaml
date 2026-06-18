@@ -28,7 +28,7 @@ workflow:
 
           RUN_NAME="dz-rf2-lb50k-c50000-natural-replan-strict-pred5seed1000-skip020-xz-20260618"
           DREAMZERO_GIT_URL="https://github.com/XianzheFan/dreamzero.git"
-          DREAMZERO_GIT_COMMIT="97e1d5ca1e5698d0c1390fea682d9b2c0592cdeb"
+          DREAMZERO_GIT_COMMIT="6d8fe59eea29bb157fd770fce5677b27ed789f7a"
           ROBOFACTORY_GIT_URL="https://github.com/MARS-EAI/RoboFactory.git"
           ROBOFACTORY_GIT_COMMIT="5868242322414a91454e22f1dd9641f613ba1bcf"
           DATA_S3_URI="s3://GearHome/users/xianzhef/oci-migration/data/robofactory_lerobot_v2/LiftBarrier-rf-500"
