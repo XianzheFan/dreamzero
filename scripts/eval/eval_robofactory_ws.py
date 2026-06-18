@@ -61,6 +61,7 @@ ENV_TRACE_COLUMNS = np.asarray(
     ],
     dtype="<U32",
 )
+ENV_TRACE_COLUMN_INDEX = {str(name): i for i, name in enumerate(ENV_TRACE_COLUMNS)}
 
 # Module-level wildcard import for env registration -- Python rejects
 # ``from x import *`` inside a function. Only ever imported from the
@@ -479,6 +480,40 @@ def collect_env_trace(env, step: int, action16: np.ndarray | None, info=None) ->
     )
 
 
+def _trace_value(row: np.ndarray, column: str) -> float:
+    return float(np.asarray(row).reshape(-1)[ENV_TRACE_COLUMN_INDEX[column]])
+
+
+def update_liftbarrier_grasp_counts(
+    counts: dict[str, int],
+    trace_row: np.ndarray,
+) -> dict[str, int]:
+    """Accumulate RoboFactory LiftBarrier grasp detections from env trace."""
+    left = _trace_value(trace_row, "left_grasping")
+    right = _trace_value(trace_row, "right_grasping")
+    if np.isfinite(left) and left > 0.5:
+        counts["left"] = counts.get("left", 0) + 1
+    if np.isfinite(right) and right > 0.5:
+        counts["right"] = counts.get("right", 0) + 1
+    return counts
+
+
+def liftbarrier_strict_success(
+    trace_row: np.ndarray,
+    grasp_counts: dict[str, int],
+    min_grasp_count: int,
+) -> bool:
+    """Return true only for simulator success with bilateral grasp evidence."""
+    sim_success = _trace_value(trace_row, "success")
+    if not (np.isfinite(sim_success) and sim_success > 0.5):
+        return False
+    required = max(1, int(min_grasp_count))
+    return (
+        grasp_counts.get("left", 0) >= required
+        and grasp_counts.get("right", 0) >= required
+    )
+
+
 def _trace_obs_qpos(obs):
     try:
         q0 = _to_np(obs["agent"]["panda-0"]["qpos"]).astype(np.float32)
@@ -577,6 +612,8 @@ def run_episode(
     joint_delta_output_clip: float | None,
     joint_delta_scale_reference: str,
     joint_target_slew_rate: float | None,
+    success_mode: str,
+    strict_success_min_grasp_count: int,
     left_joint_delta_scale: float | None = None,
     right_joint_delta_scale: float | None = None,
     dump: dict | None = None,
@@ -594,6 +631,7 @@ def run_episode(
     _ = ws.recv()  # ack
 
     last_commanded = extract_qpos(raw_obs)
+    grasp_counts = {"left": 0, "right": 0}
     steps = 0
     while steps < max_steps:
         head, left, right, qpos = extract_obs(raw_obs)
@@ -663,9 +701,16 @@ def run_episode(
             raw_obs, reward, term, trunc, info = env.step(env_action_dict(abs16))
             steps += 1
             last_commanded = abs16.copy()
+            trace_row = (
+                collect_env_trace(env, steps, abs16, info)
+                if dump is not None or success_mode == "strict-lift"
+                else None
+            )
+            if trace_row is not None:
+                update_liftbarrier_grasp_counts(grasp_counts, trace_row)
             if dump is not None:
                 dump["exec_action"].append(abs16.copy())
-                dump["env_trace"].append(collect_env_trace(env, steps, abs16, info))
+                dump["env_trace"].append(trace_row)
                 dump["trace"].append(
                     _trace_state(
                         env,
@@ -686,6 +731,15 @@ def run_episode(
                 joint_delta_scale_reference,
             )
             if _bool_from(info.get("success", False)):
+                if success_mode == "strict-lift":
+                    return (
+                        liftbarrier_strict_success(
+                            trace_row,
+                            grasp_counts,
+                            strict_success_min_grasp_count,
+                        ),
+                        steps,
+                    )
                 return True, steps
             if _bool_from(term) or _bool_from(trunc):
                 return False, steps
@@ -809,6 +863,25 @@ def main():
         ),
     )
     ap.add_argument(
+        "--success-mode",
+        choices=("sim", "strict-lift"),
+        default="sim",
+        help=(
+            "Success accounting mode. 'sim' uses RoboFactory info['success']; "
+            "'strict-lift' only counts LiftBarrier success when both arms have "
+            "positive is_grasping(barrier) evidence before/at simulator success."
+        ),
+    )
+    ap.add_argument(
+        "--strict-success-min-grasp-count",
+        type=int,
+        default=1,
+        help=(
+            "With --success-mode=strict-lift, each arm must be observed grasping "
+            "the barrier at least this many env-trace frames before/at success."
+        ),
+    )
+    ap.add_argument(
         "--allow-absolute-joint-delta-scale",
         action="store_true",
         help=(
@@ -853,6 +926,11 @@ def main():
         f"ref={args.joint_delta_scale_reference}"
     )
     print(f"Target slew:   {args.joint_target_slew_rate}", flush=True)
+    print(
+        f"Success mode:  {args.success_mode} "
+        f"min_grasp_count={args.strict_success_min_grasp_count}",
+        flush=True,
+    )
     if args.left_joint_delta_scale is not None or args.right_joint_delta_scale is not None:
         effective_left = (
             args.joint_delta_scale
@@ -980,6 +1058,8 @@ def main():
                         "joint_delta_output_clip": args.joint_delta_output_clip,
                         "joint_delta_scale_reference": args.joint_delta_scale_reference,
                         "joint_target_slew_rate": args.joint_target_slew_rate,
+                        "success_mode": args.success_mode,
+                        "strict_success_min_grasp_count": args.strict_success_min_grasp_count,
                         "effective_joint_delta_scale": effective_joint_delta_scale,
                         "effective_left_joint_delta_scale": effective_left_joint_delta_scale,
                         "effective_right_joint_delta_scale": effective_right_joint_delta_scale,
@@ -1053,6 +1133,8 @@ def main():
                 joint_delta_output_clip=effective_joint_delta_output_clip,
                 joint_delta_scale_reference=args.joint_delta_scale_reference,
                 joint_target_slew_rate=args.joint_target_slew_rate,
+                success_mode=args.success_mode,
+                strict_success_min_grasp_count=args.strict_success_min_grasp_count,
                 left_joint_delta_scale=effective_left_joint_delta_scale,
                 right_joint_delta_scale=effective_right_joint_delta_scale,
                 dump=dump,

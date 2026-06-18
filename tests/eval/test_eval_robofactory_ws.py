@@ -280,3 +280,38 @@ def test_collect_env_trace_records_liftbarrier_geometry():
     assert trace[columns.index("cmd_right_gripper")] == 1.0
     np.testing.assert_allclose(trace[columns.index("left_tcp_to_grasp_target")], 0.0)
     np.testing.assert_allclose(trace[columns.index("right_tcp_to_grasp_target")], 0.0)
+
+
+def test_liftbarrier_strict_success_requires_bilateral_grasp_history():
+    mod = _load_eval_module()
+    columns = tuple(str(x) for x in mod.ENV_TRACE_COLUMNS)
+    trace = np.zeros(len(columns), dtype=np.float32)
+    trace[columns.index("success")] = 1.0
+    trace[columns.index("left_grasping")] = 1.0
+    trace[columns.index("right_grasping")] = 0.0
+
+    counts = {"left": 0, "right": 0}
+    mod.update_liftbarrier_grasp_counts(counts, trace)
+
+    assert counts == {"left": 1, "right": 0}
+    assert not mod.liftbarrier_strict_success(trace, counts, min_grasp_count=1)
+
+    trace[columns.index("left_grasping")] = 0.0
+    trace[columns.index("right_grasping")] = 1.0
+    mod.update_liftbarrier_grasp_counts(counts, trace)
+
+    assert counts == {"left": 1, "right": 1}
+    assert mod.liftbarrier_strict_success(trace, counts, min_grasp_count=1)
+
+
+def test_liftbarrier_strict_success_still_requires_sim_success():
+    mod = _load_eval_module()
+    columns = tuple(str(x) for x in mod.ENV_TRACE_COLUMNS)
+    trace = np.zeros(len(columns), dtype=np.float32)
+    trace[columns.index("success")] = 0.0
+
+    assert not mod.liftbarrier_strict_success(
+        trace,
+        {"left": 5, "right": 5},
+        min_grasp_count=1,
+    )
