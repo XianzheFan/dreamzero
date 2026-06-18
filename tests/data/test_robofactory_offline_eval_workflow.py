@@ -47,11 +47,11 @@ def test_liftbarrier_offline_eval_workflow_defaults_to_ckpt500_and_cached_code()
     assert defaults["ckpt_wait_interval_seconds"] == "120"
 
     resources = workflow["workflow"]["resources"]["default"]
-    assert resources["cpu"] == 15
-    assert resources["gpu"] == 1
-    assert resources["platform"] == "ovx-l40"
-    assert resources["memory"] == "120Gi"
-    assert resources["storage"] == "620Gi"
+    assert resources["cpu"] == 84
+    assert resources["gpu"] == 8
+    assert resources["platform"] == "dgx-h100"
+    assert resources["memory"] == "1681Gi"
+    assert resources["storage"] == "803Gi"
 
 
 def test_liftbarrier_offline_eval_workflow_restores_complete_checkpoint_safely():

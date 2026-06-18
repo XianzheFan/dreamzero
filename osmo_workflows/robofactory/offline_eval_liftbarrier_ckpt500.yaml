@@ -5,11 +5,11 @@ workflow:
   name: "{{workflow_name}}"
   resources:
     default:
-      cpu: 15
-      gpu: 1
-      memory: 120Gi
-      storage: 620Gi
-      platform: ovx-l40
+      cpu: 84
+      gpu: 8
+      memory: 1681Gi
+      storage: 803Gi
+      platform: dgx-h100
   tasks:
     - name: offline-eval
       image: nvcr.io/nvidian/gear-h100-train:latest
