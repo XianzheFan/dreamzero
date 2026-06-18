@@ -293,6 +293,49 @@ def test_legacy_delta_representation_keeps_joint_delta_controls():
     assert resolved == (3.0, None, 0.5, None, 4.0, False)
 
 
+def test_select_executable_action_chunk_can_start_late_in_horizon():
+    mod = _load_eval_module()
+    actions = np.arange(24 * 16, dtype=np.float32).reshape(24, 16)
+
+    selected = mod.select_executable_action_chunk(
+        actions,
+        replan_every=4,
+        chunk_start_index=20,
+    )
+
+    np.testing.assert_allclose(selected, actions[20:24])
+
+
+def test_select_executable_action_chunk_clamps_tail_window():
+    mod = _load_eval_module()
+    actions = np.arange(24 * 16, dtype=np.float32).reshape(24, 16)
+
+    selected = mod.select_executable_action_chunk(
+        actions,
+        replan_every=8,
+        chunk_start_index=20,
+    )
+
+    np.testing.assert_allclose(selected, actions[20:24])
+
+
+def test_select_executable_action_chunk_rejects_invalid_window():
+    mod = _load_eval_module()
+    actions = np.zeros((24, 16), dtype=np.float32)
+
+    for replan_every, chunk_start_index in ((0, 0), (4, -1), (4, 24)):
+        try:
+            mod.select_executable_action_chunk(
+                actions,
+                replan_every=replan_every,
+                chunk_start_index=chunk_start_index,
+            )
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("invalid executable action chunk should fail")
+
+
 def _fake_obs(qpos0, qpos1):
     return {
         "agent": {

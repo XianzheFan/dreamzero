@@ -45,6 +45,8 @@ def test_liftbarrier_train_workflow_defaults_to_cached_code_and_500_episode_data
         "s3://GearHome/users/xianzhef/oci-migration/data/robofactory_lerobot_v2/LiftBarrier-rf-500"
     )
     assert defaults["max_steps"] == "50000"
+    assert defaults["joint_motion_action_loss_weight"] == "1.0"
+    assert defaults["joint_motion_action_loss_threshold"] == "0.0"
 
     resources = workflow["workflow"]["resources"]["default"]
     assert resources["gpu"] == 8
@@ -74,6 +76,7 @@ def test_liftbarrier_train_workflow_verifies_code_cache_and_robofactory_dataset(
         "DATASET_SHARD_SAMPLING_RATE",
         "gripper_binary_action_loss_weight",
         "_compute_gripper_binary_action_loss",
+        "joint_motion_action_loss_weight",
         "agent_action_dims: [[0, 8], [8, 16]]",
     ):
         assert marker in script
@@ -117,6 +120,18 @@ def test_liftbarrier_train_workflow_passes_shared_global_binary_gripper_training
         'export GRIPPER_BINARY_MAX_SIGMA="${GRIPPER_BINARY_MAX_SIGMA:-0.75}"',
         'export ACTION_PREFIX_LOSS_WEIGHT="${ACTION_PREFIX_LOSS_WEIGHT:-2.0}"',
         'export ACTION_PREFIX_LOSS_LEN="${ACTION_PREFIX_LOSS_LEN:-8}"',
+        'export JOINT_MOTION_ACTION_LOSS_WEIGHT="${JOINT_MOTION_ACTION_LOSS_WEIGHT:-{{joint_motion_action_loss_weight}}}"',
+        'export JOINT_MOTION_ACTION_LOSS_THRESHOLD="${JOINT_MOTION_ACTION_LOSS_THRESHOLD:-{{joint_motion_action_loss_threshold}}}"',
+        'WAN_CKPT_DIR="${WAN_CKPT_DIR:-/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/Wan2.1-I2V-14B-480P}"',
+        'TOKENIZER_DIR="${TOKENIZER_DIR:-/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/umt5-xxl}"',
+        'PRETRAINED_DIR="${PRETRAINED_DIR:-/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/DreamZero-DROID}"',
+        'Using existing Wan2.1 checkpoint at $WAN_CKPT_DIR',
+        'Using existing umt5 tokenizer at $TOKENIZER_DIR',
+        'Using existing DreamZero-DROID checkpoint at $PRETRAINED_DIR',
+        'WAN_CKPT_DIR="/workspace/checkpoints/Wan2.1-I2V-14B-480P"',
+        'TOKENIZER_DIR="/workspace/checkpoints/umt5-xxl-tokenizer"',
+        'PRETRAINED_DIR="/workspace/checkpoints/DreamZero-DROID"',
+        'cp -an "${resolved}/." "$dest/"',
         "bash scripts/train/robofactory_bimanual_training.sh",
     ):
         assert marker in script
@@ -127,6 +142,8 @@ def test_liftbarrier_train_workflow_passes_shared_global_binary_gripper_training
         "GRIPPER_BINARY_CLOSE_ACTION_LOSS_WEIGHT=$GRIPPER_BINARY_CLOSE_ACTION_LOSS_WEIGHT",
         "GRIPPER_BINARY_LOGIT_SCALE=$GRIPPER_BINARY_LOGIT_SCALE",
         "GRIPPER_BINARY_MAX_SIGMA=$GRIPPER_BINARY_MAX_SIGMA",
+        "JOINT_MOTION_ACTION_LOSS_WEIGHT=$JOINT_MOTION_ACTION_LOSS_WEIGHT",
+        "JOINT_MOTION_ACTION_LOSS_THRESHOLD=$JOINT_MOTION_ACTION_LOSS_THRESHOLD",
     ):
         assert marker in script
 

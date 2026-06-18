@@ -425,6 +425,41 @@ def test_config_zero_values_are_honored_in_loss_helpers():
     assert clean_loss.item() == 1.0
 
 
+def test_joint_motion_action_loss_weights_large_non_gripper_targets():
+    Cls = _load_head_cls()
+    head = Cls.__new__(Cls)
+    torch.nn.Module.__init__(head)
+    head.config = types.SimpleNamespace(
+        action_loss_weight=1.0,
+        gripper_action_loss_weight=1.0,
+        gripper_close_action_loss_weight=1.0,
+        gripper_close_threshold=0.0,
+        action_prefix_loss_weight=1.0,
+        action_prefix_loss_len=0,
+        joint_motion_action_loss_weight=5.0,
+        joint_motion_action_loss_threshold=0.2,
+        gripper_action_dims=[1],
+    )
+
+    actions = torch.tensor(
+        [[[[0.10, -0.90, 0.30, 0.00], [0.25, 0.80, -0.10, -0.40]]]],
+        dtype=torch.float32,
+    )
+
+    weighted = head._apply_action_loss_weights(
+        torch.ones_like(actions),
+        actions=actions,
+    )
+
+    torch.testing.assert_close(
+        weighted,
+        torch.tensor(
+            [[[[1.0, 1.0, 5.0, 1.0], [5.0, 1.0, 1.0, 5.0]]]],
+            dtype=torch.float32,
+        ),
+    )
+
+
 def test_gripper_clean_action_loss_ignores_fake_or_masked_actions():
     Cls = _load_head_cls()
     head = Cls.__new__(Cls)

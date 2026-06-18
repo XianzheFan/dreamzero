@@ -1,0 +1,211 @@
+version: 2
+workflow:
+  name: dz-rf2-lb500-dataset-actionstats-xz-20260618-2
+  resources:
+    default:
+      cpu: 8
+      gpu: 1
+      memory: 80Gi
+      storage: 220Gi
+      platform: ovx-l40
+  timeout:
+    queue_timeout: 2h
+    exec_timeout: 2h
+  tasks:
+    - name: inspect
+      image: nvcr.io/nvidian/groot-ci-base-eval:latest
+      command: ["bash"]
+      args: ["/tmp/inspect_liftbarrier_dataset_action_stats.sh"]
+      credentials:
+        gear-aws-cred:
+          AWS_ACCESS_KEY_ID: aws_access_key_id
+          AWS_SECRET_ACCESS_KEY: aws_secret_access_key
+          AWS_DEFAULT_REGION: aws_default_region
+          AWS_ENDPOINT_URL: aws_endpoint_url
+        gear-data-credentials:
+          GEAR_DATA_CREDENTIALS: data_credentials
+      environment:
+        ACCEPT_EULA: "Y"
+        NO_NUCLEUS: "Y"
+        NVIDIA_DRIVER_CAPABILITIES: "all"
+      files:
+        - path: /tmp/inspect_liftbarrier_dataset_action_stats.sh
+          contents: |
+            #!/usr/bin/env bash
+            set -euo pipefail
+
+            exec > >(tee /tmp/inspect_liftbarrier_dataset_action_stats.log) 2>&1
+
+            RUN_NAME="dz-rf2-lb500-dataset-actionstats-xz-20260618-2"
+            DATA_S3_URI="s3://GearHome/users/xianzhef/oci-migration/data/robofactory_lerobot_v2/LiftBarrier-rf-500"
+            RUN_S3_ROOT="s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/${RUN_NAME}"
+
+            for uri in "$DATA_S3_URI" "$RUN_S3_ROOT"; do
+              case "$uri" in
+                s3://GearHome/users/xianzhef/*) ;;
+                *) echo "Refusing non-xianzhef S3 URI: $uri" >&2; exit 64 ;;
+              esac
+            done
+
+            upload_artifacts() {
+              local status="${1:-$?}"
+              set +e
+              mkdir -p /workspace/artifacts
+              cp -f /tmp/inspect_liftbarrier_dataset_action_stats.log /workspace/artifacts/
+              echo "Uploading dataset inspection artifacts to ${RUN_S3_ROOT}/"
+              osmo data upload "${RUN_S3_ROOT}/" /workspace/artifacts
+              exit "$status"
+            }
+            trap 'upload_artifacts $?' EXIT
+
+            export PYTHONUNBUFFERED=1
+            export PIP_ROOT_USER_ACTION=ignore
+            mkdir -p /workspace/data/LiftBarrier-rf /workspace/artifacts
+
+            python -m pip install -q --no-cache-dir "numpy==1.26.4" pandas pyarrow
+
+            echo "Downloading RoboFactory LiftBarrier-rf-500 data from ${DATA_S3_URI}/"
+            osmo data download --resume "${DATA_S3_URI}/" /workspace/data/LiftBarrier-rf
+
+            python - <<'PY'
+            import json
+            from pathlib import Path
+
+            import numpy as np
+            import pandas as pd
+
+            candidates = [
+                Path("/workspace/data/LiftBarrier-rf"),
+                Path("/workspace/data/LiftBarrier-rf/LiftBarrier-rf-500"),
+            ]
+            data_root = None
+            for candidate in candidates:
+                if (candidate / "meta").is_dir() and list(candidate.glob("data/*/*.parquet")):
+                    data_root = candidate
+                    break
+            if data_root is None:
+                raise SystemExit("could not locate LeRobot dataset root under /workspace/data/LiftBarrier-rf")
+
+            print(f"DATA_ROOT={data_root}", flush=True)
+            parquet_paths = sorted(data_root.glob("data/*/*.parquet"))
+            print(f"PARQUET_FILES={len(parquet_paths)}", flush=True)
+
+            state_key = "observation.state"
+            action_key = "action"
+            horizons = list(range(24))
+            joint_dims = [*range(0, 7), *range(8, 15)]
+
+            def load_json(name):
+                path = data_root / "meta" / name
+                if not path.exists():
+                    return None
+                with path.open("r") as f:
+                    return json.load(f)
+
+            def stack_col(df, key):
+                values = df[key].to_numpy()
+                rows = [np.asarray(v, dtype=np.float32).reshape(-1) for v in values]
+                return np.vstack(rows)
+
+            abs_delta_by_h = {h: [] for h in horizons}
+            abs_delta_left_by_h = {h: [] for h in horizons}
+            abs_delta_right_by_h = {h: [] for h in horizons}
+            close_left_by_h = {h: [] for h in horizons}
+            close_right_by_h = {h: [] for h in horizons}
+            target_step_delta = []
+            state_step_delta = []
+            n_windows = 0
+            n_frames = 0
+            n_episodes = 0
+
+            for parquet_path in parquet_paths:
+                cols = ["episode_index", "frame_index", state_key, action_key]
+                df = pd.read_parquet(parquet_path, columns=cols)
+                for _, ep_df in df.groupby("episode_index", sort=False):
+                    ep_df = ep_df.sort_values("frame_index")
+                    state = stack_col(ep_df, state_key)
+                    action = stack_col(ep_df, action_key)
+                    if state.shape[1] < 16 or action.shape[1] < 16:
+                        raise ValueError(
+                            f"expected at least 16 state/action dims, got state={state.shape} action={action.shape}"
+                        )
+                    n = len(ep_df)
+                    n_frames += n
+                    n_episodes += 1
+                    if n > 1:
+                        target_step_delta.append(np.abs(np.diff(action[:, joint_dims], axis=0)).reshape(-1))
+                        state_step_delta.append(np.abs(np.diff(state[:, joint_dims], axis=0)).reshape(-1))
+                    if n <= max(horizons):
+                        continue
+                    for base in range(0, n - max(horizons)):
+                        ref = state[base]
+                        for h in horizons:
+                            rel = action[base + h] - ref
+                            abs_delta_by_h[h].append(np.abs(rel[joint_dims]))
+                            abs_delta_left_by_h[h].append(np.abs(rel[:7]))
+                            abs_delta_right_by_h[h].append(np.abs(rel[8:15]))
+                            close_left_by_h[h].append(float(action[base + h, 7] < 0.0))
+                            close_right_by_h[h].append(float(action[base + h, 15] < 0.0))
+                        n_windows += 1
+
+            def summarize(values):
+                if not values:
+                    return None
+                arr = np.concatenate([np.asarray(v, dtype=np.float32).reshape(-1) for v in values])
+                return {
+                    "mean_abs": float(np.mean(arr)),
+                    "p50_abs": float(np.quantile(arr, 0.50)),
+                    "p90_abs": float(np.quantile(arr, 0.90)),
+                    "p95_abs": float(np.quantile(arr, 0.95)),
+                    "p99_abs": float(np.quantile(arr, 0.99)),
+                    "max_abs": float(np.max(arr)),
+                }
+
+            per_horizon = {}
+            for h in horizons:
+                row = summarize(abs_delta_by_h[h])
+                row["left"] = summarize(abs_delta_left_by_h[h])
+                row["right"] = summarize(abs_delta_right_by_h[h])
+                row["left_close_frac"] = float(np.mean(close_left_by_h[h]))
+                row["right_close_frac"] = float(np.mean(close_right_by_h[h]))
+                per_horizon[str(h)] = row
+
+            stats = load_json("stats.json")
+            relative_stats = load_json("relative_stats_dreamzero.json")
+            relative_horizon_stats = load_json("relative_horizon_stats_dreamzero.json")
+
+            summary = {
+                "data_root": str(data_root),
+                "n_parquet_files": len(parquet_paths),
+                "n_episodes": n_episodes,
+                "n_frames": n_frames,
+                "n_windows": n_windows,
+                "horizons": horizons,
+                "teacher_relative_joint_delta_per_horizon": per_horizon,
+                "teacher_target_step_joint_delta": summarize(target_step_delta),
+                "teacher_state_step_joint_delta": summarize(state_step_delta),
+                "meta_info": load_json("info.json"),
+                "meta_modality": load_json("modality.json"),
+                "stats_subset": {
+                    key: stats.get(key) for key in (action_key, state_key)
+                } if isinstance(stats, dict) else None,
+                "relative_stats_dreamzero": relative_stats,
+                "relative_horizon_stats_dreamzero": relative_horizon_stats,
+            }
+
+            out = Path("/workspace/artifacts/teacher_action_stats.json")
+            out.write_text(json.dumps(summary, indent=2, sort_keys=True))
+            print(json.dumps({
+                "n_episodes": n_episodes,
+                "n_frames": n_frames,
+                "n_windows": n_windows,
+                "h0": per_horizon["0"],
+                "h12": per_horizon["12"],
+                "h20": per_horizon["20"],
+                "h23": per_horizon["23"],
+                "target_step_delta": summary["teacher_target_step_joint_delta"],
+            }, indent=2, sort_keys=True), flush=True)
+            PY
+
+            echo "Inspection artifacts:"
+            find /workspace/artifacts -maxdepth 1 -type f -print | sort

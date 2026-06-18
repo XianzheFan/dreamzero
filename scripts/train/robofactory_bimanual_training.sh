@@ -133,6 +133,8 @@ GRIPPER_BINARY_LOGIT_SCALE=${GRIPPER_BINARY_LOGIT_SCALE:-4.0}
 GRIPPER_BINARY_MAX_SIGMA=${GRIPPER_BINARY_MAX_SIGMA:-0.75}
 ACTION_PREFIX_LOSS_WEIGHT=${ACTION_PREFIX_LOSS_WEIGHT:-2.0}
 ACTION_PREFIX_LOSS_LEN=${ACTION_PREFIX_LOSS_LEN:-8}
+JOINT_MOTION_ACTION_LOSS_WEIGHT=${JOINT_MOTION_ACTION_LOSS_WEIGHT:-1.0}
+JOINT_MOTION_ACTION_LOSS_THRESHOLD=${JOINT_MOTION_ACTION_LOSS_THRESHOLD:-0.0}
 MODEL_MAX_STATE_DIM=${MODEL_MAX_STATE_DIM:-8}
 MODEL_ACTION_DIM=${MODEL_ACTION_DIM:-8}
 AGENT_STATE_PAD_DIM=${AGENT_STATE_PAD_DIM:-null}
@@ -199,6 +201,7 @@ fi
 echo "save_steps=$SAVE_STEPS  save_total_limit=$SAVE_TOTAL_LIMIT"
 echo "dataset_shard_sampling_rate=$DATASET_SHARD_SAMPLING_RATE"
 echo "action_loss_weight=$ACTION_LOSS_WEIGHT  gripper_action_loss_weight=$GRIPPER_ACTION_LOSS_WEIGHT  gripper_close_action_loss_weight=$GRIPPER_CLOSE_ACTION_LOSS_WEIGHT  gripper_close_threshold=$GRIPPER_CLOSE_THRESHOLD  gripper_action_dims=[$GRIPPER_ACTION_DIMS]  gripper_clean_action_loss_weight=$GRIPPER_CLEAN_ACTION_LOSS_WEIGHT  gripper_clean_close_action_loss_weight=$GRIPPER_CLEAN_CLOSE_ACTION_LOSS_WEIGHT  gripper_clean_max_sigma=$GRIPPER_CLEAN_MAX_SIGMA  action_prefix_loss_weight=$ACTION_PREFIX_LOSS_WEIGHT  action_prefix_loss_len=$ACTION_PREFIX_LOSS_LEN"
+echo "joint_motion_action_loss_weight=$JOINT_MOTION_ACTION_LOSS_WEIGHT  joint_motion_action_loss_threshold=$JOINT_MOTION_ACTION_LOSS_THRESHOLD"
 echo "gripper_binary_action_loss_weight=$GRIPPER_BINARY_ACTION_LOSS_WEIGHT  gripper_binary_close_action_loss_weight=$GRIPPER_BINARY_CLOSE_ACTION_LOSS_WEIGHT  gripper_binary_logit_scale=$GRIPPER_BINARY_LOGIT_SCALE  gripper_binary_max_sigma=$GRIPPER_BINARY_MAX_SIGMA"
 echo "model_max_state_dim=$MODEL_MAX_STATE_DIM  model_action_dim=$MODEL_ACTION_DIM  agent_state_pad_dim=$AGENT_STATE_PAD_DIM  agent_action_pad_dim=$AGENT_ACTION_PAD_DIM"
 echo "num_nodes=$NUM_NODES  node_rank=$NODE_RANK  num_gpus_per_node=$NUM_GPUS  total_gpus=$TOTAL_GPUS  master_addr=${MASTER_ADDR:-standalone}  master_port=$MASTER_PORT  global_batch_size=${GLOBAL_BATCH_SIZE:-unset}"
@@ -286,6 +289,8 @@ torchrun "${TORCHRUN_ARGS[@]}" groot/vla/experiment/experiment.py \
     ++action_head_cfg.config.gripper_binary_max_sigma=$GRIPPER_BINARY_MAX_SIGMA \
     ++action_head_cfg.config.action_prefix_loss_weight=$ACTION_PREFIX_LOSS_WEIGHT \
     ++action_head_cfg.config.action_prefix_loss_len=$ACTION_PREFIX_LOSS_LEN \
+    ++action_head_cfg.config.joint_motion_action_loss_weight=$JOINT_MOTION_ACTION_LOSS_WEIGHT \
+    ++action_head_cfg.config.joint_motion_action_loss_threshold=$JOINT_MOTION_ACTION_LOSS_THRESHOLD \
     ++action_head_cfg.config.max_state_dim=$MODEL_MAX_STATE_DIM \
     ++action_head_cfg.config.action_dim=$MODEL_ACTION_DIM \
     ++action_head_cfg.config.diffusion_model_cfg.num_agents=$NUM_ARMS \

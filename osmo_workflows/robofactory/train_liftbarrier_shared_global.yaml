@@ -188,14 +188,7 @@ workflow:
                 return 0
               fi
               echo "Promoting nested model cache from ${resolved} into ${dest}."
-              case "$resolved" in
-                "$dest"/*)
-                  find "$resolved" -mindepth 1 -maxdepth 1 -exec mv -n -t "$dest" {} +
-                  ;;
-                *)
-                  cp -an "${resolved}/." "$dest/"
-                  ;;
-              esac
+              cp -an "${resolved}/." "$dest/"
             }
 
             download_or_restore_model() {
@@ -353,11 +346,13 @@ workflow:
             require_code_marker \
               scripts/train/robofactory_bimanual_training.sh \
               "DATASET_SHARD_SAMPLING_RATE" \
-              "gripper_binary_action_loss_weight"
+              "gripper_binary_action_loss_weight" \
+              "joint_motion_action_loss_weight"
             require_code_marker \
               groot/vla/model/dreamzero/action_head/wan_flow_matching_action_tf.py \
               "gripper_binary_action_loss_weight" \
-              "_compute_gripper_binary_action_loss"
+              "_compute_gripper_binary_action_loss" \
+              "joint_motion_action_loss_weight"
             require_code_marker \
               groot/vla/configs/data/dreamzero/robofactory_bimanual_shared_global.yaml \
               "agent_action_dims: [[0, 8], [8, 16]]"
@@ -403,13 +398,28 @@ workflow:
               python -m pip install -e . --no-deps
             fi
 
-            WAN_CKPT_DIR="/workspace/checkpoints/Wan2.1-I2V-14B-480P"
-            TOKENIZER_DIR="/workspace/checkpoints/umt5-xxl-tokenizer"
-            PRETRAINED_DIR="/workspace/checkpoints/DreamZero-DROID"
+            WAN_CKPT_DIR="${WAN_CKPT_DIR:-/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/Wan2.1-I2V-14B-480P}"
+            TOKENIZER_DIR="${TOKENIZER_DIR:-/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/umt5-xxl}"
+            PRETRAINED_DIR="${PRETRAINED_DIR:-/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/DreamZero-DROID}"
 
-            download_or_restore_model "Wan2.1-I2V-14B-480P" "Wan-AI/Wan2.1-I2V-14B-480P" "model" "$WAN_CKPT_DIR"
-            download_or_restore_tokenizer "umt5-xxl-tokenizer" "google/umt5-xxl" "$TOKENIZER_DIR"
-            download_or_restore_model "DreamZero-DROID" "GEAR-Dreams/DreamZero-DROID" "model" "$PRETRAINED_DIR"
+            if model_dir_is_usable "Wan2.1-I2V-14B-480P" "$WAN_CKPT_DIR"; then
+              echo "Using existing Wan2.1 checkpoint at $WAN_CKPT_DIR"
+            else
+              WAN_CKPT_DIR="/workspace/checkpoints/Wan2.1-I2V-14B-480P"
+              download_or_restore_model "Wan2.1-I2V-14B-480P" "Wan-AI/Wan2.1-I2V-14B-480P" "model" "$WAN_CKPT_DIR"
+            fi
+            if valid_tokenizer_dir "$TOKENIZER_DIR"; then
+              echo "Using existing umt5 tokenizer at $TOKENIZER_DIR"
+            else
+              TOKENIZER_DIR="/workspace/checkpoints/umt5-xxl-tokenizer"
+              download_or_restore_tokenizer "umt5-xxl-tokenizer" "google/umt5-xxl" "$TOKENIZER_DIR"
+            fi
+            if model_dir_is_usable "DreamZero-DROID" "$PRETRAINED_DIR"; then
+              echo "Using existing DreamZero-DROID checkpoint at $PRETRAINED_DIR"
+            else
+              PRETRAINED_DIR="/workspace/checkpoints/DreamZero-DROID"
+              download_or_restore_model "DreamZero-DROID" "GEAR-Dreams/DreamZero-DROID" "model" "$PRETRAINED_DIR"
+            fi
 
             export NUM_GPUS=8
             export NUM_ARMS=2
@@ -434,6 +444,8 @@ workflow:
             export GRIPPER_BINARY_MAX_SIGMA="${GRIPPER_BINARY_MAX_SIGMA:-0.75}"
             export ACTION_PREFIX_LOSS_WEIGHT="${ACTION_PREFIX_LOSS_WEIGHT:-2.0}"
             export ACTION_PREFIX_LOSS_LEN="${ACTION_PREFIX_LOSS_LEN:-8}"
+            export JOINT_MOTION_ACTION_LOSS_WEIGHT="${JOINT_MOTION_ACTION_LOSS_WEIGHT:-{{joint_motion_action_loss_weight}}}"
+            export JOINT_MOTION_ACTION_LOSS_THRESHOLD="${JOINT_MOTION_ACTION_LOSS_THRESHOLD:-{{joint_motion_action_loss_threshold}}}"
             export REPORT_TO=wandb
             export WANDB_PROJECT=dreamzero_robofactory
             export WANDB_RUN_NAME="$RUN_NAME"
@@ -569,6 +581,8 @@ workflow:
             echo "GRIPPER_BINARY_CLOSE_ACTION_LOSS_WEIGHT=$GRIPPER_BINARY_CLOSE_ACTION_LOSS_WEIGHT"
             echo "GRIPPER_BINARY_LOGIT_SCALE=$GRIPPER_BINARY_LOGIT_SCALE"
             echo "GRIPPER_BINARY_MAX_SIGMA=$GRIPPER_BINARY_MAX_SIGMA"
+            echo "JOINT_MOTION_ACTION_LOSS_WEIGHT=$JOINT_MOTION_ACTION_LOSS_WEIGHT"
+            echo "JOINT_MOTION_ACTION_LOSS_THRESHOLD=$JOINT_MOTION_ACTION_LOSS_THRESHOLD"
             bash scripts/train/robofactory_bimanual_training.sh
 
 default-values:
@@ -584,3 +598,5 @@ default-values:
   save_steps: "500"
   save_total_limit: "4"
   learning_rate: "1e-5"
+  joint_motion_action_loss_weight: "1.0"
+  joint_motion_action_loss_threshold: "0.0"

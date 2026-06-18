@@ -31,6 +31,19 @@ def test_robofactory_training_script_passes_binary_gripper_loss_knobs():
         assert marker in script
 
 
+def test_robofactory_training_script_passes_joint_motion_loss_knobs():
+    script = SCRIPT_PATH.read_text()
+
+    for marker in (
+        "JOINT_MOTION_ACTION_LOSS_WEIGHT=${JOINT_MOTION_ACTION_LOSS_WEIGHT:-1.0}",
+        "JOINT_MOTION_ACTION_LOSS_THRESHOLD=${JOINT_MOTION_ACTION_LOSS_THRESHOLD:-0.0}",
+        "joint_motion_action_loss_weight=$JOINT_MOTION_ACTION_LOSS_WEIGHT",
+        "++action_head_cfg.config.joint_motion_action_loss_weight=$JOINT_MOTION_ACTION_LOSS_WEIGHT",
+        "++action_head_cfg.config.joint_motion_action_loss_threshold=$JOINT_MOTION_ACTION_LOSS_THRESHOLD",
+    ):
+        assert marker in script
+
+
 def test_robofactory_training_script_uses_full_dataset_sampling_by_default():
     script = SCRIPT_PATH.read_text()
 

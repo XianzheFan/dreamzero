@@ -253,6 +253,26 @@ def resolve_joint_delta_controls(
     return 1.0, None, None, None, None, True
 
 
+def select_executable_action_chunk(
+    actions: np.ndarray,
+    *,
+    replan_every: int,
+    chunk_start_index: int,
+) -> np.ndarray:
+    """Select the predicted action-horizon window to execute this replan."""
+    if replan_every <= 0:
+        raise ValueError(f"replan_every must be > 0, got {replan_every}")
+    if chunk_start_index < 0:
+        raise ValueError(f"chunk_start_index must be >= 0, got {chunk_start_index}")
+    if chunk_start_index >= actions.shape[0]:
+        raise ValueError(
+            "chunk_start_index must be inside the predicted action chunk: "
+            f"got {chunk_start_index} for chunk length {actions.shape[0]}"
+        )
+    stop = min(actions.shape[0], chunk_start_index + replan_every)
+    return actions[chunk_start_index:stop]
+
+
 def env_action_dict(abs16: np.ndarray) -> dict:
     return {
         "panda-0": np.asarray(abs16[0:8], dtype=np.float32),
@@ -619,6 +639,7 @@ def run_episode(
     seed: int,
     prompt: str,
     replan_every: int,
+    chunk_start_index: int,
     max_steps: int,
     action_representation: str,
     gripper_override: str,
@@ -695,9 +716,18 @@ def run_episode(
                     np.asarray(reply["action_norm_clipped"], dtype=np.float32).copy()
                 )
 
+        execute_actions = select_executable_action_chunk(
+            actions,
+            replan_every=replan_every,
+            chunk_start_index=chunk_start_index,
+        )
+        if dump is not None:
+            dump["exec_chunk_start_index"].append(int(chunk_start_index))
+            dump["exec_chunk_stop_index"].append(int(chunk_start_index + len(execute_actions)))
+
         cur = qpos.copy()
         chunk_reference = qpos.copy()
-        for da in actions[:replan_every]:
+        for da in execute_actions:
             abs16 = integrate_action(da, cur, action_representation)
             scale_reference = chunk_reference if joint_delta_scale_reference == "chunk" else cur
             abs16 = scale_joint_target_delta(
@@ -780,6 +810,16 @@ def main():
     ap.add_argument("--num-episodes", default=10, type=int)
     ap.add_argument("--max-steps", default=300, type=int)
     ap.add_argument("--replan-every", default=8, type=int)
+    ap.add_argument(
+        "--chunk-start-index",
+        default=0,
+        type=int,
+        help=(
+            "First predicted action-horizon index to execute after each replan. "
+            "Use this to evaluate later-horizon commands instead of always "
+            "executing action_chunk[:replan_every]."
+        ),
+    )
     ap.add_argument("--task", default="LiftBarrier-rf")
     ap.add_argument("--config", default=None)
     ap.add_argument(
@@ -974,6 +1014,7 @@ def main():
     print(f"Seeds:         {args.seed_start}..{args.seed_start + args.num_episodes - 1}")
     print(f"Max steps:     {args.max_steps}")
     print(f"Replan every:  {args.replan_every}")
+    print(f"Chunk start:   {args.chunk_start_index}")
     print(f"Gripper mode:  {args.gripper_override}")
     print(
         f"Joint scale:   {args.joint_delta_scale} "
@@ -1109,6 +1150,7 @@ def main():
                         "num_episodes": args.num_episodes,
                         "max_steps": args.max_steps,
                         "replan_every": args.replan_every,
+                        "chunk_start_index": args.chunk_start_index,
                         "prompt": args.prompt,
                         "gripper_override": args.gripper_override,
                         "gripper_close_after_step": args.gripper_close_after_step,
@@ -1152,6 +1194,12 @@ def main():
             "seed": seed,
             "success": bool(success),
             "infer_step": np.asarray(dump["infer_step"], dtype=np.int32),
+            "exec_chunk_start_index": np.asarray(
+                dump["exec_chunk_start_index"], dtype=np.int32
+            ),
+            "exec_chunk_stop_index": np.asarray(
+                dump["exec_chunk_stop_index"], dtype=np.int32
+            ),
             "pred_chunk": np.stack(dump["pred_chunk"]),       # denorm [n_infer, chunk_len, 16]
             "obs_qpos": np.stack(dump["obs_qpos"]),           # [n_infer, 16]
             "exec_action": np.stack(dump["exec_action"]),     # [n_steps, 16]
@@ -1175,6 +1223,8 @@ def main():
         dump = (
             {
                 "infer_step": [],
+                "exec_chunk_start_index": [],
+                "exec_chunk_stop_index": [],
                 "pred_chunk": [],
                 "obs_qpos": [],
                 "exec_action": [],
@@ -1188,7 +1238,8 @@ def main():
         )
         try:
             success, steps = run_episode(
-                env, ws, seed, args.prompt, args.replan_every, args.max_steps,
+                env, ws, seed, args.prompt, args.replan_every,
+                args.chunk_start_index, args.max_steps,
                 action_representation=action_representation,
                 gripper_override=args.gripper_override,
                 gripper_close_after_step=args.gripper_close_after_step,

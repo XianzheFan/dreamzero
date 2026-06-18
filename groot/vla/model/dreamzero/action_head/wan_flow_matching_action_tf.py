@@ -200,6 +200,23 @@ class WANPolicyHeadConfig(PretrainedConfig):
         default=0,
         metadata={"help": "Number of early action steps to upweight."},
     )
+    joint_motion_action_loss_weight: float = field(
+        default=1.0,
+        metadata={
+            "help": (
+                "Extra multiplier for non-gripper action dimensions whose "
+                "normalized target magnitude exceeds joint_motion_action_loss_threshold."
+            )
+        },
+    )
+    joint_motion_action_loss_threshold: float = field(
+        default=0.0,
+        metadata={
+            "help": (
+                "Normalized target magnitude threshold for joint-motion action loss weighting."
+            )
+        },
+    )
     max_num_embodiments: int = field(default=32, metadata={"help": "Number of embodiments."})
     tune_projector: bool = field(default=True, metadata={"help": "Whether to tune the projector."})
     tune_diffusion_model: bool = field(
@@ -525,9 +542,43 @@ class WANPolicyHead(ActionHead):
         gripper_close_threshold = self._config_float("gripper_close_threshold", 0.0)
         prefix_weight = self._config_float("action_prefix_loss_weight", 1.0)
         prefix_len = self._config_int("action_prefix_loss_len", 0)
+        joint_motion_weight = self._config_float("joint_motion_action_loss_weight", 1.0)
+        joint_motion_threshold = self._config_float(
+            "joint_motion_action_loss_threshold",
+            0.0,
+        )
         gripper_dims = [int(dim) for dim in getattr(self.config, "gripper_action_dims", [7])]
 
         weighted = action_loss
+        if (
+            joint_motion_weight != 1.0
+            and actions is not None
+            and weighted.shape == actions.shape
+            and weighted.shape[-1] > 0
+        ):
+            motion_weights = torch.ones_like(weighted)
+            gripper_dim_indices = {
+                dim % weighted.shape[-1]
+                for dim in gripper_dims
+                if -weighted.shape[-1] <= dim < weighted.shape[-1]
+            }
+            joint_dim_indices = [
+                dim for dim in range(weighted.shape[-1]) if dim not in gripper_dim_indices
+            ]
+            if joint_dim_indices:
+                joint_targets = actions[..., joint_dim_indices].abs()
+                joint_mask = joint_targets > joint_motion_threshold
+                motion_weights[..., joint_dim_indices] = torch.where(
+                    joint_mask,
+                    torch.as_tensor(
+                        joint_motion_weight,
+                        device=weighted.device,
+                        dtype=weighted.dtype,
+                    ),
+                    motion_weights[..., joint_dim_indices],
+                )
+                weighted = weighted * motion_weights
+
         if gripper_weight != 1.0 and weighted.shape[-1] > 0:
             dim_weights = torch.ones(
                 weighted.shape[-1], device=weighted.device, dtype=weighted.dtype
