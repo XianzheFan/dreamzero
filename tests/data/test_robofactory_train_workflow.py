@@ -11,6 +11,7 @@ CODE_CACHE_URI = (
 )
 EXPECTED_CODE_COMMIT = "950b11ba09dcfa8c02ee962d458872244f25b0ba"
 RUN_NAME = "dz-rf2-lb500-motionw4-th02-50k-fresh-xz-20260618"
+WORKFLOW_NAME = "dz-rf2-lb500-motionw4-th02-50k-fresh-storagefix-xz-20260618"
 
 
 def _task_by_name(workflow, name):
@@ -39,7 +40,7 @@ def test_liftbarrier_train_workflow_defaults_to_cached_code_and_500_episode_data
         workflow = yaml.safe_load(f)
 
     defaults = workflow["default-values"]
-    assert defaults["workflow_name"] == RUN_NAME
+    assert defaults["workflow_name"] == WORKFLOW_NAME
     assert defaults["run_name"] == RUN_NAME
     assert defaults["restore_run_name"] == RUN_NAME
     assert defaults["code_s3_uri"] == CODE_CACHE_URI
@@ -58,6 +59,21 @@ def test_liftbarrier_train_workflow_defaults_to_cached_code_and_500_episode_data
     assert resources["platform"] == "dgx-h100"
     assert resources["memory"] == "1681Gi"
     assert resources["storage"] == "803Gi"
+
+
+def test_liftbarrier_train_workflow_cleans_checkpoint_staging_to_avoid_eviction():
+    with WORKFLOW_PATH.open() as f:
+        workflow = yaml.safe_load(f)
+
+    script = _task_by_name(workflow, "train")["files"][0]["contents"]
+
+    assert 'CHECKPOINT_UPLOAD_MAX_COUNT="${CHECKPOINT_UPLOAD_MAX_COUNT:-1}"' in script
+    assert 'rm -rf "$stage_root"' in script
+    assert 'tail -n "$CHECKPOINT_UPLOAD_MAX_COUNT"' in script
+    assert 'rm -rf "$stage_dir"' in script
+    assert 'rm -rf "$import_dir"' in script
+    assert 'osmo data upload "${OUTPUT_S3_URI}/" "$stage_dir" || upload_status=$?' in script
+    assert 'return "$upload_status"' in script
 
 
 def test_liftbarrier_train_workflow_verifies_code_cache_and_robofactory_dataset():
