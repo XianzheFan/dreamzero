@@ -5,7 +5,12 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW_PATH = REPO_ROOT / "osmo_workflows/robofactory/offline_eval_liftbarrier_ckpt500.yaml"
-CODE_CACHE_URI = "swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_gripperconv_evalshape_20260604"
+CODE_CACHE_URI = (
+    "swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/"
+    "dreamzero_code_liftbarrier_motionfix_950b11b_20260618"
+)
+EXPECTED_CODE_COMMIT = "950b11ba09dcfa8c02ee962d458872244f25b0ba"
+SOURCE_TRAIN_RUN_NAME = "dz-rf2-lb500-motionw4-th02-50k-scratch-xz-20260618"
 
 
 def _task_by_name(workflow, name):
@@ -17,32 +22,35 @@ def test_liftbarrier_offline_eval_workflow_defaults_to_ckpt500_and_cached_code()
         workflow = yaml.safe_load(f)
 
     defaults = workflow["default-values"]
-    assert defaults["workflow_name"] == "dz-rf-sg-offline-eval-ckpt500-xianzhef-20260604"
-    assert defaults["source_train_run_name"] == "dz-rf-sg-gripperfix-500data-fullsample-v2-xianzhef-20260603"
+    assert defaults["workflow_name"] == "dz-rf2-lb500-motionw4-th02-offline-ckpt500-xz-20260618"
+    assert defaults["source_train_run_name"] == SOURCE_TRAIN_RUN_NAME
     assert defaults["code_s3_uri"] == CODE_CACHE_URI
-    assert defaults["expected_code_commit"] == ""
+    assert defaults["expected_code_commit"] == EXPECTED_CODE_COMMIT
     assert defaults["data_variant"] == "LiftBarrier-rf-500"
     assert defaults["data_s3_uri"] == (
         "s3://GearHome/users/xianzhef/oci-migration/data/robofactory_lerobot_v2/LiftBarrier-rf-500"
     )
     assert defaults["eval_ckpt_s3_uri"] == (
         "s3://GearHome/users/xianzhef/oci-migration/dreamzero_s3cache/bootstrap_checkpoints/"
-        "dz-rf-sg-gripperfix-500data-fullsample-v2-xianzhef-20260603"
+        f"{SOURCE_TRAIN_RUN_NAME}"
     )
     assert defaults["eval_ckpt_fallback_s3_uri"] == (
         "s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/"
-        "dz-rf-sg-gripperfix-500data-fullsample-v2-xianzhef-20260603/checkpoints"
+        f"{SOURCE_TRAIN_RUN_NAME}/checkpoints"
     )
     assert defaults["ckpt_setting"] == "checkpoint-500"
     assert defaults["min_model_bytes"] == "80000000000"
     assert defaults["num_batches"] == "4"
     assert defaults["gripper_class_threshold"] == "0.0"
+    assert defaults["ckpt_wait_timeout_seconds"] == "7200"
+    assert defaults["ckpt_wait_interval_seconds"] == "120"
 
     resources = workflow["workflow"]["resources"]["default"]
-    assert resources["gpu"] == 8
+    assert resources["cpu"] == 16
+    assert resources["gpu"] == 1
     assert resources["platform"] == "dgx-h100"
-    assert resources["memory"] == "1681Gi"
-    assert resources["storage"] == "803Gi"
+    assert resources["memory"] == "320Gi"
+    assert resources["storage"] == "620Gi"
 
 
 def test_liftbarrier_offline_eval_workflow_restores_complete_checkpoint_safely():
@@ -53,8 +61,15 @@ def test_liftbarrier_offline_eval_workflow_restores_complete_checkpoint_safely()
 
     assert 'EVAL_CKPT_S3_URI="${EVAL_CKPT_S3_URI:-{{eval_ckpt_s3_uri}}}"' in script
     assert 'EVAL_CKPT_FALLBACK_S3_URI="${EVAL_CKPT_FALLBACK_S3_URI:-{{eval_ckpt_fallback_s3_uri}}}"' in script
+    assert 'CKPT_WAIT_TIMEOUT_SECONDS="${CKPT_WAIT_TIMEOUT_SECONDS:-{{ckpt_wait_timeout_seconds}}}"' in script
+    assert 'CKPT_WAIT_INTERVAL_SECONDS="${CKPT_WAIT_INTERVAL_SECONDS:-{{ckpt_wait_interval_seconds}}}"' in script
     assert 'restore_checkpoint_from_uri "$EVAL_CKPT_S3_URI" "s3cache"' in script
     assert 'restore_checkpoint_from_uri "$EVAL_CKPT_FALLBACK_S3_URI" "primary"' in script
+    assert "restore_checkpoint_when_available()" in script
+    assert 'rm -rf "$EVAL_CKPT_ROOT"' in script
+    assert "checkpoint not available yet" in script
+    assert "timed out waiting ${CKPT_WAIT_TIMEOUT_SECONDS}s" in script
+    assert 'sleep "$CKPT_WAIT_INTERVAL_SECONDS"' in script
     assert "MIN_MODEL_BYTES" in script
     assert 'stat -c%s "${ckpt_dir}/model.safetensors"' in script
     assert 'Checkpoint model.safetensors is too small: ${size} < ${MIN_MODEL_BYTES}' in script

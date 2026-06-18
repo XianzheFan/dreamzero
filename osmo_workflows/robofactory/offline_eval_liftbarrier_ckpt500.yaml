@@ -5,10 +5,10 @@ workflow:
   name: "{{workflow_name}}"
   resources:
     default:
-      cpu: 84
-      gpu: 8
-      memory: 1681Gi
-      storage: 803Gi
+      cpu: 16
+      gpu: 1
+      memory: 320Gi
+      storage: 620Gi
       platform: dgx-h100
   tasks:
     - name: offline-eval
@@ -47,6 +47,8 @@ workflow:
             MODEL_CACHE_S3_URI="s3://GearHome/users/xianzhef/oci-migration/checkpoints"
             EVAL_CKPT_S3_URI="${EVAL_CKPT_S3_URI:-{{eval_ckpt_s3_uri}}}"
             EVAL_CKPT_FALLBACK_S3_URI="${EVAL_CKPT_FALLBACK_S3_URI:-{{eval_ckpt_fallback_s3_uri}}}"
+            CKPT_WAIT_TIMEOUT_SECONDS="${CKPT_WAIT_TIMEOUT_SECONDS:-{{ckpt_wait_timeout_seconds}}}"
+            CKPT_WAIT_INTERVAL_SECONDS="${CKPT_WAIT_INTERVAL_SECONDS:-{{ckpt_wait_interval_seconds}}}"
             RUN_S3_ROOT="s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/${RUN_NAME}"
             OUT_S3_URI="${RUN_S3_ROOT}/offline_eval_${CKPT_SETTING}"
 
@@ -336,6 +338,28 @@ workflow:
               return 0
             }
 
+            restore_checkpoint_when_available() {
+              deadline=$((SECONDS + CKPT_WAIT_TIMEOUT_SECONDS))
+              while true; do
+                rm -rf "$EVAL_CKPT_ROOT"
+                mkdir -p "$EVAL_CKPT_ROOT"
+                if restore_checkpoint_from_uri "$EVAL_CKPT_S3_URI" "s3cache"; then
+                  return 0
+                fi
+                rm -rf "$EVAL_CKPT_ROOT"
+                mkdir -p "$EVAL_CKPT_ROOT"
+                if restore_checkpoint_from_uri "$EVAL_CKPT_FALLBACK_S3_URI" "primary"; then
+                  return 0
+                fi
+                if [ "$SECONDS" -ge "$deadline" ]; then
+                  echo "ERROR: timed out waiting ${CKPT_WAIT_TIMEOUT_SECONDS}s for complete ${CKPT_SETTING}." >&2
+                  return 1
+                fi
+                echo "${CKPT_SETTING} checkpoint not available yet; sleeping ${CKPT_WAIT_INTERVAL_SECONDS}s"
+                sleep "$CKPT_WAIT_INTERVAL_SECONDS"
+              done
+            }
+
             echo "Downloading DreamZero code from ${CODE_S3_URI}/"
             osmo data download --resume "${CODE_S3_URI}/" /workspace/code/dreamzero
             CODE_ROOT="/workspace/code/dreamzero"
@@ -411,10 +435,7 @@ workflow:
             download_or_restore_model "DreamZero-DROID" "GEAR-Dreams/DreamZero-DROID" "model" "$PRETRAINED_DIR"
 
             EVAL_CKPT_ROOT="/workspace/eval_ckpts/${SOURCE_TRAIN_RUN_NAME}"
-            rm -rf "$EVAL_CKPT_ROOT"
-            mkdir -p "$EVAL_CKPT_ROOT"
-            restore_checkpoint_from_uri "$EVAL_CKPT_S3_URI" "s3cache" || \
-              restore_checkpoint_from_uri "$EVAL_CKPT_FALLBACK_S3_URI" "primary" || {
+            restore_checkpoint_when_available || {
                 echo "ERROR: failed to restore a complete ${CKPT_SETTING}." >&2
                 exit 9
               }
@@ -443,15 +464,17 @@ workflow:
             } > /workspace/offline_eval_outputs/summary.txt
 
 default-values:
-  workflow_name: dz-rf-sg-offline-eval-ckpt500-xianzhef-20260604
-  source_train_run_name: dz-rf-sg-gripperfix-500data-fullsample-v2-xianzhef-20260603
-  code_s3_uri: swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_gripperconv_evalshape_20260604
-  expected_code_commit: ""
+  workflow_name: dz-rf2-lb500-motionw4-th02-offline-ckpt500-xz-20260618
+  source_train_run_name: dz-rf2-lb500-motionw4-th02-50k-scratch-xz-20260618
+  code_s3_uri: swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_liftbarrier_motionfix_950b11b_20260618
+  expected_code_commit: 950b11ba09dcfa8c02ee962d458872244f25b0ba
   data_variant: LiftBarrier-rf-500
   data_s3_uri: s3://GearHome/users/xianzhef/oci-migration/data/robofactory_lerobot_v2/LiftBarrier-rf-500
-  eval_ckpt_s3_uri: s3://GearHome/users/xianzhef/oci-migration/dreamzero_s3cache/bootstrap_checkpoints/dz-rf-sg-gripperfix-500data-fullsample-v2-xianzhef-20260603
-  eval_ckpt_fallback_s3_uri: s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/dz-rf-sg-gripperfix-500data-fullsample-v2-xianzhef-20260603/checkpoints
+  eval_ckpt_s3_uri: s3://GearHome/users/xianzhef/oci-migration/dreamzero_s3cache/bootstrap_checkpoints/dz-rf2-lb500-motionw4-th02-50k-scratch-xz-20260618
+  eval_ckpt_fallback_s3_uri: s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/dz-rf2-lb500-motionw4-th02-50k-scratch-xz-20260618/checkpoints
   ckpt_setting: checkpoint-500
   min_model_bytes: "80000000000"
   num_batches: "4"
   gripper_class_threshold: "0.0"
+  ckpt_wait_timeout_seconds: "7200"
+  ckpt_wait_interval_seconds: "120"
