@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import time
 from pathlib import Path
 
@@ -38,7 +39,7 @@ import torch._dynamo  # noqa: F401 -- needed before config access
 torch._dynamo.config.cache_size_limit = 64
 
 from hydra.utils import instantiate
-from omegaconf import OmegaConf
+from omegaconf import OmegaConf, open_dict
 from safetensors.torch import load_file
 from torch.utils.data import DataLoader
 
@@ -50,6 +51,38 @@ PER_ARM_GRIPPER_DIMS = [7]
 ARM_SLICES = [(0, 8), (8, 16)]              # left, right
 JOINT_THRESHOLDS = [0.02, 0.05, 0.1]        # normalized-action units
 GRIPPER_THRESHOLDS = [0.05, 0.1, 0.2]
+
+
+def _env_flag(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _disable_torch_compile_if_requested() -> None:
+    """Patch torch.compile to a no-op before Hydra imports model modules.
+
+    Offline eval favors startup predictability over one-time kernel compile
+    cost. The DreamZero Wan modules call torch.compile during model
+    construction and import, so this must run before instantiate(cfg.model).
+    """
+    if not _env_flag("DISABLE_DREAMZERO_TORCH_COMPILE"):
+        return
+    if getattr(torch.compile, "_dreamzero_noop", False):
+        return
+
+    original_compile = torch.compile
+
+    def _noop_compile(fn=None, *args, **kwargs):
+        if fn is None:
+            return lambda wrapped: wrapped
+        return fn
+
+    _noop_compile._dreamzero_noop = True  # type: ignore[attr-defined]
+    _noop_compile._dreamzero_original = original_compile  # type: ignore[attr-defined]
+    torch.compile = _noop_compile  # type: ignore[assignment]
+    print(
+        "[setup] DISABLE_DREAMZERO_TORCH_COMPILE=true; "
+        "torch.compile calls will be treated as no-ops."
+    )
 
 SLICE_COMPATIBLE_PRETRAINED_KEYS = frozenset(
     {
@@ -103,6 +136,16 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--device", type=str, default="cuda")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument(
+        "--data-root",
+        type=Path,
+        default=None,
+        help=(
+            "Optional LeRobot root to inject into cfg.train_dataset.mixture_spec. "
+            "Use this when evaluating a checkpoint outside its original training "
+            "filesystem."
+        ),
+    )
+    p.add_argument(
         "--gripper-class-threshold",
         type=float,
         default=0.0,
@@ -126,6 +169,45 @@ def load_resolved_cfg(ckpt_dir: Path, ckpt_setting: str):
     meta_path = exp_cfg_dir / "metadata.json"
     metadata = json.load(open(meta_path)) if meta_path.is_file() else {}
     return cfg, metadata
+
+
+def override_dataset_root(cfg, data_root: Path | None) -> None:
+    """Point checkpoint training dataset config at a local LeRobot root."""
+    if data_root is None:
+        return
+
+    root_str = str(data_root)
+    with open_dict(cfg):
+        if "robofactory_data_root" in cfg:
+            old = cfg.get("robofactory_data_root")
+            cfg.robofactory_data_root = root_str
+            if old != root_str:
+                print(f"[data] robofactory_data_root: {old!r} -> {root_str!r}")
+
+    with open_dict(cfg):
+        train_dataset = cfg.get("train_dataset", None)
+        mixture_spec = getattr(train_dataset, "mixture_spec", None)
+        if mixture_spec is None:
+            print("[data] no train_dataset.mixture_spec found; --data-root was unused")
+            return
+
+        changed = False
+        for idx, spec in enumerate(mixture_spec):
+            dataset_path = spec.get("dataset_path") if hasattr(spec, "get") else None
+            if dataset_path is None:
+                continue
+            if "robofactory" in dataset_path:
+                old_paths = list(dataset_path["robofactory"])
+                dataset_path["robofactory"] = [root_str]
+                changed = True
+                if old_paths != [root_str]:
+                    print(
+                        f"[data] train_dataset.mixture_spec[{idx}]."
+                        f"dataset_path.robofactory: {old_paths!r} -> {[root_str]!r}"
+                    )
+
+    if not changed:
+        print("[data] no robofactory dataset_path entry found; --data-root was unused")
 
 
 def load_model(ckpt_dir: Path, ckpt_setting: str, cfg, device: str):
@@ -471,8 +553,10 @@ def main():
     logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
+    _disable_torch_compile_if_requested()
 
     cfg, metadata = load_resolved_cfg(args.ckpt_dir, args.ckpt_setting)
+    override_dataset_root(cfg, args.data_root)
     model, dtype = load_model(args.ckpt_dir, args.ckpt_setting, cfg, args.device)
     loader = build_dataloader(
         cfg,

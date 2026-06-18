@@ -42,6 +42,7 @@ def test_liftbarrier_offline_eval_workflow_defaults_to_ckpt500_and_cached_code()
     assert defaults["min_model_bytes"] == "100000000"
     assert defaults["num_batches"] == "4"
     assert defaults["gripper_class_threshold"] == "0.0"
+    assert defaults["disable_torch_compile"] == "true"
     assert defaults["ckpt_wait_timeout_seconds"] == "7200"
     assert defaults["ckpt_wait_interval_seconds"] == "120"
 
@@ -63,6 +64,8 @@ def test_liftbarrier_offline_eval_workflow_restores_complete_checkpoint_safely()
     assert 'EVAL_CKPT_FALLBACK_S3_URI="${EVAL_CKPT_FALLBACK_S3_URI:-{{eval_ckpt_fallback_s3_uri}}}"' in script
     assert 'CKPT_WAIT_TIMEOUT_SECONDS="${CKPT_WAIT_TIMEOUT_SECONDS:-{{ckpt_wait_timeout_seconds}}}"' in script
     assert 'CKPT_WAIT_INTERVAL_SECONDS="${CKPT_WAIT_INTERVAL_SECONDS:-{{ckpt_wait_interval_seconds}}}"' in script
+    assert 'DISABLE_DREAMZERO_TORCH_COMPILE="${DISABLE_DREAMZERO_TORCH_COMPILE:-{{disable_torch_compile}}}"' in script
+    assert "export DISABLE_DREAMZERO_TORCH_COMPILE" in script
     assert 'restore_checkpoint_from_uri "$EVAL_CKPT_S3_URI" "s3cache"' in script
     assert 'restore_checkpoint_from_uri "$EVAL_CKPT_FALLBACK_S3_URI" "primary"' in script
     assert "restore_checkpoint_when_available()" in script
@@ -95,6 +98,10 @@ def test_liftbarrier_offline_eval_workflow_checks_robofactory_data_and_runs_eval
         "Keeping existing promoted cache entry",
         "Skipping self-referential cache entry",
         "python scripts/data/inspect_robotwin_lerobot.py",
+        'CANONICAL_DATA_ROOT="/workspace/data/robofactory_lerobot_v2/${DATA_VARIANT}"',
+        'ln -sfn "$DATA_ROOT" "$CANONICAL_DATA_ROOT"',
+        'export ROBOFACTORY_DATA_ROOT_FOR_TRANSFORM="$CANONICAL_DATA_ROOT"',
+        "Using RoboFactory LeRobot dataset root",
         "--expected-episodes 500",
         "--expected-action-dim 16",
         "--expected-state-dim 16",
@@ -108,8 +115,11 @@ def test_liftbarrier_offline_eval_workflow_checks_robofactory_data_and_runs_eval
         "--ckpt-dir \"$EVAL_CKPT_ROOT\"",
         "--ckpt-setting \"$CKPT_SETTING\"",
         "--num-batches \"$NUM_BATCHES\"",
+        "--data-root \"$CANONICAL_DATA_ROOT\"",
         "--gripper-class-threshold \"$GRIPPER_CLASS_THRESHOLD\"",
         "gripper_class_threshold=${GRIPPER_CLASS_THRESHOLD}",
+        "disable_torch_compile=${DISABLE_DREAMZERO_TORCH_COMPILE}",
+        "canonical_data_root=${CANONICAL_DATA_ROOT}",
         "open rate",
     ):
         assert marker in script

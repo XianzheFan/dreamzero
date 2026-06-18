@@ -1,8 +1,10 @@
 import numpy as np
+from omegaconf import OmegaConf
 
 from eval_utils.offline_eval_bimanual import (
     collect_dim_pairs,
     gripper_open_close_metrics,
+    override_dataset_root,
     summarize_gripper_open_close,
 )
 
@@ -20,6 +22,30 @@ def test_collect_dim_pairs_keeps_only_valid_gripper_entries():
 
     np.testing.assert_allclose(pred_flat, [-0.8, 0.2, 0.6, -0.1, 0.9])
     np.testing.assert_allclose(gt_flat, [-1.0, 1.0, -1.0, -1.0, 1.0])
+
+
+def test_override_dataset_root_updates_robofactory_mixture_spec():
+    cfg = OmegaConf.create(
+        {
+            "robofactory_data_root": "/old/root",
+            "train_dataset": {
+                "mixture_spec": [
+                    {
+                        "dataset_path": {
+                            "robofactory": ["/old/root"],
+                        }
+                    }
+                ]
+            },
+        }
+    )
+
+    override_dataset_root(cfg, "/workspace/data/robofactory_lerobot_v2/LiftBarrier-rf-500")
+
+    assert cfg.robofactory_data_root == "/workspace/data/robofactory_lerobot_v2/LiftBarrier-rf-500"
+    assert cfg.train_dataset.mixture_spec[0].dataset_path.robofactory == [
+        "/workspace/data/robofactory_lerobot_v2/LiftBarrier-rf-500"
+    ]
 
 
 def test_gripper_open_close_metrics_reports_confusion_counts():
