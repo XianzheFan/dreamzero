@@ -558,7 +558,80 @@ def test_conditioning_pred_dumps_observed_windows(monkeypatch, tmp_path):
     assert len(calls) == 1
     assert calls[0][0] is observed
     assert calls[0][1] == tmp_path / "session_abcdef123456" / "conditioning"
-    assert calls[0][2] == "step0000"
+    assert calls[0][2] == "infer0000_envunknown"
+
+
+def test_dump_video_pred_manifest_records_comparison_and_eval_context(monkeypatch, tmp_path):
+    policy = _make_policy(_metadata_with_action_stats())
+    policy.video_pred_dir = tmp_path
+    policy.ckpt_dir = tmp_path
+    action_head = SimpleNamespace(
+        _last_video_pred=np.zeros((1, 2, 16, 2, 3, 4), dtype=np.float32),
+        current_start_frame=3,
+        num_frame_per_block=2,
+        _mai_num_inference_steps=16,
+        _mai_anchor_i2v_first_frame=True,
+        _mai_causal_scheduler="unipc",
+    )
+    policy._model = SimpleNamespace(action_head=action_head)
+    frames = np.zeros((2, 3, 4, 5, 3), dtype=np.uint8)
+    observed = {
+        "global": np.zeros((2, 4, 5, 3), dtype=np.uint8),
+        "agent0": np.ones((2, 4, 5, 3), dtype=np.uint8),
+        "agent1": np.full((2, 4, 5, 3), 2, dtype=np.uint8),
+    }
+
+    monkeypatch.setattr(policy, "_decode_latent_video", lambda latents: frames)
+    monkeypatch.setattr(
+        policy,
+        "_write_decoded_video_set",
+        lambda decoded, out_dir, prefix: [
+            f"{prefix}_agent0.mp4",
+            f"{prefix}_agent1.mp4",
+        ],
+    )
+    monkeypatch.setattr(
+        policy,
+        "_write_observed_video_windows",
+        lambda videos, out_dir, prefix: [
+            f"{prefix}_observed_global.mp4",
+            f"{prefix}_observed_agent0.mp4",
+            f"{prefix}_observed_agent1.mp4",
+        ],
+    )
+    monkeypatch.setattr(
+        policy,
+        "_write_pred_observed_comparison",
+        lambda pred_frames, observed_videos, out_dir, prefix: [
+            f"{prefix}_agent0_compare.mp4",
+            f"{prefix}_agent1_compare.mp4",
+        ],
+    )
+
+    policy._dump_video_pred(
+        {
+            "infer_idx": 2,
+            "last_env_step": 48,
+            "last_replan_every": 8,
+            "last_chunk_start_index": 16,
+            "last_observed_video_debug": observed,
+        },
+        "abcdef1234567890",
+    )
+
+    manifest = (
+        tmp_path / "session_abcdef123456" / "manifest.jsonl"
+    ).read_text().strip()
+    entry = __import__("json").loads(manifest)
+    assert entry["infer_idx"] == 2
+    assert entry["env_step"] == 48
+    assert entry["decoded_shape"] == [2, 3, 4, 5, 3]
+    assert entry["replan_every"] == 8
+    assert entry["chunk_start_index"] == 16
+    assert entry["comparison_files"] == [
+        "comparison/infer0002_env0048_agent0_compare.mp4",
+        "comparison/infer0002_env0048_agent1_compare.mp4",
+    ]
 
 
 def test_model_resolution_override_updates_config_and_resize_transform(caplog):

@@ -1109,6 +1109,10 @@ class BimanualPolicy:
             sess["last_env_step"] = int(obs["step"])
         else:
             sess["last_env_step"] = None
+        if obs.get("replan_every") is not None:
+            sess["last_replan_every"] = int(obs["replan_every"])
+        if obs.get("chunk_start_index") is not None:
+            sess["last_chunk_start_index"] = int(obs["chunk_start_index"])
 
         qpos = np.asarray(obs["qpos"], dtype=np.float32).reshape(-1)
         assert qpos.shape == (16,), f"need 16-dim qpos, got {qpos.shape}"
@@ -1246,19 +1250,19 @@ class BimanualPolicy:
 
             outputs = self._model.get_action(inputs_gpu)
 
+        flat_action = self._denorm_action(outputs, qpos)
+        self._apply_gripper_force_open(sess, flat_action)
+        self._apply_gripper_override(sess, flat_action)
+        self._last_action_debug["action_physical_final"] = flat_action.copy()
+        self._log_action_summary(sess, sid, flat_action)
+
         if self.save_video_pred:
             try:
                 self._dump_video_pred(sess, sid)
                 self._dump_conditioning_pred(sess, sid)
             except Exception:
                 logging.exception("save_video_pred failed; continuing without")
-        sess["infer_idx"] = sess.get("infer_idx", 0) + 1
 
-        flat_action = self._denorm_action(outputs, qpos)
-        self._apply_gripper_force_open(sess, flat_action)
-        self._apply_gripper_override(sess, flat_action)
-        self._last_action_debug["action_physical_final"] = flat_action.copy()
-        self._log_action_summary(sess, sid, flat_action)
         reply = {"action_chunk": flat_action.astype(np.float32)}
         if self.return_action_debug:
             reply.update(
@@ -1267,6 +1271,7 @@ class BimanualPolicy:
                     for key, value in self._last_action_debug.items()
                 }
             )
+        sess["infer_idx"] = sess.get("infer_idx", 0) + 1
         return reply
 
     @staticmethod
@@ -1291,9 +1296,6 @@ class BimanualPolicy:
         write one mp4 per agent. Called from infer() when save_video_pred
         is on. Adds ~5-15s per call (heavy VAE decode); diagnostic only.
         """
-        import torch
-        import av
-
         action_head = self._model.action_head
         latents = getattr(action_head, "_last_video_pred", None)
         if latents is None:
@@ -1312,50 +1314,16 @@ class BimanualPolicy:
             getattr(action_head, "_mai_anchor_i2v_first_frame", None),
             getattr(action_head, "_mai_causal_scheduler", None),
         )
-        # latents: [B=1, P, C_lat, F_lat, H_lat, W_lat] in self._dtype
-        B, P, C_lat, F_lat, H_lat, W_lat = latents.shape
-        # VAE.decode expects [B, C, T, H, W]; fold P into batch.
-        lat_bp = latents.reshape(B * P, C_lat, F_lat, H_lat, W_lat)
-        with torch.inference_mode():
-            frames = action_head.vae.decode(
-                lat_bp.to(self._device, dtype=self._dtype),
-                tiled=action_head.tiled,
-                tile_size=(action_head.tile_size_height,
-                           action_head.tile_size_width),
-                tile_stride=(action_head.tile_stride_height,
-                             action_head.tile_stride_width),
-            )                                                # [B*P, C, T, H, W]
-        frames = frames.float()
-        frames = ((frames + 1.0) * 127.5).clamp(0, 255).to(torch.uint8)
-        frames = frames.cpu().numpy()                        # [B*P, C, T, H, W]
-        # -> [P, T, H, W, C]; B is always 1 at inference.
-        frames = frames.transpose(0, 2, 3, 4, 1).reshape(
-            B, P, -1, frames.shape[3], frames.shape[4], 3
-        )[0]
+        frames = self._decode_latent_video(latents)
 
         out_dir = self.video_pred_dir or (self.ckpt_dir / "video_pred")
         out_dir = Path(out_dir) / f"session_{sid[:12]}"
         out_dir.mkdir(parents=True, exist_ok=True)
         infer_idx, env_step, prefix = self._video_pred_context(sess)
-        T, H, W = frames.shape[1], frames.shape[2], frames.shape[3]
-        pred_files: list[str] = []
-        for p in range(P):
-            out_path = out_dir / f"{prefix}_agent{p}.mp4"
-            pred_files.append(out_path.name)
-            with av.open(str(out_path), mode="w") as container:
-                stream = container.add_stream("h264", rate=20)
-                stream.width = W
-                stream.height = H
-                stream.pix_fmt = "yuv420p"
-                stream.options = {"crf": "23"}
-                for t in range(T):
-                    img = frames[p, t]                       # [H, W, 3] uint8
-                    av_frame = av.VideoFrame.from_ndarray(img, format="rgb24")
-                    for packet in stream.encode(av_frame):
-                        container.mux(packet)
-                for packet in stream.encode():
-                    container.mux(packet)
+        P, T, H, W = frames.shape[0], frames.shape[1], frames.shape[2], frames.shape[3]
+        pred_files = self._write_decoded_video_set(frames, out_dir, prefix)
         observed_files: list[str] = []
+        comparison_files: list[str] = []
         observed_videos = sess.get("last_observed_video_debug")
         if isinstance(observed_videos, dict):
             observed_dir = out_dir / "observed"
@@ -1365,6 +1333,15 @@ class BimanualPolicy:
                     observed_videos,
                     observed_dir,
                     prefix,
+                )
+            ]
+            comparison_files = [
+                str(Path("comparison") / name)
+                for name in self._write_pred_observed_comparison(
+                    pred_frames=frames,
+                    observed_videos=observed_videos,
+                    out_dir=out_dir / "comparison",
+                    prefix=prefix,
                 )
             ]
         self._append_video_pred_manifest(
@@ -1377,7 +1354,14 @@ class BimanualPolicy:
                 "decoded_shape": [int(P), int(T), int(H), int(W), 3],
                 "pred_files": pred_files,
                 "observed_files": observed_files,
+                "comparison_files": comparison_files,
+                "replan_every": sess.get("last_replan_every"),
+                "chunk_start_index": sess.get("last_chunk_start_index"),
                 "shared_global_wrist_window_mode": self.shared_global_wrist_window_mode,
+                "pred_video_semantics": (
+                    "decoded denoised wrist-future latents; comparison panels "
+                    "repeat the current observed global/wrist conditioning frame"
+                ),
             },
         )
         logging.info(
@@ -1411,13 +1395,15 @@ class BimanualPolicy:
             B, P, -1, frames.shape[3], frames.shape[4], 3
         )[0]
 
-    def _write_decoded_video_set(self, frames, out_dir: Path, prefix: str) -> None:
+    def _write_decoded_video_set(self, frames, out_dir: Path, prefix: str) -> list[str]:
         import av
 
         out_dir.mkdir(parents=True, exist_ok=True)
         P, T, H, W = frames.shape[0], frames.shape[1], frames.shape[2], frames.shape[3]
+        written: list[str] = []
         for p in range(P):
-            out_path = out_dir / f"{prefix}_agent{p}.mp4"
+            out_name = f"{prefix}_agent{p}.mp4"
+            out_path = out_dir / out_name
             with av.open(str(out_path), mode="w") as container:
                 stream = container.add_stream("h264", rate=20)
                 stream.width = W
@@ -1430,6 +1416,119 @@ class BimanualPolicy:
                         container.mux(packet)
                 for packet in stream.encode():
                     container.mux(packet)
+            written.append(out_name)
+        return written
+
+    def _current_observed_frame_index(self, frames: np.ndarray) -> int:
+        if frames.shape[0] <= 1:
+            return 0
+        if self._uses_shared_global():
+            mode = getattr(
+                self,
+                "shared_global_wrist_window_mode",
+                "repeat-current",
+            )
+            return frames.shape[0] - 1 if mode == "history-chronological" else 0
+        return frames.shape[0] - 1
+
+    @staticmethod
+    def _resize_rgb_frame(frame: np.ndarray, height: int, width: int) -> np.ndarray:
+        frame = np.asarray(frame, dtype=np.uint8)
+        if frame.shape[:2] == (height, width):
+            return frame.copy()
+        import cv2
+
+        return cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
+
+    @staticmethod
+    def _label_rgb_frame(frame: np.ndarray, label: str) -> np.ndarray:
+        import cv2
+
+        out = np.asarray(frame, dtype=np.uint8).copy()
+        cv2.rectangle(out, (0, 0), (min(out.shape[1], 178), 24), (0, 0, 0), -1)
+        cv2.putText(
+            out,
+            label,
+            (6, 17),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.48,
+            (255, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
+        return out
+
+    def _write_pred_observed_comparison(
+        self,
+        *,
+        pred_frames: np.ndarray,
+        observed_videos: dict[str, np.ndarray],
+        out_dir: Path,
+        prefix: str,
+    ) -> list[str]:
+        import av
+
+        pred_frames = np.asarray(pred_frames, dtype=np.uint8)
+        if pred_frames.ndim != 5 or pred_frames.shape[-1] != 3:
+            logging.warning(
+                "Skipping pred/observed comparison with unexpected pred shape %s",
+                tuple(pred_frames.shape),
+            )
+            return []
+        if "global" not in observed_videos:
+            return []
+
+        out_dir.mkdir(parents=True, exist_ok=True)
+        P, T, H, W = (
+            pred_frames.shape[0],
+            pred_frames.shape[1],
+            pred_frames.shape[2],
+            pred_frames.shape[3],
+        )
+        global_video = np.asarray(observed_videos["global"], dtype=np.uint8)
+        if global_video.ndim != 4 or global_video.shape[-1] != 3:
+            return []
+        global_idx = self._current_observed_frame_index(global_video)
+        global_frame = self._resize_rgb_frame(global_video[global_idx], H, W)
+        written: list[str] = []
+        for p in range(P):
+            wrist_name = f"agent{p}"
+            wrist_video = np.asarray(observed_videos.get(wrist_name), dtype=np.uint8)
+            if wrist_video.ndim != 4 or wrist_video.shape[-1] != 3:
+                logging.warning(
+                    "Skipping pred/observed comparison for %s with observed shape %s",
+                    wrist_name,
+                    tuple(wrist_video.shape),
+                )
+                continue
+            wrist_idx = self._current_observed_frame_index(wrist_video)
+            wrist_frame = self._resize_rgb_frame(wrist_video[wrist_idx], H, W)
+            global_panel = self._label_rgb_frame(global_frame, "global current")
+            wrist_panel = self._label_rgb_frame(wrist_frame, f"{wrist_name} current")
+            out_name = f"{prefix}_agent{p}_compare.mp4"
+            out_path = out_dir / out_name
+            with av.open(str(out_path), mode="w") as container:
+                stream = container.add_stream("h264", rate=20)
+                stream.width = W * 3
+                stream.height = H
+                stream.pix_fmt = "yuv420p"
+                stream.options = {"crf": "23"}
+                for t in range(T):
+                    pred_panel = self._label_rgb_frame(
+                        pred_frames[p, t],
+                        f"{wrist_name} pred",
+                    )
+                    canvas = np.concatenate(
+                        [global_panel, wrist_panel, pred_panel],
+                        axis=1,
+                    )
+                    av_frame = av.VideoFrame.from_ndarray(canvas, format="rgb24")
+                    for packet in stream.encode(av_frame):
+                        container.mux(packet)
+                for packet in stream.encode():
+                    container.mux(packet)
+            written.append(out_name)
+        return written
 
     @staticmethod
     def _record_observed_video_debug(
