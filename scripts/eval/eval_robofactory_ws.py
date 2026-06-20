@@ -398,6 +398,32 @@ def limit_joint_target_slew(
     return out
 
 
+def blend_replan_boundary_target(
+    action16: np.ndarray,
+    boundary_anchor16: np.ndarray | None,
+    chunk_offset: int,
+    blend_steps: int,
+) -> np.ndarray:
+    """Linearly bridge joint targets at the start of a replanned chunk.
+
+    This is an eval-only diagnostic for separating policy jitter from chunk
+    boundary discontinuity. Gripper commands are intentionally preserved.
+    """
+    out = np.asarray(action16, dtype=np.float32).copy()
+    if chunk_offset < 0:
+        raise ValueError(f"chunk_offset must be >= 0, got {chunk_offset}")
+    if blend_steps < 0:
+        raise ValueError(f"boundary blend steps must be >= 0, got {blend_steps}")
+    if boundary_anchor16 is None or blend_steps == 0 or chunk_offset >= blend_steps:
+        return out
+
+    anchor = np.asarray(boundary_anchor16, dtype=np.float32)
+    alpha = float(chunk_offset + 1) / float(blend_steps)
+    for start, end in ((0, 7), (8, 15)):
+        out[start:end] = anchor[start:end] + alpha * (out[start:end] - anchor[start:end])
+    return out
+
+
 def apply_gripper_override(
     action16: np.ndarray,
     step: int,
@@ -527,6 +553,7 @@ def run_episode(
     gripper_policy_close_threshold: float,
     gripper_policy_close_min_step: int,
     joint_target_slew_rate: float,
+    replan_boundary_blend_steps: int,
     success_mode: str,
     strict_success_min_grasp_count: int,
     dump: dict | None = None,
@@ -595,7 +622,8 @@ def run_episode(
 
         infer_qpos = qpos.copy()
         cur = infer_qpos.copy()
-        for da in actions[:replan_every]:
+        boundary_anchor = last_commanded.copy() if last_commanded is not None else None
+        for chunk_offset, da in enumerate(actions[:replan_every]):
             abs16 = prepare_env_action_target(
                 da,
                 cur,
@@ -619,6 +647,12 @@ def run_episode(
                 policy_close_min_step=gripper_policy_close_min_step,
                 left_close_after_step=left_gripper_close_after_step,
                 right_close_after_step=right_gripper_close_after_step,
+            )
+            abs16 = blend_replan_boundary_target(
+                abs16,
+                boundary_anchor,
+                chunk_offset,
+                replan_boundary_blend_steps,
             )
             abs16 = limit_joint_target_slew(abs16, last_commanded, joint_target_slew_rate)
             raw_obs, reward, term, trunc, info = env.step(env_action_dict(abs16))
@@ -776,6 +810,17 @@ def main():
         ),
     )
     ap.add_argument(
+        "--replan-boundary-blend-steps",
+        type=int,
+        default=0,
+        help=(
+            "Optional eval-only number of steps at the start of each replanned "
+            "chunk to linearly bridge joint targets from the last executed "
+            "command. 0 disables boundary blending. Gripper commands are not "
+            "blended."
+        ),
+    )
+    ap.add_argument(
         "--left-joint-target-scale",
         "--left-joint-delta-scale",
         dest="left_joint_target_scale",
@@ -826,6 +871,8 @@ def main():
         help="Minimum current grasping arms required for --success-mode=strict-lift.",
     )
     args = ap.parse_args()
+    if args.replan_boundary_blend_steps < 0:
+        ap.error("--replan-boundary-blend-steps must be >= 0")
 
     # Late imports so a server-side schema mismatch fails before the heavy
     # sapien init. (``from x import *`` is illegal inside a function, so
@@ -845,6 +892,7 @@ def main():
     print(f"Joint ref:     {args.joint_target_scale_reference}")
     print(f"Joint clip:    {args.joint_target_scale_clip}")
     print(f"Joint slew:    {args.joint_target_slew_rate}")
+    print(f"Boundary blend: {args.replan_boundary_blend_steps}")
     if args.left_joint_target_scale is not None or args.right_joint_target_scale is not None:
         effective_left = (
             args.joint_target_scale
@@ -970,6 +1018,7 @@ def main():
                         "joint_target_scale_clip": args.joint_target_scale_clip,
                         "joint_delta_output_clip": args.joint_target_scale_clip,
                         "joint_target_slew_rate": args.joint_target_slew_rate,
+                        "replan_boundary_blend_steps": args.replan_boundary_blend_steps,
                         "effective_joint_delta_scale": args.joint_target_scale,
                         "effective_joint_delta_output_clip": args.joint_target_scale_clip,
                         "allow_absolute_joint_delta_scale": True,
@@ -1049,6 +1098,7 @@ def main():
                 gripper_policy_close_threshold=args.gripper_policy_close_threshold,
                 gripper_policy_close_min_step=args.gripper_policy_close_min_step,
                 joint_target_slew_rate=args.joint_target_slew_rate,
+                replan_boundary_blend_steps=args.replan_boundary_blend_steps,
                 success_mode=args.success_mode,
                 strict_success_min_grasp_count=args.strict_success_min_grasp_count,
                 dump=dump,

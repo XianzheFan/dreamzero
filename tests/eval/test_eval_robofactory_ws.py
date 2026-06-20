@@ -195,6 +195,49 @@ def test_limit_joint_target_slew_limits_joints_only(monkeypatch):
     np.testing.assert_allclose(out[[7, 15]], [-1.0, 1.0])
 
 
+def test_blend_replan_boundary_target_blends_joints_only(monkeypatch):
+    mod = _load_eval_module(monkeypatch)
+    anchor = np.zeros(16, dtype=np.float32)
+    action = np.zeros(16, dtype=np.float32)
+    action[0:7] = 1.0
+    action[8:15] = -1.0
+    action[7] = -1.0
+    action[15] = 1.0
+
+    first = mod.blend_replan_boundary_target(
+        action,
+        anchor,
+        chunk_offset=0,
+        blend_steps=4,
+    )
+    last = mod.blend_replan_boundary_target(
+        action,
+        anchor,
+        chunk_offset=3,
+        blend_steps=4,
+    )
+
+    np.testing.assert_allclose(first[0:7], 0.25, atol=1e-6)
+    np.testing.assert_allclose(first[8:15], -0.25, atol=1e-6)
+    np.testing.assert_allclose(first[[7, 15]], [-1.0, 1.0])
+    np.testing.assert_allclose(last, action, atol=1e-6)
+
+
+def test_blend_replan_boundary_target_zero_is_noop(monkeypatch):
+    mod = _load_eval_module(monkeypatch)
+    anchor = np.zeros(16, dtype=np.float32)
+    action = np.arange(16, dtype=np.float32)
+
+    out = mod.blend_replan_boundary_target(
+        action,
+        anchor,
+        chunk_offset=0,
+        blend_steps=0,
+    )
+
+    np.testing.assert_allclose(out, action)
+
+
 def test_scale_joint_targets_one_is_noop(monkeypatch):
     mod = _load_eval_module(monkeypatch)
     qpos = np.arange(16, dtype=np.float32)

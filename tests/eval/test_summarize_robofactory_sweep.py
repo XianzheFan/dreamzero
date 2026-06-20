@@ -21,6 +21,7 @@ def test_summarize_sweep_extracts_trace_metrics(tmp_path):
                 "joint_target_scale": 1.5,
                 "joint_target_scale_reference": "auto",
                 "joint_target_scale_clip": 0.25,
+                "replan_boundary_blend_steps": 4,
             },
         },
     )
@@ -56,6 +57,7 @@ def test_summarize_sweep_extracts_trace_metrics(tmp_path):
                 "joint_delta_scale": 1.0,
                 "joint_delta_scale_reference": "auto",
                 "joint_delta_scale_clip": 0.25,
+                "replan_boundary_blend_steps": 0,
             },
         },
     )
@@ -87,10 +89,12 @@ def test_summarize_sweep_extracts_trace_metrics(tmp_path):
 
     assert [row["scale"] for row in rows] == [1.0, 1.5]
     assert rows[0]["success_count"] == 0
+    assert rows[0]["replan_boundary_blend_steps"] == 0.0
     assert rows[0]["target_min_mean_left"] == 0.13
     assert rows[0]["right_grasp_episodes"] == 0
     assert rows[1]["success_count"] == 1
     assert rows[1]["scale_clip"] == 0.25
+    assert rows[1]["replan_boundary_blend_steps"] == 4.0
     assert rows[1]["target_min_mean_right"] == 0.08
     assert rows[1]["barrier_margin_best"] == -0.02
     assert rows[1]["mean_joint_step_accel"] == 0.03

@@ -57,11 +57,13 @@ def _setting_from_results(results: dict[str, Any], setting_dir: str) -> dict[str
         cfg.get("joint_delta_scale_reference"),
     )
     clip = cfg.get("joint_target_scale_clip", cfg.get("joint_delta_scale_clip"))
+    boundary_blend_steps = cfg.get("replan_boundary_blend_steps")
     return {
         "setting_dir": os.path.basename(setting_dir),
         "scale": _float_or_none(scale),
         "scale_reference": reference,
         "scale_clip": _float_or_none(clip),
+        "replan_boundary_blend_steps": _float_or_none(boundary_blend_steps),
     }
 
 
@@ -163,6 +165,7 @@ def print_table(rows: list[dict[str, Any]]) -> None:
         ("dir", "setting_dir"),
         ("scale", "scale"),
         ("clip", "scale_clip"),
+        ("blend", "replan_boundary_blend_steps"),
         ("succ", "success_count"),
         ("eps", "episodes"),
         ("L_target", "target_min_mean_left"),
