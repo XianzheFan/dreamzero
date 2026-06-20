@@ -234,6 +234,9 @@ def test_noncausal_video_pred_rollout_temporarily_disables_causal_env(monkeypatc
 
     assert calls == [(inputs, "0")]
     assert os.environ["MAI_USE_CAUSAL_INFERENCE"] == "1"
+    assert policy._last_video_pred_context["source"] == "noncausal_diagnostic_rollout"
+    assert policy._last_video_pred_context["causal_env_during_rollout"] == "0"
+    assert policy._last_video_pred_context["causal_env_before_rollout"] == "1"
 
 
 def test_noncausal_video_pred_rollout_restores_absent_causal_env(monkeypatch):
@@ -257,6 +260,7 @@ def test_noncausal_video_pred_rollout_restores_absent_causal_env(monkeypatch):
 
     assert calls == ["0"]
     assert "MAI_USE_CAUSAL_INFERENCE" not in os.environ
+    assert policy._last_video_pred_context["causal_env_before_rollout"] is None
 
 
 def test_noncausal_video_pred_rollout_restores_action_head_control_state(monkeypatch):
@@ -314,6 +318,14 @@ def test_noncausal_video_pred_rollout_restores_action_head_control_state(monkeyp
     assert action_head.skip_countdown == 3
     assert action_head.model._cached_token_agent_id == "model-token-cache"
     assert action_head._last_video_pred == "diagnostic-video"
+    assert policy._last_video_pred_context == {
+        "source": "noncausal_diagnostic_rollout",
+        "rollout_mode": "noncausal",
+        "causal_env_during_rollout": "0",
+        "causal_env_before_rollout": None,
+        "control_current_start_frame_before_rollout": 9,
+        "diagnostic_current_start_frame_after_rollout": 999,
+    }
 
 
 def test_metadata_tag_prefers_robotwin_over_legacy_robofactory():
@@ -723,6 +735,11 @@ def test_dump_video_pred_manifest_records_comparison_and_eval_context(monkeypatc
     policy.ckpt_dir = tmp_path
     policy.reset_causal_state_each_infer = True
     policy.video_pred_rollout_mode = "noncausal"
+    policy._last_video_pred_context = {
+        "source": "noncausal_diagnostic_rollout",
+        "rollout_mode": "noncausal",
+        "causal_env_during_rollout": "0",
+    }
     action_head = SimpleNamespace(
         _last_video_pred=np.zeros((1, 2, 16, 2, 3, 4), dtype=np.float32),
         current_start_frame=3,
@@ -788,6 +805,11 @@ def test_dump_video_pred_manifest_records_comparison_and_eval_context(monkeypatc
     assert entry["chunk_start_index"] == 16
     assert entry["reset_causal_state_each_infer"] is True
     assert entry["video_pred_rollout_mode"] == "noncausal"
+    assert entry["video_pred_context"] == {
+        "source": "noncausal_diagnostic_rollout",
+        "rollout_mode": "noncausal",
+        "causal_env_during_rollout": "0",
+    }
     assert entry["comparison_files"] == [
         "comparison/infer0002_env0048_agent0_compare.mp4",
         "comparison/infer0002_env0048_agent1_compare.mp4",

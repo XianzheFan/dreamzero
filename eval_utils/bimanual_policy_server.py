@@ -510,6 +510,8 @@ class BimanualPolicy:
             )
         self.reset_causal_state_each_infer = bool(reset_causal_state_each_infer)
         self._last_action_debug: dict[str, np.ndarray] = {}
+        self._last_video_pred_context: dict[str, Any] = {}
+        self._denorm_diagnostics_logged = False
         self._relative_action = False
         self._relative_action_per_horizon = False
         self._relative_action_keys: set[str] = set()
@@ -1325,6 +1327,18 @@ class BimanualPolicy:
             try:
                 if self.video_pred_rollout_mode == "noncausal":
                     self._run_noncausal_video_pred_rollout(inputs_gpu)
+                else:
+                    action_head = getattr(getattr(self, "_model", None), "action_head", None)
+                    self._last_video_pred_context = {
+                        "source": "primary_action_rollout",
+                        "rollout_mode": self.video_pred_rollout_mode,
+                        "causal_env": os.environ.get("MAI_USE_CAUSAL_INFERENCE", "1"),
+                        "current_start_frame": (
+                            None
+                            if action_head is None
+                            else getattr(action_head, "current_start_frame", None)
+                        ),
+                    }
                 self._dump_video_pred(sess, sid)
                 self._dump_conditioning_pred(sess, sid)
             except Exception:
@@ -1431,7 +1445,11 @@ class BimanualPolicy:
         """
         import torch
 
+        action_head = getattr(getattr(self, "_model", None), "action_head", None)
         control_state = self._snapshot_action_head_control_state()
+        control_start_frame = (
+            None if action_head is None else getattr(action_head, "current_start_frame", None)
+        )
         old_causal = os.environ.get("MAI_USE_CAUSAL_INFERENCE")
         os.environ["MAI_USE_CAUSAL_INFERENCE"] = "0"
         logging.info(
@@ -1441,6 +1459,18 @@ class BimanualPolicy:
         try:
             with torch.inference_mode():
                 self._model.get_action(inputs_gpu)
+            self._last_video_pred_context = {
+                "source": "noncausal_diagnostic_rollout",
+                "rollout_mode": "noncausal",
+                "causal_env_during_rollout": "0",
+                "causal_env_before_rollout": old_causal,
+                "control_current_start_frame_before_rollout": control_start_frame,
+                "diagnostic_current_start_frame_after_rollout": (
+                    None
+                    if action_head is None
+                    else getattr(action_head, "current_start_frame", None)
+                ),
+            }
         finally:
             if old_causal is None:
                 os.environ.pop("MAI_USE_CAUSAL_INFERENCE", None)
@@ -1462,7 +1492,7 @@ class BimanualPolicy:
         logging.info(
             "video_pred runtime: latent_shape=%s current_start_frame=%s "
             "num_frame_per_block=%s num_inference_steps=%s causal=%s "
-            "anchor_i2v=%s scheduler=%s",
+            "anchor_i2v=%s scheduler=%s source_context=%s",
             tuple(latents.shape),
             getattr(action_head, "current_start_frame", None),
             getattr(action_head, "num_frame_per_block", None),
@@ -1470,6 +1500,7 @@ class BimanualPolicy:
             os.environ.get("MAI_USE_CAUSAL_INFERENCE", "1"),
             getattr(action_head, "_mai_anchor_i2v_first_frame", None),
             getattr(action_head, "_mai_causal_scheduler", None),
+            self._last_video_pred_context,
         )
         frames = self._decode_latent_video(latents)
 
@@ -1517,6 +1548,7 @@ class BimanualPolicy:
                 "shared_global_wrist_window_mode": self.shared_global_wrist_window_mode,
                 "reset_causal_state_each_infer": self.reset_causal_state_each_infer,
                 "video_pred_rollout_mode": self.video_pred_rollout_mode,
+                "video_pred_context": self._last_video_pred_context,
                 "pred_video_semantics": (
                     "decoded denoised wrist-future latents; comparison panels use "
                     "the current observed conditioning frame for every predicted "
@@ -1985,6 +2017,109 @@ class BimanualPolicy:
             (" " + " ".join(extra_parts)) if extra_parts else "",
         )
 
+    @staticmethod
+    def _value_summary(values: np.ndarray) -> str:
+        arr = np.asarray(values, dtype=np.float32).reshape(-1)
+        if arr.size == 0:
+            return "empty"
+        return (
+            f"min={float(arr.min()):.5f} "
+            f"p50={float(np.quantile(arr, 0.5)):.5f} "
+            f"mean={float(arr.mean()):.5f} "
+            f"max={float(arr.max()):.5f}"
+        )
+
+    @classmethod
+    def _vector_norm_summary(cls, values: np.ndarray) -> str:
+        arr = np.asarray(values, dtype=np.float32)
+        if arr.size == 0:
+            return "empty"
+        if arr.ndim == 1:
+            norms = np.abs(arr)
+        else:
+            norms = np.linalg.norm(arr.reshape(-1, arr.shape[-1]), axis=-1)
+        return cls._value_summary(norms)
+
+    def _log_denorm_diagnostics(
+        self,
+        *,
+        raw_pred: np.ndarray,
+        clipped_pred: np.ndarray,
+        qpos: np.ndarray,
+        pre_anchor_out: np.ndarray,
+        final_out: np.ndarray,
+        slice_infos: list[dict[str, Any]],
+    ) -> None:
+        if getattr(self, "_denorm_diagnostics_logged", False):
+            return
+        self._denorm_diagnostics_logged = True
+
+        raw_flat = self._flatten_bimanual_action_pred(raw_pred[0])
+        clipped_flat = self._flatten_bimanual_action_pred(clipped_pred[0])
+        saturation_frac = float(np.mean(np.abs(raw_flat) > 1.0))
+        clip_delta = np.abs(raw_flat - clipped_flat)
+        relative_keys = sorted(getattr(self, "_relative_action_keys", set()))
+        logging.info(
+            "Action denorm diagnostics metadata=%s representation=%s "
+            "relative_action=%s relative_action_per_horizon=%s relative_keys=%s "
+            "model_pred_shape=%s executable_action_dim=%d raw_norm[%s] "
+            "raw_outside_unit=%.5f clip_abs_delta[%s]",
+            self._metadata_tag(),
+            getattr(self, "action_representation", "unknown"),
+            getattr(self, "_relative_action", False),
+            getattr(self, "_relative_action_per_horizon", False),
+            relative_keys,
+            tuple(raw_pred.shape),
+            int(getattr(self, "action_dim", final_out.shape[-1])),
+            self._value_summary(raw_flat),
+            saturation_frac,
+            self._value_summary(clip_delta),
+        )
+
+        for info in slice_infos:
+            q01 = info["q01"]
+            q99 = info["q99"]
+            span = q99 - q01
+            raw_slice = info["raw_slice"]
+            clipped_slice = info["clipped_slice"]
+            logging.info(
+                "Action denorm stats key=%s matched=%s relative=%s width=%d "
+                "q01[%s] q99[%s] span[%s] zero_span=%d "
+                "raw[%s] clipped[%s] raw_outside_unit=%.5f",
+                info["key"],
+                info["matched_key"],
+                self._key_is_relative(info["key"]),
+                int(info["width"]),
+                self._value_summary(q01),
+                self._value_summary(q99),
+                self._value_summary(span),
+                int(np.sum(span == 0)),
+                self._value_summary(raw_slice),
+                self._value_summary(clipped_slice),
+                float(np.mean(np.abs(raw_slice) > 1.0)),
+            )
+
+        left_offset = pre_anchor_out[:, 0:7]
+        right_offset = pre_anchor_out[:, 8:15]
+        left_target_delta = final_out[:, 0:7] - qpos[0:7]
+        right_target_delta = final_out[:, 8:15] - qpos[8:15]
+        left_chunk_delta = np.diff(final_out[:, 0:7], axis=0)
+        right_chunk_delta = np.diff(final_out[:, 8:15], axis=0)
+        logging.info(
+            "Action denorm joint deltas left_offset_norm[%s] right_offset_norm[%s] "
+            "left_target_minus_qpos_norm[%s] right_target_minus_qpos_norm[%s] "
+            "left_chunk_step_norm[%s] right_chunk_step_norm[%s] "
+            "qpos_left[%s] qpos_right[%s]",
+            self._vector_norm_summary(left_offset),
+            self._vector_norm_summary(right_offset),
+            self._vector_norm_summary(left_target_delta),
+            self._vector_norm_summary(right_target_delta),
+            self._vector_norm_summary(left_chunk_delta),
+            self._vector_norm_summary(right_chunk_delta),
+            self._value_summary(qpos[0:7]),
+            self._value_summary(qpos[8:15]),
+        )
+
     def _denorm_action(self, outputs, qpos: np.ndarray) -> np.ndarray:
         """Take model output ``action_pred [B=1, P=2, T_a, D_per_arm>=8]``
         (normalized to [-1, 1] via q99) and denormalize back to
@@ -2040,7 +2175,7 @@ class BimanualPolicy:
         if metadata_tag is not None:
             emb_meta = self._metadata[metadata_tag].get("statistics", {}).get("action", {})
 
-        def _stats_for_key(key: str, width: int) -> tuple[np.ndarray, np.ndarray]:
+        def _stats_for_key(key: str, width: int) -> tuple[str, np.ndarray, np.ndarray]:
             candidates = [key]
             if key.startswith("action."):
                 candidates.append(key[len("action."):])
@@ -2077,10 +2212,18 @@ class BimanualPolicy:
                 )
             if not (np.isfinite(q01).all() and np.isfinite(q99).all()):
                 raise ValueError(f"Action stats for {matched_key!r} contain non-finite values")
-            return q01, q99
+            return str(matched_key), q01, q99
 
-        def _denorm(slice_pred: np.ndarray, key: str, lo: int, hi: int) -> None:
-            q01, q99 = _stats_for_key(key, hi - lo)
+        slice_infos: list[dict[str, Any]] = []
+
+        def _denorm(
+            slice_pred: np.ndarray,
+            raw_slice_pred: np.ndarray,
+            key: str,
+            lo: int,
+            hi: int,
+        ) -> None:
+            matched_key, q01, q99 = _stats_for_key(key, hi - lo)
             span = q99 - q01
             zero_span = span == 0
             safe_span = span.copy()
@@ -2090,14 +2233,36 @@ class BimanualPolicy:
             if np.any(zero_span):
                 denormed[:, zero_span] = q01[zero_span]
             out[:T, lo:hi] = denormed
+            slice_infos.append(
+                {
+                    "key": key,
+                    "matched_key": matched_key,
+                    "width": hi - lo,
+                    "q01": q01,
+                    "q99": q99,
+                    "raw_slice": raw_slice_pred[:T],
+                    "clipped_slice": slice_pred[:T],
+                }
+            )
 
         p0 = pred[0, 0]                                       # [T_a, 8]
         p1 = pred[0, 1]                                       # [T_a, 8]
-        _denorm(p0[:, :7],  "action.panda0_joint_pos",    0, 7)
-        _denorm(p0[:, 7:8], "action.panda0_gripper_pos",  7, 8)
-        _denorm(p1[:, :7],  "action.panda1_joint_pos",    8, 15)
-        _denorm(p1[:, 7:8], "action.panda1_gripper_pos", 15, 16)
+        raw_p0 = raw_pred[0, 0]
+        raw_p1 = raw_pred[0, 1]
+        _denorm(p0[:, :7],  raw_p0[:, :7],  "action.panda0_joint_pos",    0, 7)
+        _denorm(p0[:, 7:8], raw_p0[:, 7:8], "action.panda0_gripper_pos",  7, 8)
+        _denorm(p1[:, :7],  raw_p1[:, :7],  "action.panda1_joint_pos",    8, 15)
+        _denorm(p1[:, 7:8], raw_p1[:, 7:8], "action.panda1_gripper_pos", 15, 16)
+        pre_anchor_out = out.copy()
         self._add_reference_state_for_relative_keys(out, qpos)
+        self._log_denorm_diagnostics(
+            raw_pred=raw_pred,
+            clipped_pred=pred,
+            qpos=qpos,
+            pre_anchor_out=pre_anchor_out,
+            final_out=out,
+            slice_infos=slice_infos,
+        )
         self._last_action_debug["action_physical_pre_binarize"] = out.copy()
         self._binarize_gripper_targets(out)
         self._last_action_debug["action_physical_final"] = out.copy()
