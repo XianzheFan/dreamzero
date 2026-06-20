@@ -119,6 +119,7 @@ REPORT_TO=${REPORT_TO:-none}
 WANDB_PROJECT=${WANDB_PROJECT:-dreamzero_robofactory_smoke}
 WANDB_RUN_NAME=${WANDB_RUN_NAME:-robofactory_bimanual_smoke}
 DATASET_SHARD_SAMPLING_RATE=${DATASET_SHARD_SAMPLING_RATE:-1.0}
+RELATIVE_ACTION_PER_HORIZON=${RELATIVE_ACTION_PER_HORIZON:-false}
 ACTION_LOSS_WEIGHT=${ACTION_LOSS_WEIGHT:-5.0}
 GRIPPER_ACTION_LOSS_WEIGHT=${GRIPPER_ACTION_LOSS_WEIGHT:-6.0}
 GRIPPER_CLOSE_ACTION_LOSS_WEIGHT=${GRIPPER_CLOSE_ACTION_LOSS_WEIGHT:-4.0}
@@ -200,6 +201,7 @@ fi
 
 echo "save_steps=$SAVE_STEPS  save_total_limit=$SAVE_TOTAL_LIMIT"
 echo "dataset_shard_sampling_rate=$DATASET_SHARD_SAMPLING_RATE"
+echo "relative_action_per_horizon=$RELATIVE_ACTION_PER_HORIZON"
 echo "action_loss_weight=$ACTION_LOSS_WEIGHT  gripper_action_loss_weight=$GRIPPER_ACTION_LOSS_WEIGHT  gripper_close_action_loss_weight=$GRIPPER_CLOSE_ACTION_LOSS_WEIGHT  gripper_close_threshold=$GRIPPER_CLOSE_THRESHOLD  gripper_action_dims=[$GRIPPER_ACTION_DIMS]  gripper_clean_action_loss_weight=$GRIPPER_CLEAN_ACTION_LOSS_WEIGHT  gripper_clean_close_action_loss_weight=$GRIPPER_CLEAN_CLOSE_ACTION_LOSS_WEIGHT  gripper_clean_max_sigma=$GRIPPER_CLEAN_MAX_SIGMA  action_prefix_loss_weight=$ACTION_PREFIX_LOSS_WEIGHT  action_prefix_loss_len=$ACTION_PREFIX_LOSS_LEN"
 echo "joint_motion_action_loss_weight=$JOINT_MOTION_ACTION_LOSS_WEIGHT  joint_motion_action_loss_threshold=$JOINT_MOTION_ACTION_LOSS_THRESHOLD"
 echo "gripper_binary_action_loss_weight=$GRIPPER_BINARY_ACTION_LOSS_WEIGHT  gripper_binary_close_action_loss_weight=$GRIPPER_BINARY_CLOSE_ACTION_LOSS_WEIGHT  gripper_binary_logit_scale=$GRIPPER_BINARY_LOGIT_SCALE  gripper_binary_max_sigma=$GRIPPER_BINARY_MAX_SIGMA"
@@ -265,6 +267,7 @@ torchrun "${TORCHRUN_ARGS[@]}" groot/vla/experiment/experiment.py \
     save_strategy=steps \
     robofactory_data_root=$ROBOFACTORY_DATA_ROOT \
     dataset_shard_sampling_rate=$DATASET_SHARD_SAMPLING_RATE \
+    relative_action_per_horizon=$RELATIVE_ACTION_PER_HORIZON \
     ++agent_state_pad_dim=$AGENT_STATE_PAD_DIM \
     ++agent_action_pad_dim=$AGENT_ACTION_PAD_DIM \
     dit_version=$WAN_CKPT_DIR \

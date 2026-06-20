@@ -88,12 +88,29 @@ class Normalizer:
         self.mode = mode
         self.statistics = statistics
         for key, value in self.statistics.items():
-            self.statistics[key] = torch.tensor(value)
+            self.statistics[key] = torch.as_tensor(value)
+        self._is_per_horizon = any(
+            value.ndim == 2 for value in self.statistics.values()
+        )
+        self._per_horizon_normalizer: PerHorizonNormalizer | None = None
+        if self._is_per_horizon and not all(
+            value.ndim == 2 for value in self.statistics.values()
+        ):
+            raise ValueError(
+                "Per-horizon normalization statistics must all have shape "
+                "(horizon_len, action_dim)."
+            )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         assert isinstance(
             x, torch.Tensor
         ), f"Unexpected input type: {type(x)}. Expected type: {torch.Tensor}"
+        if self._is_per_horizon:
+            if self._per_horizon_normalizer is None:
+                self._per_horizon_normalizer = PerHorizonNormalizer(
+                    self.mode, self.statistics
+                )
+            return self._per_horizon_normalizer.forward(x)
 
         # Normalize the tensor
         if self.mode == "q99":
@@ -189,6 +206,13 @@ class Normalizer:
         assert isinstance(
             x, torch.Tensor
         ), f"Unexpected input type: {type(x)}. Expected type: {torch.Tensor}"
+        if self._is_per_horizon:
+            if self._per_horizon_normalizer is None:
+                self._per_horizon_normalizer = PerHorizonNormalizer(
+                    self.mode, self.statistics
+                )
+            return self._per_horizon_normalizer.inverse(x)
+
         if self.mode == "q99":
             q01 = self.statistics["q01"].to(dtype=x.dtype, device=x.device)
             q99 = self.statistics["q99"].to(dtype=x.dtype, device=x.device)
@@ -226,7 +250,51 @@ class PerHorizonNormalizer:
         self.statistics = {}
         for key, value in statistics.items():
             # Convert to tensor: shape (horizon_len, action_dim)
-            self.statistics[key] = torch.tensor(value)
+            self.statistics[key] = torch.as_tensor(value)
+
+        stat_shapes = {tuple(value.shape) for value in self.statistics.values()}
+        if len(stat_shapes) != 1:
+            raise ValueError(
+                f"Per-horizon statistics must share one shape, got {sorted(stat_shapes)}"
+            )
+        stat_shape = next(iter(stat_shapes))
+        if len(stat_shape) != 2:
+            raise ValueError(
+                f"Per-horizon statistics must have shape (horizon_len, action_dim), got {stat_shape}"
+            )
+
+    def _reshape_for_horizon(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Size, bool]:
+        stats_horizon_len, action_dim = next(iter(self.statistics.values())).shape
+        if x.ndim < 2:
+            raise ValueError(
+                f"Expected at least 2D input for per-horizon normalization, got {tuple(x.shape)}"
+            )
+        if x.shape[-1] != action_dim:
+            raise ValueError(
+                f"Input action dim {x.shape[-1]} does not match per-horizon stats dim {action_dim}"
+            )
+
+        original_shape = x.shape
+        sequence_len = x.shape[-2]
+        if sequence_len <= stats_horizon_len:
+            return x, original_shape, False
+        if sequence_len % stats_horizon_len != 0:
+            raise ValueError(
+                f"Cannot align sequence length {sequence_len} with per-horizon "
+                f"stats length {stats_horizon_len}"
+            )
+
+        num_chunks = sequence_len // stats_horizon_len
+        reshaped = x.reshape(*x.shape[:-2], num_chunks, stats_horizon_len, action_dim)
+        return reshaped, original_shape, True
+
+    @staticmethod
+    def _restore_horizon_shape(
+        x: torch.Tensor, original_shape: torch.Size, reshaped: bool
+    ) -> torch.Tensor:
+        if reshaped:
+            return x.reshape(original_shape)
+        return x
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Normalize tensor with per-horizon statistics.
@@ -242,27 +310,7 @@ class PerHorizonNormalizer:
             x, torch.Tensor
         ), f"Unexpected input type: {type(x)}. Expected type: {torch.Tensor}"
 
-        # Get the stats horizon length
-        stats_horizon_len = self.statistics["q01"].shape[0]
-        action_dim = x.shape[-1]
-        original_shape = x.shape
-        
-        # Handle case where x is flattened (num_chunks * horizon_len, action_dim)
-        # We need to reshape to (..., horizon_len, action_dim) for proper broadcasting
-        reshaped = False
-        if len(x.shape) == 2:
-            total_len = x.shape[0]
-            if total_len > stats_horizon_len and total_len % stats_horizon_len == 0:
-                # Flattened batch case: reshape to (num_chunks, horizon_len, action_dim)
-                num_chunks = total_len // stats_horizon_len
-                x = x.view(num_chunks, stats_horizon_len, action_dim)
-                reshaped = True
-            elif total_len == stats_horizon_len:
-                # Single chunk, add batch dimension for consistent processing
-                x = x.unsqueeze(0)
-                reshaped = True
-        
-        # Now x should have shape (..., horizon_len, action_dim)
+        x, original_shape, reshaped = self._reshape_for_horizon(x)
         horizon_len = x.shape[-2]
         
         if self.mode == "q99":
@@ -274,9 +322,7 @@ class PerHorizonNormalizer:
             range_vals = torch.where(range_vals == 0, torch.ones_like(range_vals), range_vals)
             normalized = 2 * (x - q01) / range_vals - 1
             
-            # For zero-range values, keep original
-            mask = (q01 == q99).unsqueeze(0).expand_as(x) if len(x.shape) > 2 else (q01 == q99)
-            normalized = torch.where(mask, x, normalized)
+            normalized = torch.where(q01 == q99, x, normalized)
             normalized = torch.clamp(normalized, -1, 1)
 
         elif self.mode == "mean_std":
@@ -286,8 +332,7 @@ class PerHorizonNormalizer:
             std_safe = torch.where(std == 0, torch.ones_like(std), std)
             normalized = (x - mean) / std_safe
             
-            mask = (std == 0).unsqueeze(0).expand_as(x) if len(x.shape) > 2 else (std == 0)
-            normalized = torch.where(mask, x, normalized)
+            normalized = torch.where(std == 0, x, normalized)
 
         elif self.mode == "min_max":
             min_val = self.statistics["min"].to(dtype=x.dtype, device=x.device)[:horizon_len]
@@ -297,8 +342,7 @@ class PerHorizonNormalizer:
             range_vals = torch.where(range_vals == 0, torch.ones_like(range_vals), range_vals)
             normalized = 2 * (x - min_val) / range_vals - 1
             
-            mask = (min_val == max_val).unsqueeze(0).expand_as(x) if len(x.shape) > 2 else (min_val == max_val)
-            normalized = torch.where(mask, torch.zeros_like(x), normalized)
+            normalized = torch.where(min_val == max_val, torch.zeros_like(x), normalized)
             normalized = torch.clamp(normalized, -1, 1)
 
         elif self.mode == "scale":
@@ -309,19 +353,14 @@ class PerHorizonNormalizer:
             abs_max_safe = torch.where(abs_max == 0, torch.ones_like(abs_max), abs_max)
             normalized = x / abs_max_safe
             
-            mask = (abs_max == 0).unsqueeze(0).expand_as(x) if len(x.shape) > 2 else (abs_max == 0)
-            normalized = torch.where(mask, torch.zeros_like(x), normalized)
+            normalized = torch.where(abs_max == 0, torch.zeros_like(x), normalized)
 
         elif self.mode == "binary":
             normalized = (x > 0.5).to(x.dtype)
         else:
             raise ValueError(f"Invalid normalization mode: {self.mode}")
 
-        # Reshape back to original shape
-        if reshaped:
-            normalized = normalized.view(original_shape)
-            
-        return normalized
+        return self._restore_horizon_shape(normalized, original_shape, reshaped)
 
     def inverse(self, x: torch.Tensor) -> torch.Tensor:
         """Denormalize tensor with per-horizon statistics.
@@ -337,23 +376,7 @@ class PerHorizonNormalizer:
             x, torch.Tensor
         ), f"Unexpected input type: {type(x)}. Expected type: {torch.Tensor}"
         
-        # Get the stats horizon length
-        stats_horizon_len = self.statistics["q01"].shape[0]
-        action_dim = x.shape[-1]
-        original_shape = x.shape
-        
-        # Handle case where x is flattened (num_chunks * horizon_len, action_dim)
-        reshaped = False
-        if len(x.shape) == 2:
-            total_len = x.shape[0]
-            if total_len > stats_horizon_len and total_len % stats_horizon_len == 0:
-                num_chunks = total_len // stats_horizon_len
-                x = x.view(num_chunks, stats_horizon_len, action_dim)
-                reshaped = True
-            elif total_len == stats_horizon_len:
-                x = x.unsqueeze(0)
-                reshaped = True
-        
+        x, original_shape, reshaped = self._reshape_for_horizon(x)
         horizon_len = x.shape[-2]
         
         if self.mode == "q99":
@@ -370,14 +393,15 @@ class PerHorizonNormalizer:
             denormalized = (x + 1) / 2 * (max_val - min_val) + min_val
         elif self.mode == "binary":
             denormalized = (x > 0.5).to(dtype=x.dtype, device=x.device)
+        elif self.mode == "scale":
+            min_val = self.statistics["min"].to(dtype=x.dtype, device=x.device)[:horizon_len]
+            max_val = self.statistics["max"].to(dtype=x.dtype, device=x.device)[:horizon_len]
+            abs_max = torch.max(torch.abs(min_val), torch.abs(max_val))
+            denormalized = x * abs_max
         else:
             raise ValueError(f"Invalid normalization mode: {self.mode}")
-        
-        # Reshape back to original shape
-        if reshaped:
-            denormalized = denormalized.view(original_shape)
-            
-        return denormalized
+
+        return self._restore_horizon_shape(denormalized, original_shape, reshaped)
 
 
 class PerHorizonActionTransform(InvertibleModalityTransform):
