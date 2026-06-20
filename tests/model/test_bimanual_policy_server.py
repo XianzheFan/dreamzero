@@ -275,7 +275,23 @@ def test_action_video_pred_uses_noncausal_when_video_stream_keeps_noise():
 
     assert (
         policy._auto_noncausal_video_pred_reason(action_head)
-        == "action_rollout_decoupled_video_noise"
+        == "action_rollout_video_final_noise"
+    )
+
+
+def test_action_video_pred_uses_noncausal_when_final_noise_is_not_decoupled():
+    policy = _make_policy(_metadata_with_action_stats())
+    policy.video_pred_rollout_mode = "action"
+    action_head = SimpleNamespace(
+        config=SimpleNamespace(
+            decouple_inference_noise=False,
+            video_inference_final_noise=0.8,
+        )
+    )
+
+    assert (
+        policy._auto_noncausal_video_pred_reason(action_head)
+        == "action_rollout_video_final_noise"
     )
 
 
@@ -285,7 +301,7 @@ def test_action_video_pred_keeps_primary_rollout_when_video_fully_denoises():
     action_head = SimpleNamespace(
         config=SimpleNamespace(
             decouple_inference_noise=False,
-            video_inference_final_noise=0.8,
+            video_inference_final_noise=0.0,
         )
     )
 

@@ -1607,11 +1607,9 @@ class BimanualPolicy:
                     setattr(model, "_cached_token_agent_id", value)
 
     @staticmethod
-    def _action_head_has_decoupled_video_noise(action_head: Any) -> bool:
+    def _action_head_keeps_video_final_noise(action_head: Any) -> bool:
         cfg = None if action_head is None else getattr(action_head, "config", None)
         if cfg is None:
-            return False
-        if not bool(getattr(cfg, "decouple_inference_noise", False)):
             return False
         try:
             final_noise = float(getattr(cfg, "video_inference_final_noise", 0.0) or 0.0)
@@ -1622,18 +1620,17 @@ class BimanualPolicy:
     def _auto_noncausal_video_pred_reason(self, action_head: Any) -> str | None:
         """Return why action-mode video diagnostics need a full-denoise pass.
 
-        Some checkpoints use decoupled action/video inference: the action
-        stream denoises to completion, while the video stream intentionally
-        stops at a nonzero sigma because control only needs the action. The
-        primary rollout's ``_last_video_pred`` is therefore a residual-noise
-        latent, not a usable predicted video. When saving diagnostics, rerun a
-        noncausal full-denoise pass after control action generation and decode
-        that pass instead.
+        Some checkpoints leave the action rollout's video latents at a nonzero
+        final sigma because control only needs the denoised action. The primary
+        rollout's ``_last_video_pred`` is therefore a residual-noise latent, not
+        a usable predicted video. When saving diagnostics, rerun a noncausal
+        full-denoise pass after control action generation and decode that pass
+        instead.
         """
         if self.video_pred_rollout_mode != "action":
             return None
-        if self._action_head_has_decoupled_video_noise(action_head):
-            return "action_rollout_decoupled_video_noise"
+        if self._action_head_keeps_video_final_noise(action_head):
+            return "action_rollout_video_final_noise"
         return None
 
     def _run_noncausal_video_pred_rollout(
