@@ -707,13 +707,19 @@ class BimanualPolicy:
 
         action_dim, action_key, action_shape = dim_from_shape(
             (
+                ("action_head.model.base_model.model.action_decoder.layer2.b", -1),
+                ("action_head.model.base_model.model.action_decoder.layer2.W", -1),
+                ("action_head.model.base_model.model.action_encoder.W1.W", -2),
                 ("action_head.model.action_decoder.layer2.b", -1),
                 ("action_head.model.action_decoder.layer2.W", -1),
                 ("action_head.model.action_encoder.W1.W", -2),
             )
         )
         state_dim, state_key, state_shape = dim_from_shape(
-            (("action_head.model.state_encoder.layer1.W", -2),)
+            (
+                ("action_head.model.base_model.model.state_encoder.layer1.W", -2),
+                ("action_head.model.state_encoder.layer1.W", -2),
+            )
         )
 
         updates: list[tuple[str, object, object]] = []
