@@ -425,6 +425,40 @@ def test_config_zero_values_are_honored_in_loss_helpers():
     assert clean_loss.item() == 1.0
 
 
+def test_action_loss_reduction_ignores_padded_action_dims():
+    Cls = _load_head_cls()
+    head = Cls.__new__(Cls)
+    torch.nn.Module.__init__(head)
+
+    multi_agent_loss = torch.zeros(1, 2, 3, 32)
+    multi_agent_loss[..., :8] = 1.5
+    multi_agent_mask = torch.zeros_like(multi_agent_loss, dtype=torch.bool)
+    multi_agent_mask[..., :8] = True
+
+    multi_agent_reduced = head._mean_action_loss_over_valid_dims(
+        multi_agent_loss,
+        multi_agent_mask,
+    )
+    torch.testing.assert_close(
+        multi_agent_reduced,
+        torch.full((1, 2, 3), 1.5),
+    )
+
+    single_agent_loss = torch.zeros(2, 4, 32)
+    single_agent_loss[..., :8] = 2.0
+    single_agent_mask = torch.zeros_like(single_agent_loss, dtype=torch.bool)
+    single_agent_mask[..., :8] = True
+
+    single_agent_reduced = head._mean_action_loss_over_valid_dims(
+        single_agent_loss,
+        single_agent_mask,
+    )
+    torch.testing.assert_close(
+        single_agent_reduced,
+        torch.full((2, 4), 2.0),
+    )
+
+
 def test_joint_motion_action_loss_weights_large_non_gripper_targets():
     Cls = _load_head_cls()
     head = Cls.__new__(Cls)

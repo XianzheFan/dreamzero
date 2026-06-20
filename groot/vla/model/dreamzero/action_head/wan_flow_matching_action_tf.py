@@ -628,6 +628,21 @@ class WANPolicyHead(ActionHead):
             weighted = weighted * action_weight
         return weighted
 
+    @staticmethod
+    def _mean_action_loss_over_valid_dims(
+        action_loss: torch.Tensor,
+        action_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """Average over real action dims, excluding padded DROID-width tails."""
+        if action_loss.shape != action_mask.shape:
+            raise ValueError(
+                "action_loss and action_mask must have identical shape; "
+                f"got {tuple(action_loss.shape)} vs {tuple(action_mask.shape)}"
+            )
+        valid = action_mask.to(device=action_loss.device, dtype=action_loss.dtype)
+        valid_count = valid.sum(dim=-1).clamp_min(1.0)
+        return action_loss.sum(dim=-1) / valid_count
+
     def _config_float(self, name: str, default: float) -> float:
         value = getattr(self.config, name, default)
         if value is None:
@@ -1506,7 +1521,11 @@ class WANPolicyHead(ActionHead):
                     .unflatten(0, (B, T_a))
                     .to(self._device)
                 )  # [B, T_a]
-                weight_action = action_loss_per_sample.mean(dim=3) * train_w_action.unsqueeze(1)
+                action_loss_per_step = self._mean_action_loss_over_valid_dims(
+                    action_loss_per_sample,
+                    action_mask,
+                )
+                weight_action = action_loss_per_step * train_w_action.unsqueeze(1)
                 weighted_action_loss = weight_action.mean()
                 gripper_clean_action_loss = torch.tensor(0.0, device=self._device)
                 gripper_binary_action_loss = torch.tensor(0.0, device=self._device)
@@ -2456,7 +2475,11 @@ class WANPolicyHead(ActionHead):
                     action_loss_per_sample,
                     actions=actions,
                 )
-                weight_action = action_loss_per_sample.mean(dim=2) * self.scheduler.training_weight(
+                action_loss_per_step = self._mean_action_loss_over_valid_dims(
+                    action_loss_per_sample,
+                    action_mask,
+                )
+                weight_action = action_loss_per_step * self.scheduler.training_weight(
                     timestep_action.flatten(0, 1),
                 ).unflatten(0, (noise_action.shape[0], noise_action.shape[1])).to(self._device)
                 weighted_action_loss = weight_action.mean()
