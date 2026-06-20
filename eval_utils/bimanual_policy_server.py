@@ -1479,6 +1479,31 @@ class BimanualPolicy:
                 "pred_files": pred_files,
                 "observed_files": observed_files,
                 "comparison_files": comparison_files,
+                "pred_latent_start_frame": getattr(
+                    action_head, "_last_video_pred_start_frame", None
+                ),
+                "pred_latent_end_frame": getattr(
+                    action_head, "_last_video_pred_end_frame", None
+                ),
+                "pred_latent_includes_conditioning_frame": getattr(
+                    action_head,
+                    "_last_video_pred_includes_conditioning_frame",
+                    None,
+                ),
+                "current_start_frame_after_infer": getattr(
+                    action_head, "current_start_frame", None
+                ),
+                "cached_until_frame": getattr(
+                    action_head, "_ma_cached_until_frame", None
+                ),
+                "num_frame_per_block": getattr(
+                    action_head, "num_frame_per_block", None
+                ),
+                "local_attn_size": getattr(
+                    getattr(action_head, "model", None),
+                    "local_attn_size",
+                    None,
+                ),
                 "replan_every": sess.get("last_replan_every"),
                 "chunk_start_index": sess.get("last_chunk_start_index"),
                 "shared_global_wrist_window_mode": self.shared_global_wrist_window_mode,

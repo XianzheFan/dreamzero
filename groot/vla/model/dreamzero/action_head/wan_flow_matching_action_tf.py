@@ -2352,16 +2352,24 @@ class WANPolicyHead(ActionHead):
             global_latents=global_latents,
         )
 
+        video_start_frame = self.current_start_frame
+        video_end_frame = self.current_start_frame + block
         video_output = noisy_video
+        includes_conditioning_frame = False
         if self.current_start_frame == 1:
             first_frame = current_image[
                 ..., : video_output.shape[-2], : video_output.shape[-1]
             ]
             video_output = torch.cat([first_frame, video_output], dim=3)
+            video_start_frame = 0
+            includes_conditioning_frame = True
         self.current_start_frame += block
 
         self._last_video_pred = video_output.detach()
         self._last_video_pred_rollout_mode = "causal"
+        self._last_video_pred_start_frame = int(video_start_frame)
+        self._last_video_pred_end_frame = int(video_end_frame)
+        self._last_video_pred_includes_conditioning_frame = includes_conditioning_frame
         self._mai_rolling_noise = self._use_multi_agent_rolling_noise()
         self._mai_anchor_i2v_first_frame = self.current_start_frame <= (1 + block)
         return BatchFeature(data={"action_pred": noisy_action})
@@ -2604,6 +2612,9 @@ class WANPolicyHead(ActionHead):
         # without re-running the rollout. Shape: [B, P, C_lat, F_lat, H_lat, W_lat].
         self._last_video_pred = noisy_video.detach()
         self._last_video_pred_rollout_mode = "noncausal"
+        self._last_video_pred_start_frame = 0
+        self._last_video_pred_end_frame = int(noisy_video.shape[3])
+        self._last_video_pred_includes_conditioning_frame = False
         self._mai_rolling_noise = self._use_multi_agent_rolling_noise()
         return BatchFeature(data={"action_pred": noisy_action})
 

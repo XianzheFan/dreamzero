@@ -648,18 +648,22 @@ def run_episode(
                 left_close_after_step=left_gripper_close_after_step,
                 right_close_after_step=right_gripper_close_after_step,
             )
+            pre_blend_abs16 = abs16.copy()
             abs16 = blend_replan_boundary_target(
                 abs16,
                 boundary_anchor,
                 chunk_offset,
                 replan_boundary_blend_steps,
             )
+            pre_slew_abs16 = abs16.copy()
             abs16 = limit_joint_target_slew(abs16, last_commanded, joint_target_slew_rate)
             raw_obs, reward, term, trunc, info = env.step(env_action_dict(abs16))
             last_commanded = abs16.copy()
             cur = abs16
             steps += 1
             if dump is not None:
+                dump["exec_action_pre_blend"].append(pre_blend_abs16.copy())
+                dump["exec_action_pre_slew"].append(pre_slew_abs16.copy())
                 dump["exec_action"].append(abs16.copy())
                 dump["env_trace"].append(collect_env_trace(env, steps, abs16, info))
             if episode_success(
@@ -1054,6 +1058,8 @@ def main():
             "infer_step": np.asarray(dump["infer_step"], dtype=np.int32),
             "pred_chunk": np.stack(dump["pred_chunk"]),       # denorm [n_infer, chunk_len, 16]
             "obs_qpos": np.stack(dump["obs_qpos"]),           # [n_infer, 16]
+            "exec_action_pre_blend": np.stack(dump["exec_action_pre_blend"]),
+            "exec_action_pre_slew": np.stack(dump["exec_action_pre_slew"]),
             "exec_action": np.stack(dump["exec_action"]),     # [n_steps, 16]
             "env_trace": np.stack(dump["env_trace"]),         # [n_steps + 1, len(ENV_TRACE_COLUMNS)]
             "env_trace_columns": ENV_TRACE_COLUMNS,
@@ -1072,6 +1078,8 @@ def main():
                 "infer_step": [],
                 "pred_chunk": [],
                 "obs_qpos": [],
+                "exec_action_pre_blend": [],
+                "exec_action_pre_slew": [],
                 "exec_action": [],
                 "env_trace": [],
                 "action_norm_raw": [],

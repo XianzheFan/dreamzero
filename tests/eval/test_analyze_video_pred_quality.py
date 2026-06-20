@@ -1,9 +1,11 @@
 import numpy as np
 
 from scripts.eval.analyze_video_pred_quality import (
+    _aggregate,
     _risk_flags,
     compare_videos,
     video_metrics,
+    write_text_report,
 )
 
 
@@ -39,3 +41,41 @@ def test_compare_videos_reports_rgb_mae():
     assert metrics["mae_rgb"] == 10.0
     assert metrics["first_frame_mae_rgb"] == 10.0
     assert metrics["last_frame_mae_rgb"] == 10.0
+
+
+def test_video_quality_summary_names_condition_window_metric(tmp_path):
+    payload = {
+        "root": str(tmp_path),
+        "videos": [
+            {
+                "path": "session/infer0000_agent0.mp4",
+                "agent_id": 0,
+                "env_step": 0,
+                "pred_latent_start_frame": 0,
+                "pred_latent_end_frame": 5,
+                "current_start_frame_after_infer": 5,
+                "cached_until_frame": 5,
+                "metrics": {
+                    "temporal_absdiff": {"mean": 2.0, "p95": 4.0},
+                    "temporal_freeze_frac": 0.0,
+                    "laplacian_var": {"mean": 30.0},
+                    "saturation_frac": {"mean": 0.0},
+                },
+                "pred_vs_condition_window": {"mae_rgb": 12.5},
+                "pred_vs_observed": {"mae_rgb": 12.5},
+                "risk_flags": [],
+            }
+        ],
+        "failures": [],
+    }
+    payload["summary"] = _aggregate(payload["videos"])
+
+    assert payload["summary"]["pred_vs_condition_window_mae_rgb_mean"] == 12.5
+    assert payload["summary"]["pred_vs_observed_mae_rgb_mean"] == 12.5
+
+    report = tmp_path / "report.txt"
+    write_text_report(payload, report)
+    text = report.read_text(encoding="utf-8")
+    assert "pred_vs_condition_window_mae_rgb_mean" in text
+    assert "condition_window_mae=12.5" in text
+    assert "latent_frames=0:5" in text

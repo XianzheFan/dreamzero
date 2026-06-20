@@ -11,8 +11,9 @@ The metrics are intentionally model-agnostic:
 * temporal absolute differences identify frozen or flickery predictions;
 * Laplacian variance is a simple blur/sharpness proxy;
 * saturation/black/white fractions catch decode or color-range failures;
-* optional pred-vs-observed MAE compares each predicted agent video with the
-  matching observed wrist window when available.
+* optional pred-vs-condition-window MAE compares each predicted agent video with
+  the matching observed wrist conditioning window when available. This is a
+  time-alignment diagnostic, not ground-truth future-video error.
 """
 
 from __future__ import annotations
@@ -318,35 +319,49 @@ def analyze_video_tree(
                 if observed_path is not None and observed_path.exists():
                     observed_frames = read_video(observed_path, max_frames=max_frames)
                     comparison = compare_videos(pred_frames, observed_frames)
-                videos.append(
-                    {
-                        "path": pred_path.relative_to(root).as_posix(),
-                        "session_dir": session_dir.relative_to(root).as_posix(),
-                        "agent_id": agent_id,
-                        "infer_idx": entry.get("infer_idx"),
-                        "env_step": entry.get("env_step"),
-                        "replan_every": entry.get("replan_every"),
-                        "chunk_start_index": entry.get("chunk_start_index"),
-                        "reset_causal_state_each_infer": entry.get(
-                            "reset_causal_state_each_infer"
-                        ),
-                        "video_pred_rollout_mode": entry.get("video_pred_rollout_mode"),
-                        "last_video_pred_rollout_mode": entry.get(
-                            "last_video_pred_rollout_mode"
-                        ),
-                        "mai_rolling_noise": entry.get("mai_rolling_noise"),
-                        "noise_draw_counts": entry.get("noise_draw_counts"),
-                        "observed_path": (
-                            observed_path.relative_to(root).as_posix()
-                            if observed_path is not None and observed_path.exists()
-                            else None
-                        ),
-                        "observed_kind": observed_kind,
-                        "metrics": metrics,
-                        "pred_vs_observed": comparison,
-                        "risk_flags": _risk_flags(metrics),
-                    }
-                )
+                row = {
+                    "path": pred_path.relative_to(root).as_posix(),
+                    "session_dir": session_dir.relative_to(root).as_posix(),
+                    "agent_id": agent_id,
+                    "infer_idx": entry.get("infer_idx"),
+                    "env_step": entry.get("env_step"),
+                    "pred_latent_start_frame": entry.get(
+                        "pred_latent_start_frame"
+                    ),
+                    "pred_latent_end_frame": entry.get("pred_latent_end_frame"),
+                    "pred_latent_includes_conditioning_frame": entry.get(
+                        "pred_latent_includes_conditioning_frame"
+                    ),
+                    "current_start_frame_after_infer": entry.get(
+                        "current_start_frame_after_infer"
+                    ),
+                    "cached_until_frame": entry.get("cached_until_frame"),
+                    "num_frame_per_block": entry.get("num_frame_per_block"),
+                    "local_attn_size": entry.get("local_attn_size"),
+                    "replan_every": entry.get("replan_every"),
+                    "chunk_start_index": entry.get("chunk_start_index"),
+                    "reset_causal_state_each_infer": entry.get(
+                        "reset_causal_state_each_infer"
+                    ),
+                    "video_pred_rollout_mode": entry.get("video_pred_rollout_mode"),
+                    "last_video_pred_rollout_mode": entry.get(
+                        "last_video_pred_rollout_mode"
+                    ),
+                    "mai_rolling_noise": entry.get("mai_rolling_noise"),
+                    "noise_draw_counts": entry.get("noise_draw_counts"),
+                    "observed_path": (
+                        observed_path.relative_to(root).as_posix()
+                        if observed_path is not None and observed_path.exists()
+                        else None
+                    ),
+                    "observed_kind": observed_kind,
+                    "metrics": metrics,
+                    "pred_vs_condition_window": comparison,
+                    # Backward-compatible alias for older analysis readers.
+                    "pred_vs_observed": comparison,
+                    "risk_flags": _risk_flags(metrics),
+                }
+                videos.append(row)
             except Exception as exc:
                 failures.append(
                     {
@@ -401,8 +416,11 @@ def _aggregate(videos: list[dict[str, Any]]) -> dict[str, Any]:
         "saturation_frac_mean": _mean_or_none(
             collect(("metrics", "saturation_frac", "mean"))
         ),
+        "pred_vs_condition_window_mae_rgb_mean": _mean_or_none(
+            collect(("pred_vs_condition_window", "mae_rgb"))
+        ),
         "pred_vs_observed_mae_rgb_mean": _mean_or_none(
-            collect(("pred_vs_observed", "mae_rgb"))
+            collect(("pred_vs_condition_window", "mae_rgb"))
         ),
     }
 
@@ -420,22 +438,27 @@ def write_text_report(payload: dict[str, Any], path: Path) -> None:
         f"  temporal_freeze_frac_mean: {summary.get('temporal_freeze_frac_mean')}",
         f"  laplacian_var_mean: {summary.get('laplacian_var_mean')}",
         f"  saturation_frac_mean: {summary.get('saturation_frac_mean')}",
-        f"  pred_vs_observed_mae_rgb_mean: {summary.get('pred_vs_observed_mae_rgb_mean')}",
+        "  pred_vs_condition_window_mae_rgb_mean: "
+        f"{summary.get('pred_vs_condition_window_mae_rgb_mean')}",
+        "  pred_vs_observed_mae_rgb_mean: "
+        f"{summary.get('pred_vs_observed_mae_rgb_mean')}  # compatibility alias",
         "",
         "per video:",
     ]
     for row in payload["videos"]:
         metrics = row["metrics"]
-        comparison = row.get("pred_vs_observed") or {}
+        comparison = row.get("pred_vs_condition_window") or {}
         lines.append(
             "  "
             f"{row['path']} agent={row.get('agent_id')} env_step={row.get('env_step')} "
+            f"latent_frames={row.get('pred_latent_start_frame')}:{row.get('pred_latent_end_frame')} "
+            f"cache_after={row.get('current_start_frame_after_infer')}/{row.get('cached_until_frame')} "
             f"temporal_mean={metrics['temporal_absdiff']['mean']} "
             f"temporal_p95={metrics['temporal_absdiff']['p95']} "
             f"freeze={metrics['temporal_freeze_frac']} "
             f"lap_mean={metrics['laplacian_var']['mean']} "
             f"sat_mean={metrics['saturation_frac']['mean']} "
-            f"obs_mae={comparison.get('mae_rgb')} "
+            f"condition_window_mae={comparison.get('mae_rgb')} "
             f"flags={row['risk_flags']}"
         )
     if payload["failures"]:

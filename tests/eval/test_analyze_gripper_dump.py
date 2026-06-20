@@ -17,6 +17,12 @@ def test_analyze_episode_reports_joint_jitter_metrics(tmp_path):
         dtype=np.float32,
     )
     exec_action[:, 8:15] = exec_action[:, :7]
+    exec_action_pre_blend = exec_action.copy()
+    exec_action_pre_blend[3, :7] = 1.2
+    exec_action_pre_blend[3, 8:15] = 1.2
+    exec_action_pre_slew = exec_action.copy()
+    exec_action_pre_slew[3, :7] = 1.0
+    exec_action_pre_slew[3, 8:15] = 1.0
     pred_chunk = np.zeros((2, 3, 16), dtype=np.float32)
     obs_qpos = np.zeros((2, 16), dtype=np.float32)
     np.savez(
@@ -24,6 +30,8 @@ def test_analyze_episode_reports_joint_jitter_metrics(tmp_path):
         seed=np.asarray(1000),
         success=np.asarray(False),
         exec_action=exec_action,
+        exec_action_pre_blend=exec_action_pre_blend,
+        exec_action_pre_slew=exec_action_pre_slew,
         pred_chunk=pred_chunk,
         infer_step=np.asarray([0, 3], dtype=np.int64),
         obs_qpos=obs_qpos,
@@ -46,3 +54,7 @@ def test_analyze_episode_reports_joint_jitter_metrics(tmp_path):
     assert np.isclose(episode["max_replan_boundary_joint_jump"], 0.6)
     assert "exec_joint_step_accel" in episode["joint_debug"]
     assert "replan_boundary_joint_jump" in episode["joint_debug"]
+    assert "pre_blend_replan_boundary_joint_jump" in episode["joint_debug"]
+    assert "pre_slew_joint_step_delta" in episode["joint_debug"]
+    assert "boundary_blend_correction_joint" in episode["joint_debug"]
+    assert "slew_correction_joint" in episode["joint_debug"]

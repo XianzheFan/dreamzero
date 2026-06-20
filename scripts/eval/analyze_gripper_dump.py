@@ -376,6 +376,16 @@ def analyze_episode(
     seed = int(d["seed"])
     success = bool(d["success"])
     exec_action = np.asarray(d["exec_action"], dtype=np.float32)
+    exec_action_pre_blend = (
+        np.asarray(d["exec_action_pre_blend"], dtype=np.float32)
+        if "exec_action_pre_blend" in d.files
+        else None
+    )
+    exec_action_pre_slew = (
+        np.asarray(d["exec_action_pre_slew"], dtype=np.float32)
+        if "exec_action_pre_slew" in d.files
+        else None
+    )
     pred_chunk = np.asarray(d["pred_chunk"], dtype=np.float32)
     action_norm_raw = (
         np.asarray(d["action_norm_raw"], dtype=np.float32)
@@ -459,6 +469,50 @@ def analyze_episode(
         "replan_boundary_joint_jump": _abs_stats(replan_boundary_jump),
         "pred_chunk_joint": _range_stats(pred_chunk[..., joint_dims]) if joint_dims else None,
     }
+    if (
+        joint_dims
+        and exec_action_pre_blend is not None
+        and exec_action_pre_blend.shape == exec_action.shape
+    ):
+        pre_blend_boundary_jump = _joint_boundary_jumps(
+            exec_action_pre_blend,
+            joint_dims,
+            infer_step,
+        )
+        boundary_blend_target = (
+            exec_action_pre_slew
+            if exec_action_pre_slew is not None
+            and exec_action_pre_slew.shape == exec_action.shape
+            else exec_action
+        )
+        boundary_blend_correction = (
+            exec_action_pre_blend[:, joint_dims] - boundary_blend_target[:, joint_dims]
+        )
+        joint_debug.update(
+            {
+                "pre_blend_replan_boundary_joint_jump": _abs_stats(
+                    pre_blend_boundary_jump
+                ),
+                "boundary_blend_correction_joint": _abs_stats(boundary_blend_correction),
+            }
+        )
+    if (
+        joint_dims
+        and exec_action_pre_slew is not None
+        and exec_action_pre_slew.shape == exec_action.shape
+    ):
+        pre_slew_delta = (
+            np.diff(exec_action_pre_slew[:, joint_dims], axis=0)
+            if steps > 1
+            else np.zeros((0, len(joint_dims)))
+        )
+        slew_correction = exec_action_pre_slew[:, joint_dims] - exec_action[:, joint_dims]
+        joint_debug.update(
+            {
+                "pre_slew_joint_step_delta": _abs_stats(pre_slew_delta),
+                "slew_correction_joint": _abs_stats(slew_correction),
+            }
+        )
     if (
         joint_dims
         and obs_qpos.ndim == 2
@@ -607,6 +661,20 @@ def analyze_episode(
             "  replan boundary joint jump: "
             f"{_fmt_abs(joint_debug['replan_boundary_joint_jump'])}"
         )
+        if "pre_blend_replan_boundary_joint_jump" in joint_debug:
+            print(
+                "  pre-blend replan boundary joint jump: "
+                f"{_fmt_abs(joint_debug['pre_blend_replan_boundary_joint_jump'])}"
+            )
+        if "pre_slew_joint_step_delta" in joint_debug:
+            print(
+                "  pre-slew joint step delta: "
+                f"{_fmt_abs(joint_debug['pre_slew_joint_step_delta'])}"
+            )
+            print(
+                "  slew correction joint: "
+                f"{_fmt_abs(joint_debug['slew_correction_joint'])}"
+            )
         if "obs_qpos_joint" in joint_debug:
             print(f"  obs qpos joint range: {_fmt_range(joint_debug['obs_qpos_joint'])}")
             print(
