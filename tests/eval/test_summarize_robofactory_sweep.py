@@ -45,7 +45,17 @@ def test_summarize_sweep_extracts_trace_metrics(tmp_path):
                     "left_grasp_episodes": 1,
                     "right_grasp_episodes": 1,
                 },
-            }
+            },
+            "episodes": [
+                {
+                    "first_cmd_delta_mean": 0.08,
+                    "first_cmd_delta_max": 0.18,
+                    "norm_debug": {
+                        "raw_joint_saturation_frac": 0.04,
+                        "joint_clamp_delta_max": 0.12,
+                    },
+                }
+            ],
         },
     )
     _write_json(
@@ -81,7 +91,17 @@ def test_summarize_sweep_extracts_trace_metrics(tmp_path):
                     "left_grasp_episodes": 0,
                     "right_grasp_episodes": 0,
                 },
-            }
+            },
+            "episodes": [
+                {
+                    "first_cmd_delta_mean": 0.02,
+                    "first_cmd_delta_max": 0.06,
+                    "norm_debug": {
+                        "raw_joint_saturation_frac": 0.0,
+                        "joint_clamp_delta_max": 0.0,
+                    },
+                }
+            ],
         },
     )
 
@@ -90,7 +110,11 @@ def test_summarize_sweep_extracts_trace_metrics(tmp_path):
     assert [row["scale"] for row in rows] == [1.0, 1.5]
     assert rows[0]["success_count"] == 0
     assert rows[0]["replan_boundary_blend_steps"] == 0.0
+    assert rows[0]["first_cmd_delta_mean"] == 0.02
+    assert rows[0]["first_cmd_delta_max"] == 0.06
     assert rows[0]["target_min_mean_left"] == 0.13
+    assert rows[0]["raw_joint_saturation_frac"] == 0.0
+    assert rows[0]["joint_clamp_delta_max"] == 0.0
     assert rows[0]["right_grasp_episodes"] == 0
     assert rows[1]["success_count"] == 1
     assert rows[1]["scale_clip"] == 0.25
@@ -99,3 +123,7 @@ def test_summarize_sweep_extracts_trace_metrics(tmp_path):
     assert rows[1]["barrier_margin_best"] == -0.02
     assert rows[1]["mean_joint_step_accel"] == 0.03
     assert rows[1]["max_replan_boundary_joint_jump"] == 0.09
+    assert rows[1]["first_cmd_delta_mean"] == 0.08
+    assert rows[1]["first_cmd_delta_max"] == 0.18
+    assert rows[1]["raw_joint_saturation_frac"] == 0.04
+    assert rows[1]["joint_clamp_delta_max"] == 0.12

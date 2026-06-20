@@ -47,6 +47,28 @@ def _float_or_none(value: Any) -> float | None:
     return out
 
 
+def _mean_finite(values: list[Any]) -> float | None:
+    floats = [
+        value
+        for value in (_float_or_none(v) for v in values)
+        if value is not None
+    ]
+    if not floats:
+        return None
+    return sum(floats) / len(floats)
+
+
+def _max_finite(values: list[Any]) -> float | None:
+    floats = [
+        value
+        for value in (_float_or_none(v) for v in values)
+        if value is not None
+    ]
+    if not floats:
+        return None
+    return max(floats)
+
+
 def _setting_from_results(results: dict[str, Any], setting_dir: str) -> dict[str, Any]:
     cfg = results.get("eval_config", {})
     if not isinstance(cfg, dict):
@@ -92,11 +114,33 @@ def summarize_setting(setting_dir: str) -> dict[str, Any]:
         summary = dump.get("summary", {})
         if not isinstance(summary, dict):
             summary = {}
+        dump_episodes = dump.get("episodes", [])
+        if not isinstance(dump_episodes, list):
+            dump_episodes = []
         trace = summary.get("env_trace", {})
         if not isinstance(trace, dict):
             trace = {}
+        norm_debugs = [
+            episode.get("norm_debug", {})
+            for episode in dump_episodes
+            if isinstance(episode, dict)
+        ]
         row.update(
             {
+                "first_cmd_delta_mean": _mean_finite(
+                    [
+                        episode.get("first_cmd_delta_mean")
+                        for episode in dump_episodes
+                        if isinstance(episode, dict)
+                    ]
+                ),
+                "first_cmd_delta_max": _max_finite(
+                    [
+                        episode.get("first_cmd_delta_max")
+                        for episode in dump_episodes
+                        if isinstance(episode, dict)
+                    ]
+                ),
                 "target_min_mean_left": _float_or_none(
                     trace.get("left_tcp_to_grasp_target_min_mean")
                 ),
@@ -133,6 +177,20 @@ def summarize_setting(setting_dir: str) -> dict[str, Any]:
                 "max_replan_boundary_joint_jump": _float_or_none(
                     summary.get("max_replan_boundary_joint_jump")
                 ),
+                "raw_joint_saturation_frac": _mean_finite(
+                    [
+                        debug.get("raw_joint_saturation_frac")
+                        for debug in norm_debugs
+                        if isinstance(debug, dict)
+                    ]
+                ),
+                "joint_clamp_delta_max": _max_finite(
+                    [
+                        debug.get("joint_clamp_delta_max")
+                        for debug in norm_debugs
+                        if isinstance(debug, dict)
+                    ]
+                ),
             }
         )
     return row
@@ -168,6 +226,8 @@ def print_table(rows: list[dict[str, Any]]) -> None:
         ("blend", "replan_boundary_blend_steps"),
         ("succ", "success_count"),
         ("eps", "episodes"),
+        ("first_delta", "first_cmd_delta_mean"),
+        ("first_max", "first_cmd_delta_max"),
         ("L_target", "target_min_mean_left"),
         ("R_target", "target_min_mean_right"),
         ("margin_best", "barrier_margin_best"),
@@ -177,6 +237,8 @@ def print_table(rows: list[dict[str, Any]]) -> None:
         ("joint_max", "max_joint_step_delta"),
         ("accel_mean", "mean_joint_step_accel"),
         ("boundary_max", "max_replan_boundary_joint_jump"),
+        ("raw_sat", "raw_joint_saturation_frac"),
+        ("clamp_max", "joint_clamp_delta_max"),
         ("never_close", "any_gripper_never_closes"),
     ]
     print("\t".join(label for label, _ in columns))

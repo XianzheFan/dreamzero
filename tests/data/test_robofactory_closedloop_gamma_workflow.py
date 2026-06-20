@@ -106,6 +106,10 @@ def test_closedloop_gamma_scale_sweep_targets_action_amplitude_diagnostic():
     assert '--joint-delta-scale "$JOINT_DELTA_SCALE"' in script
     assert "--joint-delta-output-clip" in script
     assert "action_dump_summary.json" in script
+    assert "summarize_robofactory_sweep.py" in script
+    assert "--pattern \"*_jscale_*\"" in script
+    assert "scale_sweep_summary.json" in script
+    assert "scale_sweep_summary.txt" in script
 
 
 def test_closedloop_gamma_scale_sweep_embedded_script_is_valid_bash():

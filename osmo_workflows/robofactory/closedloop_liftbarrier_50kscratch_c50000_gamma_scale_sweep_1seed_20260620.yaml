@@ -874,6 +874,15 @@ workflow:
             overall_status=1
           fi
 
+          if find /workspace/eval_outputs -path "*/action_dump_summary.json" -print -quit | grep -q .; then
+            echo "Writing scale-sweep physical summary"
+            python /workspace/code/dreamzero/scripts/eval/summarize_robofactory_sweep.py \
+              /workspace/eval_outputs \
+              --pattern "*_jscale_*" \
+              --json-out /workspace/eval_outputs/scale_sweep_summary.json \
+              2>&1 | tee /workspace/eval_outputs/scale_sweep_summary.txt || true
+          fi
+
           if [ "$overall_status" -ne 0 ]; then
             exit "$overall_status"
           fi
