@@ -319,10 +319,11 @@ workflow:
           test "$(git -C /workspace/code/dreamzero rev-parse HEAD)" = "$DREAMZERO_GIT_COMMIT"
           echo "Resolved DreamZero ref ${DREAMZERO_GIT_REF} to ${DREAMZERO_GIT_COMMIT}"
           echo "$DREAMZERO_GIT_COMMIT" > /workspace/eval_outputs/dreamzero_code_commit.txt
-                      python -m py_compile \
+            python -m py_compile \
             /workspace/code/dreamzero/eval_utils/bimanual_policy_server.py \
             /workspace/code/dreamzero/scripts/eval/eval_robofactory_ws.py \
-            /workspace/code/dreamzero/scripts/eval/analyze_gripper_dump.py
+            /workspace/code/dreamzero/scripts/eval/analyze_gripper_dump.py \
+            /workspace/code/dreamzero/scripts/eval/analyze_video_pred_quality.py
 
           echo "Cloning RoboFactory at ${ROBOFACTORY_GIT_COMMIT}"
           git clone --no-checkout --filter=blob:none "$ROBOFACTORY_GIT_URL" /workspace/code/RoboFactory

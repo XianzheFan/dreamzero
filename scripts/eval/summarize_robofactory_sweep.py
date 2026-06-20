@@ -119,6 +119,18 @@ def summarize_setting(setting_dir: str) -> dict[str, Any]:
                 "max_joint_step_delta": _float_or_none(
                     summary.get("max_joint_step_delta")
                 ),
+                "mean_joint_step_accel": _float_or_none(
+                    summary.get("mean_joint_step_accel")
+                ),
+                "max_joint_step_accel": _float_or_none(
+                    summary.get("max_joint_step_accel")
+                ),
+                "mean_replan_boundary_joint_jump": _float_or_none(
+                    summary.get("mean_replan_boundary_joint_jump")
+                ),
+                "max_replan_boundary_joint_jump": _float_or_none(
+                    summary.get("max_replan_boundary_joint_jump")
+                ),
             }
         )
     return row
@@ -160,6 +172,8 @@ def print_table(rows: list[dict[str, Any]]) -> None:
         ("R_grasp", "right_grasp_episodes"),
         ("joint_mean", "mean_joint_step_delta"),
         ("joint_max", "max_joint_step_delta"),
+        ("accel_mean", "mean_joint_step_accel"),
+        ("boundary_max", "max_replan_boundary_joint_jump"),
         ("never_close", "any_gripper_never_closes"),
     ]
     print("\t".join(label for label, _ in columns))

@@ -227,6 +227,24 @@ def _abs_stats(values: np.ndarray) -> dict[str, float]:
     }
 
 
+def _joint_boundary_jumps(
+    exec_action: np.ndarray,
+    joint_dims: tuple[int, ...],
+    infer_step: np.ndarray,
+) -> np.ndarray:
+    if not joint_dims or exec_action.shape[0] <= 1 or infer_step.size == 0:
+        return np.zeros((0, len(joint_dims)), dtype=np.float32)
+    jumps = []
+    for raw_step in infer_step.astype(np.int64):
+        step = int(raw_step)
+        if step <= 0 or step >= exec_action.shape[0]:
+            continue
+        jumps.append(exec_action[step, joint_dims] - exec_action[step - 1, joint_dims])
+    if not jumps:
+        return np.zeros((0, len(joint_dims)), dtype=np.float32)
+    return np.asarray(jumps, dtype=np.float32)
+
+
 def _fmt_range(stats: dict[str, float]) -> str:
     return (
         f"min={stats['min']:+.3f} max={stats['max']:+.3f} "
@@ -407,14 +425,38 @@ def analyze_episode(
         if steps > 1 and joint_dims
         else np.zeros((0, len(joint_dims)))
     )
+    joint_step_accel = (
+        np.diff(joint_step_delta, axis=0)
+        if joint_step_delta.shape[0] > 1
+        else np.zeros((0, len(joint_dims)))
+    )
+    replan_boundary_jump = _joint_boundary_jumps(
+        exec_action,
+        joint_dims,
+        infer_step,
+    )
     max_joint_step_delta = float(np.max(np.abs(joint_step_delta))) if joint_step_delta.size else 0.0
     mean_joint_step_delta = float(np.mean(np.abs(joint_step_delta))) if joint_step_delta.size else 0.0
+    max_joint_step_accel = float(np.max(np.abs(joint_step_accel))) if joint_step_accel.size else 0.0
+    mean_joint_step_accel = float(np.mean(np.abs(joint_step_accel))) if joint_step_accel.size else 0.0
+    max_replan_boundary_joint_jump = (
+        float(np.max(np.abs(replan_boundary_jump)))
+        if replan_boundary_jump.size
+        else 0.0
+    )
+    mean_replan_boundary_joint_jump = (
+        float(np.mean(np.abs(replan_boundary_jump)))
+        if replan_boundary_jump.size
+        else 0.0
+    )
 
     first_cmd_delta_mean = None
     first_cmd_delta_max = None
     joint_debug: dict[str, Any] = {
         "exec_joint": _range_stats(exec_action[:, joint_dims]) if joint_dims else None,
         "exec_joint_step_delta": _abs_stats(joint_step_delta),
+        "exec_joint_step_accel": _abs_stats(joint_step_accel),
+        "replan_boundary_joint_jump": _abs_stats(replan_boundary_jump),
         "pred_chunk_joint": _range_stats(pred_chunk[..., joint_dims]) if joint_dims else None,
     }
     if (
@@ -502,6 +544,10 @@ def analyze_episode(
         "pred_decisive_close_offsets": pred_offsets,
         "max_joint_step_delta": max_joint_step_delta,
         "mean_joint_step_delta": mean_joint_step_delta,
+        "max_joint_step_accel": max_joint_step_accel,
+        "mean_joint_step_accel": mean_joint_step_accel,
+        "max_replan_boundary_joint_jump": max_replan_boundary_joint_jump,
+        "mean_replan_boundary_joint_jump": mean_replan_boundary_joint_jump,
         "first_cmd_delta_mean": first_cmd_delta_mean,
         "first_cmd_delta_max": first_cmd_delta_max,
         "joint_debug": joint_debug,
@@ -556,6 +602,11 @@ def analyze_episode(
     if joint_debug["exec_joint"] is not None:
         print(f"  exec joint range: {_fmt_range(joint_debug['exec_joint'])}")
         print(f"  pred chunk joint range: {_fmt_range(joint_debug['pred_chunk_joint'])}")
+        print(f"  joint acceleration: {_fmt_abs(joint_debug['exec_joint_step_accel'])}")
+        print(
+            "  replan boundary joint jump: "
+            f"{_fmt_abs(joint_debug['replan_boundary_joint_jump'])}"
+        )
         if "obs_qpos_joint" in joint_debug:
             print(f"  obs qpos joint range: {_fmt_range(joint_debug['obs_qpos_joint'])}")
             print(
@@ -675,6 +726,14 @@ def _aggregate(episodes: list[dict[str, Any]]) -> dict[str, Any]:
         "first_decisive_close": first_close_values,
         "max_joint_step_delta": max(e["max_joint_step_delta"] for e in episodes) if episodes else 0.0,
         "mean_joint_step_delta": float(np.mean([e["mean_joint_step_delta"] for e in episodes])) if episodes else 0.0,
+        "max_joint_step_accel": max(e["max_joint_step_accel"] for e in episodes) if episodes else 0.0,
+        "mean_joint_step_accel": float(np.mean([e["mean_joint_step_accel"] for e in episodes])) if episodes else 0.0,
+        "max_replan_boundary_joint_jump": max(
+            e["max_replan_boundary_joint_jump"] for e in episodes
+        ) if episodes else 0.0,
+        "mean_replan_boundary_joint_jump": float(
+            np.mean([e["mean_replan_boundary_joint_jump"] for e in episodes])
+        ) if episodes else 0.0,
     }
     trace_episodes = [e["env_trace_debug"] for e in episodes if e.get("env_trace_debug") is not None]
     if trace_episodes:
@@ -813,6 +872,16 @@ def main() -> None:
         "  joint step delta: "
         f"mean_abs={summary['mean_joint_step_delta']:.3f} "
         f"max_abs={summary['max_joint_step_delta']:.3f}"
+    )
+    print(
+        "  joint acceleration: "
+        f"mean_abs={summary['mean_joint_step_accel']:.3f} "
+        f"max_abs={summary['max_joint_step_accel']:.3f}"
+    )
+    print(
+        "  replan boundary joint jump: "
+        f"mean_abs={summary['mean_replan_boundary_joint_jump']:.3f} "
+        f"max_abs={summary['max_replan_boundary_joint_jump']:.3f}"
     )
     if "env_trace" in summary:
         trace = summary["env_trace"]

@@ -53,6 +53,7 @@ def test_closedloop_gamma_workflow_runs_causal_cache_diagnostics():
         'RESET_TAG="resetcache"',
         '--video-pred-dir "/workspace/eval_outputs/video_pred/${INFERENCE_MODE}_${RESET_TAG}"',
         "analyze_video_pred_quality.py",
+        "/workspace/code/dreamzero/scripts/eval/analyze_video_pred_quality.py",
         'server_meta = data.get("server", {}).get("meta", {})',
         '"reset_causal_state_each_infer": server_meta.get("reset_causal_state_each_infer")',
         '"write_denoised_context_cache": server_meta.get("write_denoised_context_cache")',
@@ -66,6 +67,10 @@ def test_closedloop_gamma_workflow_runs_causal_cache_diagnostics():
         '--right-gripper-close-after-step "$RIGHT_GRIPPER_CLOSE_AFTER_STEP"',
     ):
         assert marker in script
+
+
+def test_closedloop_gamma_workflow_video_quality_script_exists():
+    assert (REPO_ROOT / "scripts/eval/analyze_video_pred_quality.py").is_file()
 
 
 def test_closedloop_gamma_workflow_does_not_patch_dreamzero_at_runtime():

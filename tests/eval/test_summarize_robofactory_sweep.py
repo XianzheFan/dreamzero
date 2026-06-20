@@ -32,6 +32,10 @@ def test_summarize_sweep_extracts_trace_metrics(tmp_path):
                 "any_gripper_never_closes": 0,
                 "mean_joint_step_delta": 0.04,
                 "max_joint_step_delta": 0.2,
+                "mean_joint_step_accel": 0.03,
+                "max_joint_step_accel": 0.12,
+                "mean_replan_boundary_joint_jump": 0.025,
+                "max_replan_boundary_joint_jump": 0.09,
                 "env_trace": {
                     "left_tcp_to_grasp_target_min_mean": 0.07,
                     "right_tcp_to_grasp_target_min_mean": 0.08,
@@ -63,6 +67,10 @@ def test_summarize_sweep_extracts_trace_metrics(tmp_path):
                 "any_gripper_never_closes": 0,
                 "mean_joint_step_delta": 0.02,
                 "max_joint_step_delta": 0.1,
+                "mean_joint_step_accel": 0.01,
+                "max_joint_step_accel": 0.04,
+                "mean_replan_boundary_joint_jump": 0.015,
+                "max_replan_boundary_joint_jump": 0.05,
                 "env_trace": {
                     "left_tcp_to_grasp_target_min_mean": 0.13,
                     "right_tcp_to_grasp_target_min_mean": 0.12,
@@ -85,3 +93,5 @@ def test_summarize_sweep_extracts_trace_metrics(tmp_path):
     assert rows[1]["scale_clip"] == 0.25
     assert rows[1]["target_min_mean_right"] == 0.08
     assert rows[1]["barrier_margin_best"] == -0.02
+    assert rows[1]["mean_joint_step_accel"] == 0.03
+    assert rows[1]["max_replan_boundary_joint_jump"] == 0.09
