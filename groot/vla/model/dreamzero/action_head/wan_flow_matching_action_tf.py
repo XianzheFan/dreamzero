@@ -1229,6 +1229,9 @@ class WANPolicyHead(ActionHead):
         self._ma_cached_token_agent_id = None
         self._ma_cached_token_agent_id_neg = None
         self._ma_cached_until_frame = 0
+        self._ma_noise_generators = {}
+        self._ma_noise_generator_devices = {}
+        self._ma_noise_draw_counts = {}
         if hasattr(self.model, "_cached_token_agent_id"):
             self.model._cached_token_agent_id = None
 
@@ -2153,17 +2156,17 @@ class WANPolicyHead(ActionHead):
             )
             self._ma_cached_until_frame = self.current_start_frame
 
-        noisy_video = self.generate_noise(
+        noisy_video = self._generate_multi_agent_sequence_noise(
             (B, P, c_lat, block, h_lat, w_lat),
-            seed=self.seed,
             device=self._device,
             dtype=latents.dtype,
+            stream="causal_video",
         )
-        noisy_action = self.generate_noise(
+        noisy_action = self._generate_multi_agent_sequence_noise(
             (B, P, T_a, D_a),
-            seed=self.seed,
             device=self._device,
             dtype=latents.dtype,
+            stream="causal_action",
         )
 
         causal_scheduler = os.environ.get("MAI_CAUSAL_SCHEDULER", "unipc").lower()
@@ -2347,6 +2350,8 @@ class WANPolicyHead(ActionHead):
         self.current_start_frame += block
 
         self._last_video_pred = video_output.detach()
+        self._last_video_pred_rollout_mode = "causal"
+        self._mai_rolling_noise = self._use_multi_agent_rolling_noise()
         self._mai_anchor_i2v_first_frame = self.current_start_frame <= (1 + block)
         return BatchFeature(data={"action_pred": noisy_action})
 
@@ -2517,10 +2522,18 @@ class WANPolicyHead(ActionHead):
             ].to(device=sample.device, dtype=sample.dtype)
             return sample
 
-        noisy_video = torch.randn_like(latents)
+        noisy_video = self._generate_multi_agent_sequence_noise(
+            latents.shape,
+            device=latents.device,
+            dtype=latents.dtype,
+            stream="noncausal_video",
+        )
         noisy_video = _anchor_i2v_sample(noisy_video)
-        noisy_action = torch.randn(
-            B, P, T_a, D_a, device=self._device, dtype=latents.dtype
+        noisy_action = self._generate_multi_agent_sequence_noise(
+            (B, P, T_a, D_a),
+            device=self._device,
+            dtype=latents.dtype,
+            stream="noncausal_action",
         )
 
         with torch.amp.autocast(
@@ -2579,6 +2592,8 @@ class WANPolicyHead(ActionHead):
         # policy server's --save-video-pred path) can VAE-decode them
         # without re-running the rollout. Shape: [B, P, C_lat, F_lat, H_lat, W_lat].
         self._last_video_pred = noisy_video.detach()
+        self._last_video_pred_rollout_mode = "noncausal"
+        self._mai_rolling_noise = self._use_multi_agent_rolling_noise()
         return BatchFeature(data={"action_pred": noisy_action})
 
     def get_action(
@@ -2910,6 +2925,64 @@ class WANPolicyHead(ActionHead):
         generator = None if seed is None else torch.Generator(device).manual_seed(seed)
         noise = torch.randn(shape, generator=generator, device=device, dtype=dtype)
         return noise
+
+    def _use_multi_agent_rolling_noise(self) -> bool:
+        return os.environ.get("MAI_ROLLING_NOISE", "1").lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+
+    @staticmethod
+    def _multi_agent_noise_stream_offset(stream: str) -> int:
+        offsets = {
+            "causal_video": 0,
+            "causal_action": 1_000_003,
+            "noncausal_video": 2_000_033,
+            "noncausal_action": 3_000_073,
+        }
+        return offsets.get(stream, 4_000_087)
+
+    def _generate_multi_agent_sequence_noise(
+        self,
+        shape,
+        *,
+        device,
+        dtype,
+        stream: str,
+    ) -> torch.Tensor:
+        """Draw deterministic but non-repeating multi-agent rollout noise.
+
+        Gamma-World samples one initial noise tensor for a whole rollout and
+        then consumes block slices from it. Closed-loop DreamZero only samples
+        one block per websocket infer, so resetting the RNG seed every chunk
+        creates periodic video/action noise. Keep a per-episode RNG stream
+        instead, while retaining ``MAI_ROLLING_NOISE=0`` for old behavior.
+        """
+        if not self._use_multi_agent_rolling_noise():
+            return self.generate_noise(shape, seed=self.seed, device=device, dtype=dtype)
+
+        if not hasattr(self, "_ma_noise_generators"):
+            self._ma_noise_generators = {}
+            self._ma_noise_generator_devices = {}
+            self._ma_noise_draw_counts = {}
+
+        torch_device = torch.device(device)
+        device_key = str(torch_device)
+        generator = self._ma_noise_generators.get(stream)
+        if generator is None or self._ma_noise_generator_devices.get(stream) != device_key:
+            generator = torch.Generator(device=torch_device).manual_seed(
+                int(self.seed) + self._multi_agent_noise_stream_offset(stream)
+            )
+            self._ma_noise_generators[stream] = generator
+            self._ma_noise_generator_devices[stream] = device_key
+            self._ma_noise_draw_counts[stream] = 0
+
+        self._ma_noise_draw_counts[stream] = int(
+            self._ma_noise_draw_counts.get(stream, 0)
+        ) + 1
+        return torch.randn(shape, generator=generator, device=torch_device, dtype=dtype)
     
     def _get_caches(
         self, kv_caches_input: list[KVCacheType],

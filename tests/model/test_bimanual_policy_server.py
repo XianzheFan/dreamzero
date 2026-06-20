@@ -181,6 +181,7 @@ def test_websocket_config_exposes_video_pred_and_gamma_diagnostics(
     monkeypatch.setenv("MAI_WRITE_DENOISED_CONTEXT_CACHE", "0")
     monkeypatch.setenv("MAI_CAUSAL_SCHEDULER", "flowmatch")
     monkeypatch.setenv("MAI_NUM_INFERENCE_STEPS", "5")
+    monkeypatch.setenv("MAI_ROLLING_NOISE", "0")
 
     server = mod.BimanualWebsocketServer(policy, host="127.0.0.1", port=59999)
 
@@ -190,6 +191,7 @@ def test_websocket_config_exposes_video_pred_and_gamma_diagnostics(
     assert cfg.write_denoised_context_cache is False
     assert cfg.mai_causal_scheduler == "flowmatch"
     assert cfg.mai_num_inference_steps == 5
+    assert cfg.mai_rolling_noise is False
     assert cfg.shared_global_wrist_window_mode == "history-current-first"
     assert cfg.reset_causal_state_each_infer is True
     assert cfg.video_pred_rollout_mode == "noncausal"

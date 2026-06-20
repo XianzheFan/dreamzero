@@ -99,6 +99,7 @@ class BimanualServerConfig:
     write_denoised_context_cache: bool = True
     mai_causal_scheduler: str = "unipc"
     mai_num_inference_steps: int | None = None
+    mai_rolling_noise: bool = True
     shared_global_wrist_window_mode: str = "history-current-first"
     reset_causal_state_each_infer: bool = False
     video_pred_rollout_mode: str = "action"
@@ -530,6 +531,10 @@ class BimanualPolicy:
         logging.info(
             "Predicted-video rollout mode: %s",
             self.video_pred_rollout_mode,
+        )
+        logging.info(
+            "Multi-agent rolling noise: %s",
+            self._env_bool_default("MAI_ROLLING_NOISE", True),
         )
 
     def _effective_prompt(self, prompt: str | None) -> str:
@@ -1397,15 +1402,17 @@ class BimanualPolicy:
             return
         logging.info(
             "video_pred runtime: latent_shape=%s current_start_frame=%s "
-            "num_frame_per_block=%s num_inference_steps=%s causal=%s "
-            "anchor_i2v=%s scheduler=%s",
+            "num_frame_per_block=%s num_inference_steps=%s causal_env=%s "
+            "rollout_mode=%s anchor_i2v=%s scheduler=%s rolling_noise=%s",
             tuple(latents.shape),
             getattr(action_head, "current_start_frame", None),
             getattr(action_head, "num_frame_per_block", None),
             getattr(action_head, "_mai_num_inference_steps", None),
             os.environ.get("MAI_USE_CAUSAL_INFERENCE", "1"),
+            getattr(action_head, "_last_video_pred_rollout_mode", None),
             getattr(action_head, "_mai_anchor_i2v_first_frame", None),
             getattr(action_head, "_mai_causal_scheduler", None),
+            getattr(action_head, "_mai_rolling_noise", None),
         )
         frames = self._decode_latent_video(latents)
 
@@ -1453,10 +1460,23 @@ class BimanualPolicy:
                 "shared_global_wrist_window_mode": self.shared_global_wrist_window_mode,
                 "reset_causal_state_each_infer": self.reset_causal_state_each_infer,
                 "video_pred_rollout_mode": self.video_pred_rollout_mode,
+                "last_video_pred_rollout_mode": getattr(
+                    action_head, "_last_video_pred_rollout_mode", None
+                ),
                 "write_denoised_context_cache": self._env_bool_default(
                     "MAI_WRITE_DENOISED_CONTEXT_CACHE",
                     True,
                 ),
+                "mai_rolling_noise": self._env_bool_default(
+                    "MAI_ROLLING_NOISE",
+                    True,
+                ),
+                "noise_draw_counts": {
+                    str(key): int(value)
+                    for key, value in getattr(
+                        action_head, "_ma_noise_draw_counts", {}
+                    ).items()
+                },
                 "pred_video_semantics": (
                     "decoded denoised wrist-future latents; comparison panels use "
                     "the observed conditioning-window frame at the same displayed "
@@ -2092,6 +2112,7 @@ class BimanualWebsocketServer:
                 "MAI_CAUSAL_SCHEDULER", "unipc"
             ).strip().lower() or "unipc",
             mai_num_inference_steps=_optional_env_int("MAI_NUM_INFERENCE_STEPS"),
+            mai_rolling_noise=policy._env_bool_default("MAI_ROLLING_NOISE", True),
             shared_global_wrist_window_mode=policy.shared_global_wrist_window_mode,
             reset_causal_state_each_infer=policy.reset_causal_state_each_infer,
             video_pred_rollout_mode=policy.video_pred_rollout_mode,
