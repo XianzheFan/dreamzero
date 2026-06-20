@@ -1218,7 +1218,9 @@ class WANPolicyHead(ActionHead):
     def prepare_input(self, batch: dict) -> BatchFeature:
         return BatchFeature(data=batch)
 
-    def _reset_cached_video_state(self) -> None:
+    def _reset_cached_video_state(
+        self, *, preserve_rollout_noise: bool = False
+    ) -> None:
         self.kv_cache1 = None
         self.kv_cache_neg = None
         self.crossattn_cache = None
@@ -1229,16 +1231,25 @@ class WANPolicyHead(ActionHead):
         self._ma_cached_token_agent_id = None
         self._ma_cached_token_agent_id_neg = None
         self._ma_cached_until_frame = 0
-        self._ma_noise_generators = {}
-        self._ma_noise_generator_devices = {}
-        self._ma_noise_draw_counts = {}
+        if not preserve_rollout_noise:
+            self._ma_noise_generators = {}
+            self._ma_noise_generator_devices = {}
+            self._ma_noise_draw_counts = {}
         if hasattr(self.model, "_cached_token_agent_id"):
             self.model._cached_token_agent_id = None
 
-    def reset_causal_state(self) -> None:
-        """Reset stateful causal video/action inference between episodes."""
-        self._reset_cached_video_state()
-        self.language = None
+    def reset_causal_state(self, *, preserve_rollout_noise: bool = False) -> None:
+        """Reset stateful causal video/action inference.
+
+        Episode resets should also reset the rollout noise stream. Diagnostic
+        per-infer cache resets can preserve it so the ablation tests cache
+        behavior without reintroducing same-seed periodic noise.
+        """
+        self._reset_cached_video_state(
+            preserve_rollout_noise=preserve_rollout_noise
+        )
+        if not preserve_rollout_noise:
+            self.language = None
 
     @staticmethod
     def _slice_latent_frames(

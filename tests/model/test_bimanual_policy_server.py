@@ -204,15 +204,18 @@ def test_reset_causal_state_each_infer_resets_action_head():
     class _ActionHead:
         def __init__(self):
             self.calls = 0
+            self.preserve_rollout_noise = []
 
-        def reset_causal_state(self):
+        def reset_causal_state(self, *, preserve_rollout_noise=False):
             self.calls += 1
+            self.preserve_rollout_noise.append(preserve_rollout_noise)
 
     action_head = _ActionHead()
     policy._model = SimpleNamespace(action_head=action_head)
 
     assert policy._maybe_reset_action_head_causal_state_for_infer() is True
     assert action_head.calls == 1
+    assert action_head.preserve_rollout_noise == [True]
 
 
 def test_metadata_tag_prefers_robotwin_over_legacy_robofactory():

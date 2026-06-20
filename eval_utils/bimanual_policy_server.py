@@ -63,6 +63,7 @@ import argparse
 import asyncio
 import dataclasses
 import gc
+import inspect
 import json
 import logging
 import os
@@ -1033,11 +1034,32 @@ class BimanualPolicy:
         self._reset_action_head_causal_state("episode reset")
         return "reset successful"
 
-    def _reset_action_head_causal_state(self, reason: str) -> bool:
+    def _reset_action_head_causal_state(
+        self, reason: str, *, preserve_rollout_noise: bool = False
+    ) -> bool:
         model = getattr(self, "_model", None)
         action_head = getattr(model, "action_head", None)
         if action_head is not None and hasattr(action_head, "reset_causal_state"):
-            action_head.reset_causal_state()
+            reset_fn = action_head.reset_causal_state
+            supports_preserve = False
+            if preserve_rollout_noise:
+                try:
+                    params = inspect.signature(reset_fn).parameters
+                    supports_preserve = (
+                        "preserve_rollout_noise" in params
+                        or any(
+                            p.kind == inspect.Parameter.VAR_KEYWORD
+                            for p in params.values()
+                        )
+                    )
+                except (TypeError, ValueError):
+                    supports_preserve = False
+            if supports_preserve:
+                reset_fn(
+                    preserve_rollout_noise=preserve_rollout_noise
+                )
+            else:
+                reset_fn()
             logging.debug("Reset action-head causal state for %s", reason)
             return True
         return False
@@ -1045,7 +1067,9 @@ class BimanualPolicy:
     def _maybe_reset_action_head_causal_state_for_infer(self) -> bool:
         if not self.reset_causal_state_each_infer:
             return False
-        return self._reset_action_head_causal_state("infer")
+        return self._reset_action_head_causal_state(
+            "infer", preserve_rollout_noise=True
+        )
 
     def _uses_shared_global(self) -> bool:
         """Whether the loaded transform emits ``video_global``.

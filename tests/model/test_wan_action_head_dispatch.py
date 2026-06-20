@@ -137,6 +137,44 @@ def test_reset_causal_state_clears_multi_agent_cache_progress():
     assert inst.model._cached_token_agent_id is None
 
 
+def test_reset_causal_state_can_preserve_rollout_noise():
+    Cls = _maybe_load_head()
+    inst = Cls.__new__(Cls)
+    generator = object()
+    inst.kv_cache1 = object()
+    inst.kv_cache_neg = object()
+    inst.crossattn_cache = object()
+    inst.crossattn_cache_neg = object()
+    inst.clip_feas = object()
+    inst.ys = object()
+    inst.current_start_frame = 17
+    inst._ma_cached_token_agent_id = torch.ones(3)
+    inst._ma_cached_token_agent_id_neg = torch.ones(3)
+    inst._ma_cached_until_frame = 17
+    inst._ma_noise_generators = {"causal_video": generator}
+    inst._ma_noise_generator_devices = {"causal_video": "cpu"}
+    inst._ma_noise_draw_counts = {"causal_video": 3}
+    language = torch.ones(1)
+    inst.language = language
+    inst.model = SimpleNamespace(_cached_token_agent_id=torch.ones(3))
+
+    inst.reset_causal_state(preserve_rollout_noise=True)
+
+    assert inst.kv_cache1 is None
+    assert inst.kv_cache_neg is None
+    assert inst.crossattn_cache is None
+    assert inst.crossattn_cache_neg is None
+    assert inst.current_start_frame == 0
+    assert inst._ma_cached_token_agent_id is None
+    assert inst._ma_cached_token_agent_id_neg is None
+    assert inst._ma_cached_until_frame == 0
+    assert inst._ma_noise_generators == {"causal_video": generator}
+    assert inst._ma_noise_generator_devices == {"causal_video": "cpu"}
+    assert inst._ma_noise_draw_counts == {"causal_video": 3}
+    assert inst.language is language
+    assert inst.model._cached_token_agent_id is None
+
+
 def test_multi_agent_rolling_noise_advances_within_episode(monkeypatch):
     Cls = _maybe_load_head()
     inst = Cls.__new__(Cls)
