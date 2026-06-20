@@ -100,7 +100,7 @@ def test_closedloop_gamma_scale_sweep_targets_action_amplitude_diagnostic():
         "dz-rf2-lb50k-c50000-gamma-scale-sweep-1seed1000-xz-20260620"
     )
     assert 'DREAMZERO_GIT_REF="${DREAMZERO_GIT_REF:-gamma}"' in script
-    assert 'RESET_CAUSAL_STATE_EACH_INFERS="${RESET_CAUSAL_STATE_EACH_INFERS:-0}"' in script
+    assert 'RESET_CAUSAL_STATE_EACH_INFERS="${RESET_CAUSAL_STATE_EACH_INFERS:-0 1}"' in script
     assert 'GRIPPER_CLOSE_PAIRS="52:52"' in script
     assert 'JOINT_DELTA_SCALES="0.75 1.0 1.25 1.5 2.0"' in script
     assert '--joint-delta-scale "$JOINT_DELTA_SCALE"' in script
