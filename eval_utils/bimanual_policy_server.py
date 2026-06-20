@@ -1047,7 +1047,7 @@ class BimanualPolicy:
         BimanualDreamTransform carries ``global_views`` when the
         checkpoint was trained with the shared-global layout.
         """
-        for t in getattr(self._transform, "transforms", []):
+        for t in getattr(getattr(self, "_transform", None), "transforms", []):
             if getattr(t, "global_views", None) is not None:
                 return True
         return False
@@ -1519,8 +1519,8 @@ class BimanualPolicy:
                 "video_pred_rollout_mode": self.video_pred_rollout_mode,
                 "pred_video_semantics": (
                     "decoded denoised wrist-future latents; comparison panels use "
-                    "the observed conditioning-window frame at the same displayed "
-                    "index, clamped to the final observed frame"
+                    "the current observed conditioning frame for every predicted "
+                    "step because closed-loop eval has no future observed frames"
                 ),
             },
         )
@@ -1590,12 +1590,6 @@ class BimanualPolicy:
             )
             return frames.shape[0] - 1 if mode == "history-chronological" else 0
         return frames.shape[0] - 1
-
-    @staticmethod
-    def _observed_frame_index_for_pred_step(frames: np.ndarray, pred_step: int) -> int:
-        if frames.shape[0] <= 1:
-            return 0
-        return min(max(int(pred_step), 0), frames.shape[0] - 1)
 
     @staticmethod
     def _resize_rgb_frame(frame: np.ndarray, height: int, width: int) -> np.ndarray:
@@ -1673,18 +1667,18 @@ class BimanualPolicy:
                 stream.height = H
                 stream.pix_fmt = "yuv420p"
                 stream.options = {"crf": "23"}
+                global_idx = self._current_observed_frame_index(global_video)
+                wrist_idx = self._current_observed_frame_index(wrist_video)
                 for t in range(T):
-                    global_idx = self._observed_frame_index_for_pred_step(global_video, t)
-                    wrist_idx = self._observed_frame_index_for_pred_step(wrist_video, t)
                     global_frame = self._resize_rgb_frame(global_video[global_idx], H, W)
                     wrist_frame = self._resize_rgb_frame(wrist_video[wrist_idx], H, W)
                     global_panel = self._label_rgb_frame(
                         global_frame,
-                        f"global obs[{global_idx}]",
+                        f"global cond[{global_idx}]",
                     )
                     wrist_panel = self._label_rgb_frame(
                         wrist_frame,
-                        f"{wrist_name} obs[{wrist_idx}]",
+                        f"{wrist_name} cond[{wrist_idx}]",
                     )
                     pred_panel = self._label_rgb_frame(
                         pred_frames[p, t],

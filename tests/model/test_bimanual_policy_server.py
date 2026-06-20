@@ -792,10 +792,10 @@ def test_dump_video_pred_manifest_records_comparison_and_eval_context(monkeypatc
         "comparison/infer0002_env0048_agent0_compare.mp4",
         "comparison/infer0002_env0048_agent1_compare.mp4",
     ]
-    assert "observed conditioning-window frame" in entry["pred_video_semantics"]
+    assert "current observed conditioning frame" in entry["pred_video_semantics"]
 
 
-def test_pred_observed_comparison_uses_temporal_observed_window(monkeypatch, tmp_path):
+def test_pred_observed_comparison_uses_current_conditioning_frame(monkeypatch, tmp_path):
     policy = _make_policy(_metadata_with_action_stats())
     mod = _load_server_module()
     captured_canvases = []
@@ -866,11 +866,11 @@ def test_pred_observed_comparison_uses_temporal_observed_window(monkeypatch, tmp
     assert len(captured_canvases) == 3
     np.testing.assert_array_equal(
         [int(canvas[-1, 0, 0]) for canvas in captured_canvases],
-        [10, 20, 30],
+        [30, 30, 30],
     )
     np.testing.assert_array_equal(
         [int(canvas[-1, w, 0]) for canvas in captured_canvases],
-        [110, 120, 130],
+        [130, 130, 130],
     )
 
 
