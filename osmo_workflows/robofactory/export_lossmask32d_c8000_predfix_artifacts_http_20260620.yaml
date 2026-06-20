@@ -1,0 +1,55 @@
+workflow:
+  timeout:
+    queue_timeout: 30m
+    exec_timeout: 4h
+  name: dz-rf2-lossmask32d-c8000-predfix-artifacts-http-xz-20260620
+  resources:
+    default:
+      cpu: 4
+      gpu: 0
+      memory: 16Gi
+      storage: 80Gi
+  tasks:
+    - name: serve
+      image: nvcr.io/nvidian/groot-ci-base-eval:latest@sha256:de6e59614be213f06f95c8c1e8311f0b700c963aed6c39eeec1fb56cd40c6ee7
+      command: ["bash"]
+      args: ["/tmp/export_lossmask32d_c8000_predfix_artifacts.sh"]
+      credentials:
+        gear-aws-cred:
+          AWS_ACCESS_KEY_ID: aws_access_key_id
+          AWS_DEFAULT_REGION: aws_default_region
+          AWS_ENDPOINT_URL: aws_endpoint_url
+          AWS_SECRET_ACCESS_KEY: aws_secret_access_key
+        gear-data-credentials:
+          GEAR_DATA_CREDENTIALS: data_credentials
+      files:
+        - path: /tmp/export_lossmask32d_c8000_predfix_artifacts.sh
+          contents: |
+            #!/usr/bin/env bash
+            set -euo pipefail
+
+            RUN_S3_ROOT="s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/dz-rf2-lb500-lm32-c8000-strict-actpred-predfix-s1000-gpu1-xz-20260620"
+            DOWNLOAD_ROOT="/workspace/artifacts"
+            SERVE_ROOT="/workspace/serve"
+            ARCHIVE="${SERVE_ROOT}/lossmask32d_c8000_predfix_artifacts.tar"
+            mkdir -p "$DOWNLOAD_ROOT" "$SERVE_ROOT"
+
+            echo "Checking remote artifact prefix ${RUN_S3_ROOT}/"
+            osmo data list --no-pager --recursive "${RUN_S3_ROOT}/" || true
+
+            echo "Downloading eval artifacts from ${RUN_S3_ROOT}/"
+            osmo data download --resume "${RUN_S3_ROOT}/" "$DOWNLOAD_ROOT"
+
+            echo "Downloaded artifact files:"
+            find "$DOWNLOAD_ROOT" -maxdepth 8 -type f -print | sort
+
+            echo "Creating tar archive ${ARCHIVE}"
+            tar -C "$DOWNLOAD_ROOT" -cf "$ARCHIVE" .
+            sha256sum "$ARCHIVE" > "${ARCHIVE}.sha256"
+            split -b 1m -d -a 4 "$ARCHIVE" "${ARCHIVE}.part."
+
+            echo "Served files:"
+            find "$SERVE_ROOT" -maxdepth 1 -type f -print -exec ls -lh {} \; | sort
+
+            echo "Serving ${SERVE_ROOT} on 0.0.0.0:8765"
+            python -m http.server 8765 --bind 0.0.0.0 --directory "$SERVE_ROOT"
