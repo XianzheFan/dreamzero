@@ -263,6 +263,35 @@ def test_noncausal_video_pred_rollout_restores_absent_causal_env(monkeypatch):
     assert policy._last_video_pred_context["causal_env_before_rollout"] is None
 
 
+def test_action_video_pred_uses_noncausal_when_video_stream_keeps_noise():
+    policy = _make_policy(_metadata_with_action_stats())
+    policy.video_pred_rollout_mode = "action"
+    action_head = SimpleNamespace(
+        config=SimpleNamespace(
+            decouple_inference_noise=True,
+            video_inference_final_noise=0.8,
+        )
+    )
+
+    assert (
+        policy._auto_noncausal_video_pred_reason(action_head)
+        == "action_rollout_decoupled_video_noise"
+    )
+
+
+def test_action_video_pred_keeps_primary_rollout_when_video_fully_denoises():
+    policy = _make_policy(_metadata_with_action_stats())
+    policy.video_pred_rollout_mode = "action"
+    action_head = SimpleNamespace(
+        config=SimpleNamespace(
+            decouple_inference_noise=False,
+            video_inference_final_noise=0.8,
+        )
+    )
+
+    assert policy._auto_noncausal_video_pred_reason(action_head) is None
+
+
 def test_noncausal_video_pred_rollout_restores_action_head_control_state(monkeypatch):
     policy = _make_policy(_metadata_with_action_stats())
     action_head = SimpleNamespace(

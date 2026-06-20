@@ -1467,14 +1467,42 @@ class BimanualPolicy:
 
         if self.save_video_pred:
             try:
+                action_head = getattr(getattr(self, "_model", None), "action_head", None)
+                auto_noncausal_reason = self._auto_noncausal_video_pred_reason(
+                    action_head
+                )
                 if self.video_pred_rollout_mode == "noncausal":
                     self._run_noncausal_video_pred_rollout(inputs_gpu)
+                elif auto_noncausal_reason is not None:
+                    self._run_noncausal_video_pred_rollout(
+                        inputs_gpu,
+                        reason=auto_noncausal_reason,
+                    )
                 else:
-                    action_head = getattr(getattr(self, "_model", None), "action_head", None)
                     self._last_video_pred_context = {
                         "source": "primary_action_rollout",
                         "rollout_mode": self.video_pred_rollout_mode,
                         "causal_env": os.environ.get("MAI_USE_CAUSAL_INFERENCE", "1"),
+                        "decouple_inference_noise": (
+                            None
+                            if action_head is None
+                            else bool(
+                                getattr(
+                                    getattr(action_head, "config", None),
+                                    "decouple_inference_noise",
+                                    False,
+                                )
+                            )
+                        ),
+                        "video_inference_final_noise": (
+                            None
+                            if action_head is None
+                            else getattr(
+                                getattr(action_head, "config", None),
+                                "video_inference_final_noise",
+                                None,
+                            )
+                        ),
                         "current_start_frame": (
                             None
                             if action_head is None
@@ -1578,7 +1606,42 @@ class BimanualPolicy:
                 else:
                     setattr(model, "_cached_token_agent_id", value)
 
-    def _run_noncausal_video_pred_rollout(self, inputs_gpu: dict[str, Any]) -> None:
+    @staticmethod
+    def _action_head_has_decoupled_video_noise(action_head: Any) -> bool:
+        cfg = None if action_head is None else getattr(action_head, "config", None)
+        if cfg is None:
+            return False
+        if not bool(getattr(cfg, "decouple_inference_noise", False)):
+            return False
+        try:
+            final_noise = float(getattr(cfg, "video_inference_final_noise", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            final_noise = 0.0
+        return final_noise > 0.0
+
+    def _auto_noncausal_video_pred_reason(self, action_head: Any) -> str | None:
+        """Return why action-mode video diagnostics need a full-denoise pass.
+
+        Some checkpoints use decoupled action/video inference: the action
+        stream denoises to completion, while the video stream intentionally
+        stops at a nonzero sigma because control only needs the action. The
+        primary rollout's ``_last_video_pred`` is therefore a residual-noise
+        latent, not a usable predicted video. When saving diagnostics, rerun a
+        noncausal full-denoise pass after control action generation and decode
+        that pass instead.
+        """
+        if self.video_pred_rollout_mode != "action":
+            return None
+        if self._action_head_has_decoupled_video_noise(action_head):
+            return "action_rollout_decoupled_video_noise"
+        return None
+
+    def _run_noncausal_video_pred_rollout(
+        self,
+        inputs_gpu: dict[str, Any],
+        *,
+        reason: str | None = None,
+    ) -> None:
         """Refresh ``_last_video_pred`` with noncausal flowmatch for diagnostics.
 
         The control action has already been computed before this runs; this
@@ -1613,6 +1676,8 @@ class BimanualPolicy:
                     else getattr(action_head, "current_start_frame", None)
                 ),
             }
+            if reason is not None:
+                self._last_video_pred_context["reason"] = reason
         finally:
             if old_causal is None:
                 os.environ.pop("MAI_USE_CAUSAL_INFERENCE", None)
