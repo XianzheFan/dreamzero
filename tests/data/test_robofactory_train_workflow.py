@@ -10,9 +10,9 @@ CODE_CACHE_URI = (
     "dreamzero_code_liftbarrier_motionfix_950b11b_20260618"
 )
 EXPECTED_CODE_COMMIT = "950b11ba09dcfa8c02ee962d458872244f25b0ba"
-RUN_NAME = "dz-rf2-lb500-motionw4-th02-50k-fresh-storagefix3-xz-20260618"
+RUN_NAME = "dz-rf2-lb500-motionw4-th02-50k-fresh-storagefix4-xz-20260618"
 RESTORE_RUN_NAME = "dz-rf2-lb500-motionw4-th02-50k-fresh-xz-20260618"
-WORKFLOW_NAME = "dz-rf2-lb500-motionw4-th02-50k-fresh-storagefix3-xz-20260618"
+WORKFLOW_NAME = "dz-rf2-lb500-motionw4-th02-50k-fresh-storagefix4-xz-20260618"
 
 
 def _task_by_name(workflow, name):
