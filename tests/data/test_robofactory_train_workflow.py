@@ -189,6 +189,11 @@ def test_liftbarrier_train_workflow_restores_and_uploads_run_and_s3cache_checkpo
     assert "Periodic checkpoint upload tick" in script
     assert "restore_checkpoints_from_s3 \"$RESTORE_CACHE_S3_URI\" \"restore_cache\"" in script
     assert "restore_checkpoints_from_s3 \"$RESTORE_S3_URI\" \"restore_primary\"" in script
+    assert "Listing candidate checkpoints under ${src_uri}/" in script
+    assert 'osmo data list "${src_uri}/"' in script
+    assert 'osmo data list "${ckpt_uri}/global_step${step}/"' in script
+    assert 'osmo data download --resume "${ckpt_uri}/" "$import_dir"' in script
+    assert "Skipping remotely incomplete checkpoint" in script
     assert "Skipping incomplete checkpoint" in script
     assert "Skipping incomplete restored checkpoint" in script
     assert "No usable complete checkpoint-* directories found under ${src_uri}/." in script

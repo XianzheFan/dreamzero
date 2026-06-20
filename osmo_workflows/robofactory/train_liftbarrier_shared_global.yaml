@@ -578,45 +578,99 @@ workflow:
                 [ -n "$(find "$ckpt_dir" -mindepth 2 -maxdepth 2 -type f -name '*_model_states.pt' -print -quit 2>/dev/null)" ]
             }
 
+            is_remote_complete_resume_checkpoint() {
+              ckpt_uri="${1%/}"
+              ckpt_name="$2"
+              step="${ckpt_name#checkpoint-}"
+              set +e
+              top_listing="$(osmo data list "${ckpt_uri}/" 2>/dev/null)"
+              top_status=$?
+              ds_listing="$(osmo data list "${ckpt_uri}/global_step${step}/" 2>/dev/null)"
+              ds_status=$?
+              set -e
+              if [ "$top_status" -ne 0 ] || [ "$ds_status" -ne 0 ]; then
+                return 1
+              fi
+              if ! printf "%s\n" "$top_listing" | grep -Eq "/trainer_state\\.json$"; then
+                return 1
+              fi
+              if ! printf "%s\n" "$top_listing" | grep -Eq "/model\\.safetensors(\\.index\\.json)?$"; then
+                return 1
+              fi
+              if ! printf "%s\n" "$top_listing" | grep -Eq "/latest$"; then
+                return 1
+              fi
+              if ! printf "%s\n" "$ds_listing" | grep -Eq "_optim_states\\.pt$"; then
+                return 1
+              fi
+              if ! printf "%s\n" "$ds_listing" | grep -Eq "_model_states\\.pt$"; then
+                return 1
+              fi
+              return 0
+            }
+
             restore_checkpoints_from_s3() {
-              src_uri="$1"
+              src_uri="${1%/}"
               label="$2"
               if [ -z "$src_uri" ]; then
                 return 1
               fi
-              import_dir="/workspace/restore_import/${label}"
-              rm -rf "$import_dir"
-              mkdir -p "$import_dir"
-              echo "Restoring candidate checkpoints from ${src_uri}/ into ${import_dir}"
+              import_root="/workspace/restore_import/${label}"
+              rm -rf "$import_root"
+              mkdir -p "$import_root"
+              echo "Listing candidate checkpoints under ${src_uri}/"
               set +e
-              osmo data download --resume "${src_uri}/" "$import_dir"
-              restore_status=$?
+              checkpoint_listing="$(osmo data list "${src_uri}/" 2>/dev/null)"
+              list_status=$?
               set -e
-              if [ "$restore_status" -ne 0 ]; then
-                echo "Checkpoint restore from ${src_uri}/ failed with status=${restore_status}."
-                rm -rf "$import_dir"
+              if [ "$list_status" -ne 0 ]; then
+                echo "Checkpoint listing from ${src_uri}/ failed with status=${list_status}."
+                rm -rf "$import_root"
                 return 1
               fi
-              latest_complete_ckpt=""
-              while IFS= read -r ckpt_dir; do
-                [ -n "$ckpt_dir" ] || continue
-                if is_complete_resume_checkpoint "$ckpt_dir"; then
-                  latest_complete_ckpt="$ckpt_dir"
-                else
-                  echo "Skipping incomplete restored checkpoint ${ckpt_dir}; need model weights, trainer_state.json, latest tag, and DeepSpeed state files."
+              candidate_names="$(printf "%s\n" "$checkpoint_listing" | sed -n 's#.*/\(checkpoint-[0-9][0-9]*\)/$#\1#p' | sort -V | uniq)"
+              if [ -z "$candidate_names" ]; then
+                echo "No checkpoint-* directories listed under ${src_uri}/."
+                rm -rf "$import_root"
+                return 1
+              fi
+              while IFS= read -r ckpt_name; do
+                [ -n "$ckpt_name" ] || continue
+                ckpt_uri="${src_uri}/${ckpt_name}"
+                if ! is_remote_complete_resume_checkpoint "$ckpt_uri" "$ckpt_name"; then
+                  echo "Skipping remotely incomplete checkpoint ${ckpt_uri}; need model weights, trainer_state.json, latest tag, and DeepSpeed state files."
+                  continue
                 fi
-              done < <(find "$import_dir" -type d -name 'checkpoint-*' | sort -V)
-              if [ -z "$latest_complete_ckpt" ]; then
-                echo "No usable complete checkpoint-* directories found under ${src_uri}/."
+                import_dir="${import_root}/${ckpt_name}.download"
                 rm -rf "$import_dir"
-                return 1
-              fi
-              ckpt_name="$(basename "$latest_complete_ckpt")"
-              echo "Promoting latest restored checkpoint ${latest_complete_ckpt} -> ${OUTPUT_DIR}/${ckpt_name}"
-              rm -rf "${OUTPUT_DIR}/${ckpt_name}"
-              mv "$latest_complete_ckpt" "${OUTPUT_DIR}/${ckpt_name}"
-              rm -rf "$import_dir"
-              return 0
+                mkdir -p "$import_dir"
+                echo "Restoring candidate checkpoint ${ckpt_uri}/ into ${import_dir}"
+                set +e
+                osmo data download --resume "${ckpt_uri}/" "$import_dir"
+                restore_status=$?
+                set -e
+                if [ "$restore_status" -ne 0 ]; then
+                  echo "Checkpoint restore from ${ckpt_uri}/ failed with status=${restore_status}."
+                  rm -rf "$import_dir"
+                  continue
+                fi
+                latest_complete_ckpt="$(find "$import_dir" -type d -name "$ckpt_name" -print -quit 2>/dev/null)"
+                if [ -z "$latest_complete_ckpt" ] && is_complete_resume_checkpoint "$import_dir"; then
+                  latest_complete_ckpt="$import_dir"
+                fi
+                if [ -n "$latest_complete_ckpt" ] && is_complete_resume_checkpoint "$latest_complete_ckpt"; then
+                  echo "Promoting latest restored checkpoint ${latest_complete_ckpt} -> ${OUTPUT_DIR}/${ckpt_name}"
+                  rm -rf "${OUTPUT_DIR}/${ckpt_name}"
+                  mv "$latest_complete_ckpt" "${OUTPUT_DIR}/${ckpt_name}"
+                  rm -rf "$import_root"
+                  return 0
+                fi
+                echo "Skipping incomplete restored checkpoint ${ckpt_uri}; need model weights, trainer_state.json, latest tag, and DeepSpeed state files."
+                rm -rf "$import_dir"
+              done < <(printf "%s\n" "$candidate_names" | sort -Vr)
+              echo "No usable complete checkpoint-* directories found under ${src_uri}/."
+              rm -rf "$import_root"
+              return 1
             }
 
             restore_checkpoints_from_s3 "$RESTORE_CACHE_S3_URI" "restore_cache" || \
