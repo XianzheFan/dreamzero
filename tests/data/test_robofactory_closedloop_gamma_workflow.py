@@ -9,10 +9,14 @@ WORKFLOW_PATH = (
     REPO_ROOT
     / "osmo_workflows/robofactory/closedloop_liftbarrier_50kscratch_c50000_gamma_1seed_20260620.yaml"
 )
+SCALE_SWEEP_WORKFLOW_PATH = (
+    REPO_ROOT
+    / "osmo_workflows/robofactory/closedloop_liftbarrier_50kscratch_c50000_gamma_scale_sweep_1seed_20260620.yaml"
+)
 
 
-def _workflow_and_script():
-    with WORKFLOW_PATH.open() as f:
+def _workflow_and_script(path=WORKFLOW_PATH):
+    with path.open() as f:
         workflow = yaml.safe_load(f)
     task = workflow["workflow"]["groups"][0]["tasks"][0]
     return workflow, task["files"][0]["contents"]
@@ -85,5 +89,26 @@ def test_closedloop_gamma_workflow_does_not_patch_dreamzero_at_runtime():
 
 def test_closedloop_gamma_workflow_embedded_script_is_valid_bash():
     _, script = _workflow_and_script()
+
+    subprocess.run(["bash", "-n"], input=script, text=True, check=True)
+
+
+def test_closedloop_gamma_scale_sweep_targets_action_amplitude_diagnostic():
+    workflow, script = _workflow_and_script(SCALE_SWEEP_WORKFLOW_PATH)
+
+    assert workflow["workflow"]["name"] == (
+        "dz-rf2-lb50k-c50000-gamma-scale-sweep-1seed1000-xz-20260620"
+    )
+    assert 'DREAMZERO_GIT_REF="${DREAMZERO_GIT_REF:-gamma}"' in script
+    assert 'RESET_CAUSAL_STATE_EACH_INFERS="${RESET_CAUSAL_STATE_EACH_INFERS:-0}"' in script
+    assert 'GRIPPER_CLOSE_PAIRS="52:52"' in script
+    assert 'JOINT_DELTA_SCALES="0.75 1.0 1.25 1.5 2.0"' in script
+    assert '--joint-delta-scale "$JOINT_DELTA_SCALE"' in script
+    assert "--joint-delta-output-clip" in script
+    assert "action_dump_summary.json" in script
+
+
+def test_closedloop_gamma_scale_sweep_embedded_script_is_valid_bash():
+    _, script = _workflow_and_script(SCALE_SWEEP_WORKFLOW_PATH)
 
     subprocess.run(["bash", "-n"], input=script, text=True, check=True)
