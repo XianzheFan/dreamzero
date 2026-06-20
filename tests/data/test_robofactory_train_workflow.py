@@ -10,9 +10,9 @@ CODE_CACHE_URI = (
     "dreamzero_code_liftbarrier_motionfix_950b11b_20260618"
 )
 EXPECTED_CODE_COMMIT = "950b11ba09dcfa8c02ee962d458872244f25b0ba"
-RUN_NAME = "dz-rf2-lb500-motionw4-th02-50k-fresh-storagefix4-xz-20260618"
+RUN_NAME = "dz-rf2-lb500-motionw4-th02-50k-fresh-storagefix5-xz-20260618"
 RESTORE_RUN_NAME = "dz-rf2-lb500-motionw4-th02-50k-fresh-xz-20260618"
-WORKFLOW_NAME = "dz-rf2-lb500-motionw4-th02-50k-fresh-storagefix4-xz-20260618"
+WORKFLOW_NAME = "dz-rf2-lb500-motionw4-th02-50k-fresh-storagefix5-xz-20260618"
 
 
 def _task_by_name(workflow, name):
@@ -189,8 +189,12 @@ def test_liftbarrier_train_workflow_restores_and_uploads_run_and_s3cache_checkpo
     assert "Periodic checkpoint upload tick" in script
     assert "restore_checkpoints_from_s3 \"$RESTORE_CACHE_S3_URI\" \"restore_cache\"" in script
     assert "restore_checkpoints_from_s3 \"$RESTORE_S3_URI\" \"restore_primary\"" in script
-    assert "Listing candidate checkpoints under ${src_uri}/" in script
-    assert 'osmo data list "${src_uri}/"' in script
+    assert "Listing candidate checkpoints under ${root_uri}/" in script
+    assert "checkpoint_listing_to_candidate_lines" in script
+    assert "list_checkpoint_candidate_lines" in script
+    assert 'osmo data list "${root_uri}/"' in script
+    assert 'osmo data list "${child_uri}/"' in script
+    assert "No checkpoint-* directories listed directly under ${root_uri}/; checking one nested directory level." in script
     assert 'osmo data list "${ckpt_uri}/global_step${step}/"' in script
     assert 'osmo data download --resume "${ckpt_uri}/" "$import_dir"' in script
     assert "Skipping remotely incomplete checkpoint" in script

@@ -609,6 +609,56 @@ workflow:
               return 0
             }
 
+            checkpoint_listing_to_candidate_lines() {
+              root_uri="${1%/}"
+              listing="$2"
+              printf "%s\n" "$listing" | sed -n 's#.*/\(checkpoint-[0-9][0-9]*\)/$#\1#p' | sort -V | uniq | while IFS= read -r ckpt_name; do
+                [ -n "$ckpt_name" ] || continue
+                printf "%s|%s/%s\n" "$ckpt_name" "$root_uri" "$ckpt_name"
+              done
+            }
+
+            list_checkpoint_candidate_lines() {
+              root_uri="${1%/}"
+              echo "Listing candidate checkpoints under ${root_uri}/" >&2
+              set +e
+              listing="$(osmo data list "${root_uri}/" 2>/dev/null)"
+              list_status=$?
+              set -e
+              if [ "$list_status" -ne 0 ]; then
+                echo "Checkpoint listing from ${root_uri}/ failed with status=${list_status}." >&2
+                return 1
+              fi
+
+              direct_candidates="$(checkpoint_listing_to_candidate_lines "$root_uri" "$listing")"
+              if [ -n "$direct_candidates" ]; then
+                printf "%s\n" "$direct_candidates"
+                return 0
+              fi
+
+              echo "No checkpoint-* directories listed directly under ${root_uri}/; checking one nested directory level." >&2
+              child_names="$(printf "%s\n" "$listing" | sed -n 's#.*/\([^/][^/]*\)/$#\1#p' | grep -Ev '^checkpoint-[0-9]+$' | sort -u || true)"
+              found=0
+              while IFS= read -r child_name; do
+                [ -n "$child_name" ] || continue
+                child_uri="${root_uri}/${child_name}"
+                set +e
+                child_listing="$(osmo data list "${child_uri}/" 2>/dev/null)"
+                child_status=$?
+                set -e
+                if [ "$child_status" -ne 0 ]; then
+                  echo "Nested checkpoint listing from ${child_uri}/ failed with status=${child_status}." >&2
+                  continue
+                fi
+                child_candidates="$(checkpoint_listing_to_candidate_lines "$child_uri" "$child_listing")"
+                if [ -n "$child_candidates" ]; then
+                  printf "%s\n" "$child_candidates"
+                  found=1
+                fi
+              done < <(printf "%s\n" "$child_names")
+              [ "$found" -eq 1 ]
+            }
+
             restore_checkpoints_from_s3() {
               src_uri="${1%/}"
               label="$2"
@@ -618,25 +668,23 @@ workflow:
               import_root="/workspace/restore_import/${label}"
               rm -rf "$import_root"
               mkdir -p "$import_root"
-              echo "Listing candidate checkpoints under ${src_uri}/"
               set +e
-              checkpoint_listing="$(osmo data list "${src_uri}/" 2>/dev/null)"
+              candidate_lines="$(list_checkpoint_candidate_lines "$src_uri")"
               list_status=$?
               set -e
               if [ "$list_status" -ne 0 ]; then
-                echo "Checkpoint listing from ${src_uri}/ failed with status=${list_status}."
+                echo "Checkpoint candidate discovery from ${src_uri}/ failed with status=${list_status}."
                 rm -rf "$import_root"
                 return 1
               fi
-              candidate_names="$(printf "%s\n" "$checkpoint_listing" | sed -n 's#.*/\(checkpoint-[0-9][0-9]*\)/$#\1#p' | sort -V | uniq)"
-              if [ -z "$candidate_names" ]; then
+              if [ -z "$candidate_lines" ]; then
                 echo "No checkpoint-* directories listed under ${src_uri}/."
                 rm -rf "$import_root"
                 return 1
               fi
-              while IFS= read -r ckpt_name; do
+              while IFS='|' read -r ckpt_name ckpt_uri; do
                 [ -n "$ckpt_name" ] || continue
-                ckpt_uri="${src_uri}/${ckpt_name}"
+                [ -n "$ckpt_uri" ] || continue
                 if ! is_remote_complete_resume_checkpoint "$ckpt_uri" "$ckpt_name"; then
                   echo "Skipping remotely incomplete checkpoint ${ckpt_uri}; need model weights, trainer_state.json, latest tag, and DeepSpeed state files."
                   continue
@@ -667,7 +715,7 @@ workflow:
                 fi
                 echo "Skipping incomplete restored checkpoint ${ckpt_uri}; need model weights, trainer_state.json, latest tag, and DeepSpeed state files."
                 rm -rf "$import_dir"
-              done < <(printf "%s\n" "$candidate_names" | sort -Vr)
+              done < <(printf "%s\n" "$candidate_lines" | sort -t '|' -k1,1Vr)
               echo "No usable complete checkpoint-* directories found under ${src_uri}/."
               rm -rf "$import_root"
               return 1
@@ -706,8 +754,8 @@ workflow:
             bash scripts/train/robofactory_bimanual_training.sh
 
 default-values:
-  workflow_name: dz-rf2-lb500-motionw4-th02-50k-fresh-storagefix4-xz-20260618
-  run_name: dz-rf2-lb500-motionw4-th02-50k-fresh-storagefix4-xz-20260618
+  workflow_name: dz-rf2-lb500-motionw4-th02-50k-fresh-storagefix5-xz-20260618
+  run_name: dz-rf2-lb500-motionw4-th02-50k-fresh-storagefix5-xz-20260618
   restore_run_name: dz-rf2-lb500-motionw4-th02-50k-fresh-xz-20260618
   code_s3_uri: swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_liftbarrier_motionfix_950b11b_20260618
   expected_code_commit: 950b11ba09dcfa8c02ee962d458872244f25b0ba
