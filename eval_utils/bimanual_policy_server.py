@@ -376,6 +376,29 @@ def _filter_shape_mismatches_for_load(
     return kept, sliced_mismatched, dropped_mismatched
 
 
+def _safetensors_tensor_shape(model_dir: Path, key: str) -> tuple[int, ...] | None:
+    """Read one tensor shape from a safetensors checkpoint without full loading."""
+    from safetensors import safe_open
+
+    index_path = model_dir / "model.safetensors.index.json"
+    if index_path.is_file():
+        with open(index_path) as f:
+            index = json.load(f)
+        shard = index.get("weight_map", {}).get(key)
+        if shard is None:
+            return None
+        tensor_path = model_dir / shard
+    else:
+        tensor_path = model_dir / "model.safetensors"
+
+    if not tensor_path.is_file():
+        return None
+    with safe_open(str(tensor_path), framework="pt", device="cpu") as f:
+        if key not in f.keys():
+            return None
+        return tuple(int(x) for x in f.get_tensor(key).shape)
+
+
 class BimanualPolicy:
     """Loads the LoRA-fine-tuned VLA + the bimanual_cotrain transform,
     exposes ``infer(obs)`` and ``reset(info)``.
@@ -657,6 +680,104 @@ class BimanualPolicy:
             pass
         return diffusion_cfgs
 
+    def _patch_model_io_shape_from_finetune_checkpoint(self) -> None:
+        """Sync eval model action/state width to the fine-tune checkpoint.
+
+        Some DROID-width RoboFactory checkpoints were trained with 32 action
+        channels and 64 state channels while the saved resolved Hydra config
+        still contains the base 8-channel action-head fields. Trusting those
+        stale fields makes eval instantiate an 8D head and then slice-copy the
+        fine-tuned 32D tensors, producing a model that loads but cannot
+        represent the trained policy. The checkpoint tensor shapes are the
+        source of truth for eval.
+        """
+        from omegaconf import OmegaConf
+
+        ckpt_root = self.ckpt_dir / self.ckpt_setting
+
+        def dim_from_shape(
+            candidates: tuple[tuple[str, int], ...],
+        ) -> tuple[int | None, str | None, tuple[int, ...] | None]:
+            for key, axis in candidates:
+                shape = _safetensors_tensor_shape(ckpt_root, key)
+                if shape is None:
+                    continue
+                return int(shape[axis]), key, shape
+            return None, None, None
+
+        action_dim, action_key, action_shape = dim_from_shape(
+            (
+                ("action_head.model.action_decoder.layer2.b", -1),
+                ("action_head.model.action_decoder.layer2.W", -1),
+                ("action_head.model.action_encoder.W1.W", -2),
+            )
+        )
+        state_dim, state_key, state_shape = dim_from_shape(
+            (("action_head.model.state_encoder.layer1.W", -2),)
+        )
+
+        updates: list[tuple[str, object, object]] = []
+
+        def update_existing(path: str, value: int, *, minimum: bool = False) -> None:
+            old = OmegaConf.select(self._cfg, path, default=None)
+            if old is None:
+                return
+            try:
+                old_int = int(old)
+            except (TypeError, ValueError):
+                old_int = old
+            new_value = int(value)
+            if minimum and isinstance(old_int, int):
+                new_value = max(old_int, new_value)
+            if old_int == new_value:
+                return
+            OmegaConf.update(self._cfg, path, new_value, merge=False, force_add=False)
+            updates.append((path, old, new_value))
+
+        if action_dim is not None:
+            for path in (
+                "model.config.action_dim",
+                "model.config.action_head_cfg.config.action_dim",
+                "model.config.action_head_cfg.config.diffusion_model_cfg.action_dim",
+                "model.action_head_cfg.config.action_dim",
+                "model.action_head_cfg.config.diffusion_model_cfg.action_dim",
+                "action_head_cfg.config.action_dim",
+                "action_head_cfg.config.diffusion_model_cfg.action_dim",
+            ):
+                update_existing(path, action_dim)
+            for path in (
+                "model.config.action_head_cfg.config.max_action_dim",
+                "model.action_head_cfg.config.max_action_dim",
+                "action_head_cfg.config.max_action_dim",
+                "max_action_dim",
+            ):
+                update_existing(path, action_dim, minimum=True)
+
+        if state_dim is not None:
+            for path in (
+                "model.config.action_head_cfg.config.max_state_dim",
+                "model.config.action_head_cfg.config.diffusion_model_cfg.max_state_dim",
+                "model.action_head_cfg.config.max_state_dim",
+                "model.action_head_cfg.config.diffusion_model_cfg.max_state_dim",
+                "action_head_cfg.config.max_state_dim",
+                "action_head_cfg.config.diffusion_model_cfg.max_state_dim",
+                "max_state_dim",
+            ):
+                update_existing(path, state_dim, minimum=True)
+
+        if updates:
+            logging.warning(
+                "Patched eval model IO shape from fine-tune checkpoint: "
+                "action_dim=%s from %s%s, state_dim=%s from %s%s; updates=%s",
+                action_dim,
+                action_key,
+                "" if action_shape is None else f" shape={action_shape}",
+                state_dim,
+                state_key,
+                "" if state_shape is None else f" shape={state_shape}",
+                ", ".join(f"{path}:{old}->{new}" for path, old, new in updates),
+            )
+
     @staticmethod
     def _parse_bool(value: str) -> bool:
         lowered = value.strip().lower()
@@ -785,6 +906,7 @@ class BimanualPolicy:
             )
         self._cfg = OmegaConf.load(str(cfg_path))
         self._apply_eval_config_overrides()
+        self._patch_model_io_shape_from_finetune_checkpoint()
         self._sync_runtime_shape_from_config()
         self._apply_model_resolution_overrides()
         rel_keys = self._cfg.get("relative_action_keys", []) or []
@@ -927,6 +1049,20 @@ class BimanualPolicy:
             step4_dropped,
             dropped_reason="fine-tune checkpoint architecture differs from eval model",
         )
+        unexpected_step4_drops = {
+            k: v for k, v in step4_dropped.items()
+            if k not in drop_finetune_mismatched_keys
+        }
+        if step4_sliced or unexpected_step4_drops:
+            details = {
+                "sliced": step4_sliced,
+                "dropped": unexpected_step4_drops,
+            }
+            raise RuntimeError(
+                "Fine-tune checkpoint tensor shapes do not match the eval "
+                "model after config patching. Refusing to run a partially "
+                f"loaded policy: {details}"
+            )
 
         device = self._requested_device or (
             "cuda" if torch.cuda.is_available() else "cpu"
