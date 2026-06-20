@@ -1,0 +1,1047 @@
+version: 2
+workflow:
+  groups:
+  - name: eval-group
+    tasks:
+    - args:
+      - /tmp/run_closedloop_openphasejoint_50kscratch_c50000_gamma_1seed_h100.sh
+      command:
+      - bash
+      credentials:
+        gear-aws-cred:
+          AWS_ACCESS_KEY_ID: aws_access_key_id
+          AWS_DEFAULT_REGION: aws_default_region
+          AWS_ENDPOINT_URL: aws_endpoint_url
+          AWS_SECRET_ACCESS_KEY: aws_secret_access_key
+        gear-data-credentials:
+          GEAR_DATA_CREDENTIALS: data_credentials
+      environment:
+        ACCEPT_EULA: Y
+        NO_NUCLEUS: Y
+        NVIDIA_DRIVER_CAPABILITIES: all
+      files:
+      - contents: |-
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          exec > >(tee /tmp/closedloop_openphasejoint_50kscratch_c50000_gamma_1seed_h100.log) 2>&1
+
+          RUN_NAME="dz-rf2-lb50k-c50000-gamma-1seed1000-xz-20260620"
+          DREAMZERO_GIT_URL="https://github.com/XianzheFan/dreamzero.git"
+          DREAMZERO_GIT_REF="${DREAMZERO_GIT_REF:-gamma}"
+          ROBOFACTORY_GIT_URL="https://github.com/MARS-EAI/RoboFactory.git"
+          ROBOFACTORY_GIT_COMMIT="5868242322414a91454e22f1dd9641f613ba1bcf"
+          DATA_S3_URI="s3://GearHome/users/xianzhef/oci-migration/data/robofactory_lerobot_v2/LiftBarrier-rf-500"
+          MODEL_CACHE_S3_URI="s3://GearHome/users/xianzhef/oci-migration/checkpoints"
+          CKPT_S3_BASE="s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/dz-rf2-lb500-dw-dwarm-openphasejoint-50k-scratch-xianzhef-20260613/checkpoints/robofactory_2arm_LiftBarrier-rf-500_droidwidth_droidwarm_openphasejoint_d344e8e_50k_scratch_h100x8"
+          CKPT_AMLFS_BASE="/mnt/amlfs-01/home/xianzhef/osmo_cache/dreamzero/checkpoints/dz-rf2-lb500-dw-dwarm-openphasejoint-50k-scratch-xianzhef-20260613/robofactory_2arm_LiftBarrier-rf-500_droidwidth_droidwarm_openphasejoint_d344e8e_50k_scratch_h100x8"
+          CKPT_SETTING="checkpoint-50000"
+          CKPT_WAIT_TIMEOUT_SECONDS=5400
+          CKPT_WAIT_INTERVAL_SECONDS=120
+          LOCAL_EVAL_CKPT_ROOT="/workspace/eval_ckpts/droidwidth_droidwarm_openphasejoint_50kscratch_c50000_asymclose_r2_1seed1000"
+          AMLFS_MODEL_CACHE_DIR="/mnt/amlfs-01/home/xianzhef/osmo_cache/dreamzero/checkpoints"
+          ROBOFACTORY_ASSET_CACHE="/mnt/amlfs-01/home/xianzhef/osmo_cache/robofactory/assets"
+          RUN_S3_ROOT="s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/${RUN_NAME}"
+          DROID_HF_REPO="GEAR-Dreams/DreamZero-DROID"
+          PORT=5011
+          TASK="LiftBarrier-rf"
+          NUM_EPISODES=1
+          SEED_START=1000
+          MAX_STEPS=300
+          INFERENCE_MODES="${INFERENCE_MODES:-causal_flowmatch}"
+          RESET_CAUSAL_STATE_EACH_INFERS="${RESET_CAUSAL_STATE_EACH_INFERS:-0 1}"
+          VIDEO_PRED_ROLLOUT_MODE="${VIDEO_PRED_ROLLOUT_MODE:-action}"
+          export MAI_WRITE_DENOISED_CONTEXT_CACHE="${MAI_WRITE_DENOISED_CONTEXT_CACHE:-1}"
+          REPLAN_EVERYS="24"
+          PROMPT="the two robot arms lift the steel barrier together off the table"
+          GRIPPER_BINARIZE_THRESHOLD="-0.2"
+          GRIPPER_OVERRIDE="open-then-close-after-step"
+          GRIPPER_POLICY_CLOSE_THRESHOLD="0.0"
+          GRIPPER_POLICY_CLOSE_MIN_STEP=0
+          GRIPPER_CLOSE_AFTER_STEP=96
+          GRIPPER_CLOSE_PAIRS="96:144 96:120 52:144"
+          JOINT_DELTA_SCALES="1.0"
+          JOINT_DELTA_OUTPUT_CLIP="0.35"
+          JOINT_DELTA_SCALE_REFERENCE="observed"
+          JOINT_TARGET_SLEW_RATES="0.35"
+          SERVER_CUDA_VISIBLE_DEVICES="4"
+          CLIENT_CUDA_VISIBLE_DEVICES="0"
+          SUCCESS_MODE="strict-lift"
+          STRICT_SUCCESS_MIN_GRASP_COUNT=1
+          RUN_OFFLINE=0
+          export CKPT_SETTING LOCAL_EVAL_CKPT_ROOT
+
+          case "$DREAMZERO_GIT_URL" in
+            https://github.com/XianzheFan/dreamzero.git) ;;
+            *) echo "Refusing non-xianzhef DreamZero repo: $DREAMZERO_GIT_URL" >&2; exit 64 ;;
+          esac
+
+          for uri in "$DATA_S3_URI" "$MODEL_CACHE_S3_URI" "$CKPT_S3_BASE" "$RUN_S3_ROOT"; do
+            case "$uri" in
+              s3://GearHome/users/xianzhef/*) ;;
+              *) echo "Refusing non-xianzhef S3 URI: $uri" >&2; exit 64 ;;
+            esac
+          done
+
+          for path in "$AMLFS_MODEL_CACHE_DIR" "$ROBOFACTORY_ASSET_CACHE" "$CKPT_AMLFS_BASE"; do
+            case "$path" in
+              /mnt/amlfs-01/home/xianzhef/*) ;;
+              *) echo "Refusing non-xianzhef AMLFS path: $path" >&2; exit 64 ;;
+            esac
+          done
+
+          cleanup() {
+            if [ -n "${SERVER_PID:-}" ] && kill -0 "$SERVER_PID" 2>/dev/null; then
+              echo "Stopping policy server pid=${SERVER_PID}"
+              kill "$SERVER_PID" 2>/dev/null || true
+              wait "$SERVER_PID" 2>/dev/null || true
+            fi
+          }
+
+          upload_artifacts() {
+            local status="${1:-$?}"
+            set +e
+            mkdir -p /workspace/eval_outputs
+            cp -f /tmp/closedloop_openphasejoint_50kscratch_c50000_gamma_1seed_h100.log /workspace/eval_outputs/closedloop_openphasejoint_50kscratch_c50000_gamma_1seed_h100.log
+            if [ -f /tmp/server.log ]; then cp -f /tmp/server.log /workspace/eval_outputs/server.log; fi
+            if [ -f /tmp/client.log ]; then cp -f /tmp/client.log /workspace/eval_outputs/client.log; fi
+            find /tmp -maxdepth 1 -type f \( -name "server_*.log" -o -name "client_*.log" \) -exec cp -f {} /workspace/eval_outputs/ \; || true
+            echo "Uploading eval outputs to ${RUN_S3_ROOT}/"
+            osmo data upload "${RUN_S3_ROOT}/" /workspace/eval_outputs
+            exit "$status"
+          }
+
+          on_exit() {
+            status=$?
+            cleanup
+            upload_artifacts "$status"
+          }
+          trap on_exit EXIT
+
+          export PYTHONUNBUFFERED=1
+          export HYDRA_FULL_ERROR=1
+          export GIT_LFS_SKIP_SMUDGE=1
+          export ATTENTION_BACKEND=flex
+          export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+          export CUDA_MODULE_LOADING=LAZY
+          export HF_HOME=/workspace/hf
+          export HF_HUB_CACHE=/workspace/hf/hub
+          export TRANSFORMERS_CACHE=/workspace/hf/transformers
+          export HF_HUB_OFFLINE=0
+          export TRANSFORMERS_OFFLINE=0
+          export HF_DATASETS_OFFLINE=0
+          export HF_HUB_DISABLE_XET=1
+          export XDG_CACHE_HOME=/workspace/cache
+          export CUDA_CACHE_PATH=/workspace/cuda_cache
+          export NO_ALBUMENTATIONS_UPDATE=1
+          export PIP_ROOT_USER_ACTION=ignore
+          export MUJOCO_GL=glfw
+          export LD_LIBRARY_PATH="/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}"
+
+          mkdir -p \
+            /workspace/code \
+            /workspace/data/LiftBarrier-rf \
+            /workspace/model_import/DreamZero-DROID \
+            "$LOCAL_EVAL_CKPT_ROOT" \
+            /workspace/eval_outputs/offline \
+            /workspace/eval_outputs/action_dump \
+            /workspace/eval_outputs/videos \
+            /workspace/eval_outputs/video_pred \
+            /workspace/hf \
+            /workspace/cache \
+            /workspace/cuda_cache \
+            /tmp/nvidia-vulkan \
+            /tmp/nvidia-egl
+
+          cat >/tmp/nvidia-vulkan/nvidia_icd.json <<'EOF'
+          {
+            "file_format_version": "1.0.0",
+            "ICD": {
+              "library_path": "libGLX_nvidia.so.0",
+              "api_version": "1.2.140"
+            }
+          }
+          EOF
+          cat >/tmp/nvidia-egl/10_nvidia.json <<'EOF'
+          {
+            "file_format_version": "1.0.0",
+            "ICD": {
+              "library_path": "libEGL_nvidia.so.0"
+            }
+          }
+          EOF
+          export VK_ICD_FILENAMES=/tmp/nvidia-vulkan/nvidia_icd.json
+          export __EGL_VENDOR_LIBRARY_FILENAMES=/tmp/nvidia-egl/10_nvidia.json
+          export __GLX_VENDOR_LIBRARY_NAME=nvidia
+
+          echo "Installing Python packages for DreamZero + RoboFactory eval"
+          python -m pip install -q --no-cache-dir --upgrade "pip<25.3" "setuptools>=64,<80" wheel "huggingface_hub[cli]"
+          python -m pip install -q --no-cache-dir "mani_skill==3.0.0b12"
+          python -m pip install -q --no-cache-dir \
+            "websockets>=12" \
+            msgpack \
+            msgpack-numpy \
+            hydra-core \
+            omegaconf \
+            safetensors \
+            "einops==0.8.1" \
+            "transformers==4.51.3" \
+            "diffusers==0.30.2" \
+            "peft==0.5.0" \
+            accelerate \
+            dm-tree \
+            "albumentations==1.4.18" \
+            torchvision \
+            "av==15.0.0" \
+            pillow \
+            ftfy \
+            sentencepiece \
+            termcolor \
+            tiktoken \
+            timm \
+            loguru \
+            matplotlib \
+            h5py \
+            "opencv-python-headless==4.10.0.84" \
+            decord \
+            pandas \
+            pyarrow
+          python -m pip install -q --no-cache-dir "numpy==1.26.4"
+
+          mkdir -p /workspace/checkpoints
+
+          echo "Restoring Wan/UMT5 model caches"
+          WAN_EXPECTED="/workspace/checkpoints/Wan2.1-I2V-14B-480P"
+          WAN_AMLFS="${AMLFS_MODEL_CACHE_DIR}/Wan2.1-I2V-14B-480P"
+          if [ -f "${WAN_AMLFS}/.cache_complete" ]; then
+            echo "Using Wan2.1-I2V-14B-480P from AMLFS cache"
+            ln -sfn "$WAN_AMLFS" "$WAN_EXPECTED"
+          else
+            echo "AMLFS Wan cache unavailable; restoring from xianzhef S3 model cache"
+            WAN_IMPORT="/workspace/model_import/Wan2.1-I2V-14B-480P"
+            mkdir -p "$WAN_IMPORT"
+            osmo data download --resume "${MODEL_CACHE_S3_URI}/Wan2.1-I2V-14B-480P/" "$WAN_IMPORT"
+            if [ -f "${WAN_IMPORT}/.cache_complete" ]; then
+              ln -sfn "$WAN_IMPORT" "$WAN_EXPECTED"
+            elif [ -f "${WAN_IMPORT}/Wan2.1-I2V-14B-480P/.cache_complete" ]; then
+              ln -sfn "${WAN_IMPORT}/Wan2.1-I2V-14B-480P" "$WAN_EXPECTED"
+            else
+              echo "FATAL: no usable Wan2.1-I2V-14B-480P cache after S3 download" >&2
+              find "$WAN_IMPORT" -maxdepth 3 -type f | sed -n "1,80p" || true
+              exit 22
+            fi
+          fi
+          test -f "${WAN_EXPECTED}/.cache_complete"
+          test -f "${WAN_EXPECTED}/models_t5_umt5-xxl-enc-bf16.pth"
+          test -f "${WAN_EXPECTED}/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth"
+          test -f "${WAN_EXPECTED}/Wan2.1_VAE.pth"
+
+          UMT5_EXPECTED="/workspace/checkpoints/umt5-xxl"
+          UMT5_AMLFS="${AMLFS_MODEL_CACHE_DIR}/umt5-xxl"
+          UMT5_AMLFS_NESTED="${UMT5_AMLFS}/umt5-xxl"
+          if [ -f "${UMT5_AMLFS}/config.json" ] && [ -f "${UMT5_AMLFS}/tokenizer_config.json" ]; then
+            echo "Using umt5-xxl from AMLFS cache"
+            ln -sfn "$UMT5_AMLFS" "$UMT5_EXPECTED"
+          elif [ -f "${UMT5_AMLFS_NESTED}/config.json" ] && [ -f "${UMT5_AMLFS_NESTED}/tokenizer_config.json" ]; then
+            echo "Using umt5-xxl tokenizer from nested AMLFS cache"
+            ln -sfn "$UMT5_AMLFS_NESTED" "$UMT5_EXPECTED"
+          else
+            echo "AMLFS umt5-xxl tokenizer cache unavailable; restoring tokenizer files from xianzhef S3 model cache"
+            UMT5_IMPORT="/workspace/model_import/umt5-xxl"
+            mkdir -p "$UMT5_IMPORT"
+            umt5_regex='.*(config\.json|tokenizer_config\.json|special_tokens_map\.json|spiece\.model|tokenizer\.json)$'
+            osmo data download --resume --regex "$umt5_regex" --processes 1 --threads 2 "${MODEL_CACHE_S3_URI}/umt5-xxl/" "$UMT5_IMPORT"
+            if [ -f "${UMT5_IMPORT}/config.json" ]; then
+              ln -sfn "$UMT5_IMPORT" "$UMT5_EXPECTED"
+            elif [ -f "${UMT5_IMPORT}/umt5-xxl/config.json" ]; then
+              ln -sfn "${UMT5_IMPORT}/umt5-xxl" "$UMT5_EXPECTED"
+            else
+              echo "FATAL: no usable umt5-xxl cache after S3 download" >&2
+              find "$UMT5_IMPORT" -maxdepth 3 -type f | sed -n "1,80p" || true
+              exit 21
+            fi
+          fi
+          test -f "${UMT5_EXPECTED}/config.json"
+          test -f "${UMT5_EXPECTED}/tokenizer_config.json"
+
+          echo "Restoring DreamZero-DROID model to /workspace/checkpoints/DreamZero-DROID"
+          DROID_EXPECTED="/workspace/checkpoints/DreamZero-DROID"
+          DROID_IMPORT="/workspace/model_import/DreamZero-DROID"
+          DROID_AMLFS="${AMLFS_MODEL_CACHE_DIR}/DreamZero-DROID"
+          DROID_AMLFS_NESTED="${DROID_AMLFS}/DreamZero-DROID"
+          rm -rf "$DROID_EXPECTED"
+          if [ -f "${DROID_AMLFS}/model.safetensors.index.json" ]; then
+            ln -sfn "$DROID_AMLFS" "$DROID_EXPECTED"
+            echo "Using DreamZero-DROID from AMLFS root cache"
+          elif [ -f "${DROID_AMLFS_NESTED}/model.safetensors.index.json" ]; then
+            ln -sfn "$DROID_AMLFS_NESTED" "$DROID_EXPECTED"
+            echo "Using DreamZero-DROID from nested AMLFS cache"
+          else
+            set +e
+            osmo data download --resume --processes 1 --threads 4 "${MODEL_CACHE_S3_URI}/DreamZero-DROID/" "$DROID_IMPORT"
+            droid_s3_status=$?
+            set -e
+            if [ "$droid_s3_status" -eq 0 ] && [ -f "${DROID_IMPORT}/model.safetensors.index.json" ]; then
+            ln -sfn "$DROID_IMPORT" "$DROID_EXPECTED"
+            echo "Using DreamZero-DROID from xianzhef S3 model cache root"
+            elif [ "$droid_s3_status" -eq 0 ] && [ -f "${DROID_IMPORT}/DreamZero-DROID/model.safetensors.index.json" ]; then
+            ln -sfn "${DROID_IMPORT}/DreamZero-DROID" "$DROID_EXPECTED"
+            echo "Using DreamZero-DROID from xianzhef S3 model cache nested directory"
+            else
+            echo "No usable xianzhef S3 DreamZero-DROID cache found; downloading from Hugging Face"
+            mkdir -p "$DROID_EXPECTED"
+            if command -v hf >/dev/null 2>&1; then
+              timeout 3600 hf download "$DROID_HF_REPO" --repo-type model --local-dir "$DROID_EXPECTED"
+            elif command -v huggingface-cli >/dev/null 2>&1; then
+              timeout 3600 huggingface-cli download "$DROID_HF_REPO" --repo-type model --local-dir "$DROID_EXPECTED"
+            else
+              timeout 3600 python - <<'PY'
+          from huggingface_hub import snapshot_download
+          snapshot_download(
+              repo_id="GEAR-Dreams/DreamZero-DROID",
+              repo_type="model",
+              local_dir="/workspace/checkpoints/DreamZero-DROID",
+              local_dir_use_symlinks=False,
+          )
+          PY
+            fi
+          fi
+          fi
+          test -f "${DROID_EXPECTED}/model.safetensors.index.json"
+          du -sh "${DROID_EXPECTED}"
+
+          echo "Cloning DreamZero ref ${DREAMZERO_GIT_REF}"
+          git clone --no-checkout --filter=blob:none "$DREAMZERO_GIT_URL" /workspace/code/dreamzero
+          git -C /workspace/code/dreamzero fetch --depth 1 origin "$DREAMZERO_GIT_REF"
+          DREAMZERO_GIT_COMMIT="$(git -C /workspace/code/dreamzero rev-parse FETCH_HEAD)"
+          git -C /workspace/code/dreamzero checkout --detach "$DREAMZERO_GIT_COMMIT"
+          test "$(git -C /workspace/code/dreamzero rev-parse HEAD)" = "$DREAMZERO_GIT_COMMIT"
+          echo "Resolved DreamZero ref ${DREAMZERO_GIT_REF} to ${DREAMZERO_GIT_COMMIT}"
+          echo "$DREAMZERO_GIT_COMMIT" > /workspace/eval_outputs/dreamzero_code_commit.txt
+          echo "Applying asymmetric gripper close-step evaluator patch"
+          git -C /workspace/code/dreamzero apply <<'PATCH'
+          diff --git a/scripts/eval/eval_robofactory_ws.py b/scripts/eval/eval_robofactory_ws.py
+          index cd7ffd0..cd09c33 100644
+          --- a/scripts/eval/eval_robofactory_ws.py
+          +++ b/scripts/eval/eval_robofactory_ws.py
+          @@ -291,6 +291,8 @@ def apply_gripper_override(
+               latch_state: dict[str, bool] | None = None,
+               policy_close_threshold: float = 0.0,
+               policy_close_min_step: int = 0,
+          +    left_close_after_step: int | None = None,
+          +    right_close_after_step: int | None = None,
+           ) -> np.ndarray:
+               """Optionally override RoboFactory gripper commands.
+           
+          @@ -316,15 +318,28 @@ def apply_gripper_override(
+               elif mode == "close":
+                   target = close_value
+               elif mode == "close-after-step":
+          -        if step < close_after_step:
+          -            return out
+          -        target = close_value
+          +        for dim, threshold in (
+          +            (7, close_after_step if left_close_after_step is None else left_close_after_step),
+          +            (15, close_after_step if right_close_after_step is None else right_close_after_step),
+          +        ):
+          +            if step >= threshold:
+          +                out[dim] = close_value
+          +        return out
+               elif mode == "open-until-step":
+          -        if step >= close_after_step:
+          -            return out
+          -        target = open_value
+          +        for dim, threshold in (
+          +            (7, close_after_step if left_close_after_step is None else left_close_after_step),
+          +            (15, close_after_step if right_close_after_step is None else right_close_after_step),
+          +        ):
+          +            if step < threshold:
+          +                out[dim] = open_value
+          +        return out
+               elif mode == "open-then-close-after-step":
+          -        target = open_value if step < close_after_step else close_value
+          +        for dim, threshold in (
+          +            (7, close_after_step if left_close_after_step is None else left_close_after_step),
+          +            (15, close_after_step if right_close_after_step is None else right_close_after_step),
+          +        ):
+          +            out[dim] = open_value if step < threshold else close_value
+          +        return out
+               else:
+                   raise ValueError(f"unknown gripper override mode: {mode}")
+           
+          @@ -644,6 +659,8 @@ def run_episode(
+               action_representation: str,
+               gripper_override: str,
+               gripper_close_after_step: int,
+          +    left_gripper_close_after_step: int | None,
+          +    right_gripper_close_after_step: int | None,
+               gripper_open_value: float,
+               gripper_close_value: float,
+               gripper_policy_close_threshold: float,
+          @@ -751,6 +768,8 @@ def run_episode(
+                           latch_state=gripper_latch_state,
+                           policy_close_threshold=gripper_policy_close_threshold,
+                           policy_close_min_step=gripper_policy_close_min_step,
+          +                left_close_after_step=left_gripper_close_after_step,
+          +                right_close_after_step=right_gripper_close_after_step,
+                       )
+                       abs16 = limit_joint_target_slew(abs16, last_commanded, joint_target_slew_rate)
+                       qpos_before_step = cur.copy()
+          @@ -859,6 +878,24 @@ def main():
+                       "open-then-close-after-step this is the first step where forced open ends."
+                   ),
+               )
+          +    ap.add_argument(
+          +        "--left-gripper-close-after-step",
+          +        type=int,
+          +        default=None,
+          +        help=(
+          +            "Optional left-arm override for --gripper-close-after-step. "
+          +            "Defaults to the shared schedule step."
+          +        ),
+          +    )
+          +    ap.add_argument(
+          +        "--right-gripper-close-after-step",
+          +        type=int,
+          +        default=None,
+          +        help=(
+          +            "Optional right-arm override for --gripper-close-after-step. "
+          +            "Defaults to the shared schedule step."
+          +        ),
+          +    )
+               ap.add_argument("--gripper-open-value", type=float, default=1.0)
+               ap.add_argument("--gripper-close-value", type=float, default=-1.0)
+               ap.add_argument(
+          @@ -1046,7 +1083,20 @@ def main():
+                   "open-until-step",
+                   "open-then-close-after-step",
+               }:
+          -        print(f"Schedule step: {args.gripper_close_after_step}")
+          +        left_close_after = (
+          +            args.gripper_close_after_step
+          +            if args.left_gripper_close_after_step is None
+          +            else args.left_gripper_close_after_step
+          +        )
+          +        right_close_after = (
+          +            args.gripper_close_after_step
+          +            if args.right_gripper_close_after_step is None
+          +            else args.right_gripper_close_after_step
+          +        )
+          +        print(
+          +            f"Schedule step: {args.gripper_close_after_step} "
+          +            f"(left={left_close_after} right={right_close_after})"
+          +        )
+               if args.gripper_override == "policy-close-latch":
+                   print(
+                       f"Policy close latch threshold: {args.gripper_policy_close_threshold} "
+          @@ -1156,6 +1206,8 @@ def main():
+                                   "prompt": args.prompt,
+                                   "gripper_override": args.gripper_override,
+                                   "gripper_close_after_step": args.gripper_close_after_step,
+          +                        "left_gripper_close_after_step": args.left_gripper_close_after_step,
+          +                        "right_gripper_close_after_step": args.right_gripper_close_after_step,
+                                   "gripper_open_value": args.gripper_open_value,
+                                   "gripper_close_value": args.gripper_close_value,
+                                   "gripper_policy_close_threshold": args.gripper_policy_close_threshold,
+          @@ -1245,6 +1297,8 @@ def main():
+                           action_representation=action_representation,
+                           gripper_override=args.gripper_override,
+                           gripper_close_after_step=args.gripper_close_after_step,
+          +                left_gripper_close_after_step=args.left_gripper_close_after_step,
+          +                right_gripper_close_after_step=args.right_gripper_close_after_step,
+                           gripper_open_value=args.gripper_open_value,
+                           gripper_close_value=args.gripper_close_value,
+                           gripper_policy_close_threshold=args.gripper_policy_close_threshold,
+          PATCH
+                      python -m py_compile \
+            /workspace/code/dreamzero/eval_utils/bimanual_policy_server.py \
+            /workspace/code/dreamzero/scripts/eval/eval_robofactory_ws.py \
+            /workspace/code/dreamzero/scripts/eval/analyze_gripper_dump.py
+
+          echo "Cloning RoboFactory at ${ROBOFACTORY_GIT_COMMIT}"
+          git clone --no-checkout --filter=blob:none "$ROBOFACTORY_GIT_URL" /workspace/code/RoboFactory
+          git -C /workspace/code/RoboFactory fetch --depth 1 origin "$ROBOFACTORY_GIT_COMMIT"
+          git -C /workspace/code/RoboFactory checkout --detach "$ROBOFACTORY_GIT_COMMIT"
+          test "$(git -C /workspace/code/RoboFactory rev-parse HEAD)" = "$ROBOFACTORY_GIT_COMMIT"
+
+          echo "Installing local DreamZero and RoboFactory packages"
+          python -m pip install -q --no-cache-dir --ignore-requires-python -e /workspace/code/dreamzero --no-deps
+          python -m pip install -q --no-cache-dir -e /workspace/code/RoboFactory --no-deps
+
+          python - <<'PY'
+          import importlib.util
+          required = ["torch", "groot", "robofactory", "mani_skill", "sapien", "gymnasium", "websockets", "msgpack_numpy", "pyarrow"]
+          for name in required:
+              print(f"{name}: {bool(importlib.util.find_spec(name))}", flush=True)
+          missing = [name for name in required if importlib.util.find_spec(name) is None]
+          if missing:
+              raise SystemExit(f"missing required imports: {missing}")
+          PY
+
+          echo "Downloading RoboFactory LiftBarrier-rf-500 data"
+          osmo data download --resume "${DATA_S3_URI}/" /workspace/data/LiftBarrier-rf
+          if [ -d /workspace/data/LiftBarrier-rf/meta ]; then
+            EVAL_DATA_ROOT=/workspace/data/LiftBarrier-rf
+          elif [ -d /workspace/data/LiftBarrier-rf/LiftBarrier-rf-500/meta ]; then
+            EVAL_DATA_ROOT=/workspace/data/LiftBarrier-rf/LiftBarrier-rf-500
+          else
+            echo "FATAL: could not locate downloaded LeRobot meta directory" >&2
+            find /workspace/data/LiftBarrier-rf -maxdepth 3 -type d -name meta -print || true
+            exit 1
+          fi
+          echo "EVAL_DATA_ROOT=${EVAL_DATA_ROOT}"
+          mkdir -p /workspace/data/robofactory_lerobot_v2 /workspace/data/LiftBarrier-rf-500
+          ln -sfn "$EVAL_DATA_ROOT" /workspace/data/robofactory_lerobot_v2/LiftBarrier-rf-500
+          ln -sfn "$EVAL_DATA_ROOT" /workspace/data/LiftBarrier-rf-500/LiftBarrier-rf-500
+          export ROBOFACTORY_DATA_ROOT_FOR_TRANSFORM=/workspace/data/robofactory_lerobot_v2/LiftBarrier-rf-500
+
+          echo "Downloading checkpoint ${CKPT_SETTING}"
+          candidate_dir="${LOCAL_EVAL_CKPT_ROOT}/${CKPT_SETTING}"
+          amlfs_candidate="${CKPT_AMLFS_BASE}/${CKPT_SETTING}"
+          mkdir -p "$LOCAL_EVAL_CKPT_ROOT"
+          wait_for_checkpoint() {
+            local candidate_uri="${CKPT_S3_BASE}/${CKPT_SETTING}/"
+            local deadline=$((SECONDS + CKPT_WAIT_TIMEOUT_SECONDS))
+            while true; do
+              if [ -f "${amlfs_candidate}/model.safetensors" ] && [ -f "${amlfs_candidate}/trainer_state.json" ]; then
+                echo "Checkpoint visible in AMLFS cache: ${amlfs_candidate}"
+                return 0
+              fi
+              set +e
+              osmo data list --no-pager "$candidate_uri" >/tmp/checkpoint_list.out 2>/tmp/checkpoint_list.err
+              local list_status=$?
+              grep -qE '(model\.safetensors|model\.safetensors\.index\.json)' /tmp/checkpoint_list.out
+              local grep_status=$?
+              set -e
+              local status=1
+              if [ "$list_status" -eq 0 ]; then
+                status="$grep_status"
+              fi
+              if [ "$status" -eq 0 ]; then
+                echo "Checkpoint visible in S3: ${candidate_uri}"
+                return 0
+              fi
+              if [ "$SECONDS" -ge "$deadline" ]; then
+                echo "Timed out waiting ${CKPT_WAIT_TIMEOUT_SECONDS}s for ${CKPT_SETTING}" >&2
+                return 1
+              fi
+              echo "${CKPT_SETTING} not visible yet; sleeping ${CKPT_WAIT_INTERVAL_SECONDS}s"
+              sleep "$CKPT_WAIT_INTERVAL_SECONDS"
+            done
+          }
+          wait_for_checkpoint
+          if [ -f "${amlfs_candidate}/model.safetensors" ] && [ -f "${amlfs_candidate}/trainer_state.json" ]; then
+            echo "Linking checkpoint from AMLFS cache: ${amlfs_candidate}"
+            rm -rf "$candidate_dir"
+            ln -sfn "$amlfs_candidate" "$candidate_dir"
+          else
+            echo "AMLFS checkpoint missing or incomplete; falling back to filtered S3 download"
+            candidate_uri="${CKPT_S3_BASE}/${CKPT_SETTING}/"
+            rm -rf "$candidate_dir"
+            mkdir -p "$candidate_dir"
+            ckpt_regex='.*(model\.safetensors|trainer_state\.json|config\.json|wandb_config\.json|experiment_cfg/.*|\.cache_complete)$'
+            osmo data download --resume --regex "$ckpt_regex" "$candidate_uri" "$candidate_dir"
+            if [ ! -f "${candidate_dir}/model.safetensors" ] && [ -f "${candidate_dir}/${CKPT_SETTING}/model.safetensors" ]; then
+              echo "Normalizing nested checkpoint directory ${candidate_dir}/${CKPT_SETTING}"
+              for item in .cache_complete config.json model.safetensors trainer_state.json wandb_config.json experiment_cfg; do
+                if [ -e "${candidate_dir}/${CKPT_SETTING}/${item}" ] && [ ! -e "${candidate_dir}/${item}" ]; then
+                  ln -sfn "${candidate_dir}/${CKPT_SETTING}/${item}" "${candidate_dir}/${item}"
+                fi
+              done
+            fi
+          fi
+          test -f "${candidate_dir}/model.safetensors"
+          test -f "${candidate_dir}/experiment_cfg/conf.yaml"
+
+          echo "Patching checkpoint config paths"
+          python - <<PY
+          from pathlib import Path
+          from omegaconf import DictConfig, ListConfig, OmegaConf
+
+          cfg_path = Path("${candidate_dir}") / "experiment_cfg" / "conf.yaml"
+          patches = {
+              "pretrained_model_path": "${DROID_EXPECTED}",
+              "robofactory_data_root": "/workspace/data/robofactory_lerobot_v2/LiftBarrier-rf-500",
+              "dit_version": "/workspace/checkpoints/Wan2.1-I2V-14B-480P",
+              "text_encoder_pretrained_path": "/workspace/checkpoints/Wan2.1-I2V-14B-480P/models_t5_umt5-xxl-enc-bf16.pth",
+              "image_encoder_pretrained_path": "/workspace/checkpoints/Wan2.1-I2V-14B-480P/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth",
+              "vae_pretrained_path": "/workspace/checkpoints/Wan2.1-I2V-14B-480P/Wan2.1_VAE.pth",
+              "tokenizer_path": "/workspace/checkpoints/umt5-xxl",
+          }
+          cfg = OmegaConf.load(str(cfg_path))
+          print(f"patching {cfg_path}")
+          for key, value in patches.items():
+              old = cfg.get(key, None)
+              OmegaConf.update(cfg, key, value, merge=False, force_add=True)
+              print(f"  {key}: {old!r} -> {value!r}")
+
+          def patch_recursive(node, path=""):
+              if isinstance(node, DictConfig):
+                  for key in list(node.keys()):
+                      child_path = f"{path}.{key}" if path else str(key)
+                      if key in patches:
+                          old = node.get(key)
+                          node[key] = patches[key]
+                          if old != patches[key]:
+                              print(f"  recursive {child_path}: {old!r} -> {patches[key]!r}")
+                      else:
+                          patch_recursive(node[key], child_path)
+              elif isinstance(node, ListConfig):
+                  for idx, item in enumerate(node):
+                      patch_recursive(item, f"{path}[{idx}]")
+
+          # Avoid recursively resolving OmegaConf mandatory placeholders here.
+          # Nested tokenizer paths are patched with a raw YAML replacement after save.
+          specs = cfg.train_dataset.mixture_spec
+          for idx, spec in enumerate(specs):
+              dataset_path = spec.get("dataset_path") if hasattr(spec, "get") else None
+              if dataset_path is not None and "robofactory" in dataset_path:
+                  old = list(dataset_path["robofactory"])
+                  dataset_path["robofactory"] = ["/workspace/data/robofactory_lerobot_v2/LiftBarrier-rf-500"]
+                  print(f"  train_dataset.mixture_spec[{idx}].dataset_path.robofactory: {old!r} -> {list(dataset_path['robofactory'])!r}")
+          OmegaConf.save(config=cfg, f=str(cfg_path))
+          text = cfg_path.read_text()
+          text = text.replace("/workspace/checkpoints/umt5-xxl/umt5-xxl", "/workspace/checkpoints/umt5-xxl")
+          cfg_path.write_text(text)
+          PY
+
+          grep -n "pretrained_model_path" "${candidate_dir}/experiment_cfg/conf.yaml" || true
+          grep -n "robofactory_data_root" "${candidate_dir}/experiment_cfg/conf.yaml" || true
+          grep -n "tokenizer_path" "${candidate_dir}/experiment_cfg/conf.yaml" || true
+          du -sh "$candidate_dir"
+
+          echo "Preparing RoboFactory assets cache"
+          mkdir -p "$ROBOFACTORY_ASSET_CACHE"
+          if [ ! -f "${ROBOFACTORY_ASSET_CACHE}/.cache_complete" ]; then
+            echo "Downloading RoboFactory assets to ${ROBOFACTORY_ASSET_CACHE}"
+            asset_ok=0
+            for attempt in 1 2 3 4; do
+              set +e
+            python - <<PY
+          from huggingface_hub import snapshot_download
+          snapshot_download(
+              repo_id="sparklexfantasy/RoboFactory_asset",
+              local_dir="${ROBOFACTORY_ASSET_CACHE}",
+              repo_type="dataset",
+              resume_download=True,
+              max_workers=1,
+          )
+          PY
+              status=$?
+              set -e
+              if [ "$status" -eq 0 ]; then
+                asset_ok=1
+                break
+              fi
+              echo "RoboFactory asset download attempt ${attempt} failed with status ${status}; retrying after backoff"
+              sleep $((attempt * 90))
+            done
+            if [ "$asset_ok" -ne 1 ]; then
+              echo "FATAL: RoboFactory asset download failed after retries" >&2
+              exit 31
+            fi
+            date -u +"%Y-%m-%dT%H:%M:%SZ" > "${ROBOFACTORY_ASSET_CACHE}/.cache_complete"
+          else
+            echo "Using cached RoboFactory assets from ${ROBOFACTORY_ASSET_CACHE}"
+          fi
+          rm -rf /workspace/code/RoboFactory/robofactory/assets
+          ln -sfn "$ROBOFACTORY_ASSET_CACHE" /workspace/code/RoboFactory/robofactory/assets
+
+          echo "Preflighting bimanual transform instantiate for ${CKPT_SETTING}"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          from hydra.utils import instantiate
+          from omegaconf import OmegaConf
+
+          from groot.vla.data.schema.lerobot import DatasetMetadata
+
+          ckpt = Path(os.environ["LOCAL_EVAL_CKPT_ROOT"]) / os.environ["CKPT_SETTING"]
+          cfg = OmegaConf.load(ckpt / "experiment_cfg/conf.yaml")
+          metadata = json.loads((ckpt / "experiment_cfg/metadata.json").read_text())
+          transforms = instantiate(cfg.transforms)
+          print("TRANSFORM_PREFLIGHT_KEYS", list(transforms.keys()), flush=True)
+          tag = "robofactory" if "robofactory" in transforms else next(iter(transforms))
+          transforms[tag].set_metadata(DatasetMetadata.model_validate(metadata[tag]))
+          print("TRANSFORM_PREFLIGHT_OK", tag, flush=True)
+          PY
+
+          SAPIEN_VKLIB="$(python - <<'PY'
+          import os
+          import sapien
+          print(os.path.join(os.path.dirname(sapien.__file__), "vulkan_library"))
+          PY
+          )"
+          export SAPIEN_VKLIB
+          export VK_ICD_FILENAMES="${SAPIEN_VKLIB}/nvidia_icd.json"
+          export __EGL_VENDOR_LIBRARY_FILENAMES="${SAPIEN_VKLIB}/10_nvidia.json"
+          echo "SAPIEN_VKLIB=${SAPIEN_VKLIB}"
+          find "${SAPIEN_VKLIB}" -maxdepth 1 -type f -print 2>/dev/null | sort || true
+
+          cd /workspace/code/dreamzero
+          echo "Skipping offline diagnostic for close-window gripper run"
+          if [ "${RUN_OFFLINE:-0}" = "1" ]; then
+          echo "Running offline gripper/action diagnostic for ${CKPT_SETTING}"
+          CUDA_VISIBLE_DEVICES=0 python - <<'PY' 2>&1 | tee /workspace/eval_outputs/offline/offline_gripper_summary.txt
+          import json
+          import os
+          from pathlib import Path
+
+          import numpy as np
+          import torch
+
+          from eval_utils.offline_eval_bimanual import (
+              build_dataloader,
+              find_gt_action,
+              find_pred_action,
+              load_model,
+              load_resolved_cfg,
+              move_to_device,
+          )
+
+          ckpt_dir = Path(os.environ["LOCAL_EVAL_CKPT_ROOT"])
+          ckpt_setting = os.environ["CKPT_SETTING"]
+          cfg, metadata = load_resolved_cfg(ckpt_dir, ckpt_setting)
+          print("config:", {
+              "robofactory_data_root": cfg.get("robofactory_data_root"),
+              "pretrained_model_path": cfg.get("pretrained_model_path"),
+              "relative_action": cfg.get("relative_action"),
+              "relative_action_keys": list(cfg.get("relative_action_keys", []) or []),
+              "gripper_clean_max_sigma": cfg.action_head_cfg.config.get("gripper_clean_max_sigma", None),
+          }, flush=True)
+          model, dtype = load_model(ckpt_dir, ckpt_setting, cfg, "cuda")
+          loader = build_dataloader(cfg, batch_size=1, num_workers=0, metadata=metadata)
+
+          rows = []
+          pred_chunks = []
+          gt_chunks = []
+          valid_chunks = []
+          torch.manual_seed(0)
+          np.random.seed(0)
+          with torch.inference_mode():
+              for i, batch in enumerate(loader):
+                  if i >= 6:
+                      break
+                  gt, mask = find_gt_action(batch)
+                  batch_gpu = move_to_device(batch, "cuda", dtype)
+                  train_out = model.forward(batch_gpu)
+                  train_data = train_out.data if hasattr(train_out, "data") else train_out
+                  outputs = model.get_action(batch_gpu)
+                  pred = find_pred_action(outputs).detach().float().cpu()
+                  T = min(pred.shape[-2], gt.shape[-2])
+                  pred = pred[..., :T, :]
+                  gt = gt[..., :T, :].float()
+                  mask = mask[..., :T, :].bool()
+                  pg = pred[..., 7]
+                  gg = gt[..., 7]
+                  vg = mask[..., 7]
+                  pred_chunks.append(pg[vg].numpy())
+                  gt_chunks.append(gg[vg].numpy())
+                  valid_chunks.append(vg.numpy())
+                  row = {
+                      "batch": i,
+                      "train_loss": float(train_data["loss"]),
+                      "train_action_loss": float(train_data["action_loss"]),
+                      "gt_mean": float(gg[vg].mean()),
+                      "pred_mean": float(pg[vg].mean()),
+                      "gt_close_frac": float((gg[vg] < 0).float().mean()),
+                      "pred_close_frac": float((pg[vg] < 0).float().mean()),
+                      "sign_acc": float(((pg[vg] < 0) == (gg[vg] < 0)).float().mean()),
+                      "l1": float((pg[vg] - gg[vg]).abs().mean()),
+                  }
+                  rows.append(row)
+                  print("BATCH", json.dumps(row, sort_keys=True), flush=True)
+                  first_pred = pg[0].numpy()
+                  first_gt = gg[0].numpy()
+                  print("  horizon sample: h gt_L pred_L gt_R pred_R", flush=True)
+                  for h in [0, 1, 2, 3, 4, 5, 7, 10, 15, 20, 23]:
+                      if h < first_pred.shape[1]:
+                          print(
+                              f"  {h:02d} {first_gt[0, h]:+.3f} {first_pred[0, h]:+.3f} "
+                              f"{first_gt[1, h]:+.3f} {first_pred[1, h]:+.3f}",
+                              flush=True,
+                          )
+
+          pred = np.concatenate(pred_chunks)
+          gt = np.concatenate(gt_chunks)
+          close = gt < 0
+          metrics = {
+              "n": int(pred.size),
+              "gt_mean": float(gt.mean()),
+              "pred_mean": float(pred.mean()),
+              "gt_close_frac": float(close.mean()),
+              "pred_close_frac": float((pred < 0).mean()),
+              "sign_acc": float(((pred < 0) == close).mean()),
+              "pred_mean_when_gt_close": float(pred[close].mean()) if close.any() else None,
+              "pred_mean_when_gt_open": float(pred[~close].mean()) if (~close).any() else None,
+              "l1": float(np.abs(pred - gt).mean()),
+          }
+          print("SUMMARY", json.dumps(metrics, sort_keys=True), flush=True)
+          if metrics["sign_acc"] < 0.75:
+              print("WARNING low offline gripper sign_acc; closed-loop will still run one smoke episode", flush=True)
+          Path("/workspace/eval_outputs/offline/offline_gripper_metrics.json").write_text(
+              json.dumps({"rows": rows, "summary": metrics}, indent=2, sort_keys=True)
+          )
+          PY
+            fi
+
+          overall_status=0
+          for INFERENCE_MODE in ${INFERENCE_MODES}; do
+          case "$INFERENCE_MODE" in
+            causal_unipc)
+              export MAI_USE_CAUSAL_INFERENCE=1
+              export MAI_CAUSAL_SCHEDULER=unipc
+              ;;
+            causal_flowmatch)
+              export MAI_USE_CAUSAL_INFERENCE=1
+              export MAI_CAUSAL_SCHEDULER=flowmatch
+              ;;
+            noncausal_flowmatch)
+              export MAI_USE_CAUSAL_INFERENCE=0
+              export MAI_CAUSAL_SCHEDULER=flowmatch
+              ;;
+            *)
+              echo "Unknown INFERENCE_MODE=${INFERENCE_MODE}" >&2
+              exit 2
+              ;;
+          esac
+          for RESET_CAUSAL_STATE_EACH_INFER in ${RESET_CAUSAL_STATE_EACH_INFERS}; do
+          case "$RESET_CAUSAL_STATE_EACH_INFER" in
+            1|true|TRUE|yes|YES|on|ON)
+              RESET_TAG="resetcache"
+              RESET_ARG="--reset-causal-state-each-infer"
+              ;;
+            0|false|FALSE|no|NO|off|OFF)
+              RESET_TAG="persistcache"
+              RESET_ARG="--no-reset-causal-state-each-infer"
+              ;;
+            *)
+              echo "Unknown RESET_CAUSAL_STATE_EACH_INFER=${RESET_CAUSAL_STATE_EACH_INFER}" >&2
+              exit 2
+              ;;
+          esac
+          SERVER_LOG="/tmp/server_${INFERENCE_MODE}_${RESET_TAG}.log"
+          echo "Launching DreamZero policy server for closed-loop eval (${CKPT_SETTING}) inference_mode=${INFERENCE_MODE} reset_mode=${RESET_TAG} server_cuda=${SERVER_CUDA_VISIBLE_DEVICES} MAI_USE_CAUSAL_INFERENCE=${MAI_USE_CAUSAL_INFERENCE} MAI_CAUSAL_SCHEDULER=${MAI_CAUSAL_SCHEDULER} MAI_WRITE_DENOISED_CONTEXT_CACHE=${MAI_WRITE_DENOISED_CONTEXT_CACHE} VIDEO_PRED_ROLLOUT_MODE=${VIDEO_PRED_ROLLOUT_MODE}"
+          CUDA_VISIBLE_DEVICES="${SERVER_CUDA_VISIBLE_DEVICES}" python -m eval_utils.bimanual_policy_server \
+            --ckpt-dir "$LOCAL_EVAL_CKPT_ROOT" \
+            --ckpt-setting "$CKPT_SETTING" \
+            --host 127.0.0.1 \
+            --port "$PORT" \
+            --image-h 240 \
+            --image-w 320 \
+            --num-frames 33 \
+            --action-horizon 24 \
+            --return-action-debug \
+            --gripper-binarize-threshold "$GRIPPER_BINARIZE_THRESHOLD" \
+            --shared-global-wrist-window-mode history-current-first \
+            --save-video-pred \
+            --video-pred-dir "/workspace/eval_outputs/video_pred/${INFERENCE_MODE}_${RESET_TAG}" \
+            --video-pred-rollout-mode "$VIDEO_PRED_ROLLOUT_MODE" \
+            "$RESET_ARG" \
+            > "$SERVER_LOG" 2>&1 &
+          SERVER_PID=$!
+
+          echo "Waiting for server pid=${SERVER_PID}"
+          deadline=$((SECONDS + 2400))
+          while true; do
+            if grep -q "Bimanual policy server listening" "$SERVER_LOG" 2>/dev/null || grep -q "server listening on" "$SERVER_LOG" 2>/dev/null; then
+              echo "Server is ready"
+              break
+            fi
+            if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+              echo "FATAL: server exited before listening. Last 160 server log lines:"
+              tail -n 160 "$SERVER_LOG" || true
+              exit 1
+            fi
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "FATAL: server did not become ready before timeout. Last 160 server log lines:"
+              tail -n 160 "$SERVER_LOG" || true
+              exit 1
+            fi
+            tail -n 10 "$SERVER_LOG" || true
+            sleep 30
+          done
+
+          for REPLAN_EVERY in ${REPLAN_EVERYS}; do
+          for GRIPPER_CLOSE_PAIR in ${GRIPPER_CLOSE_PAIRS}; do
+            LEFT_GRIPPER_CLOSE_AFTER_STEP="${GRIPPER_CLOSE_PAIR%%:*}"
+            RIGHT_GRIPPER_CLOSE_AFTER_STEP="${GRIPPER_CLOSE_PAIR##*:}"
+            GRIPPER_CLOSE_AFTER_STEP="$LEFT_GRIPPER_CLOSE_AFTER_STEP"
+            for JOINT_DELTA_SCALE in ${JOINT_DELTA_SCALES}; do
+            for JOINT_TARGET_SLEW_RATE in ${JOINT_TARGET_SLEW_RATES}; do
+            scale_tag="$(echo "${JOINT_DELTA_SCALE}" | tr . p)"
+            slew_tag="$(echo "${JOINT_TARGET_SLEW_RATE}" | tr . p)"
+            clip_tag="$(echo "${JOINT_DELTA_OUTPUT_CLIP}" | tr . p)"
+            close_tag="lclose${LEFT_GRIPPER_CLOSE_AFTER_STEP}_rclose${RIGHT_GRIPPER_CLOSE_AFTER_STEP}"
+            out_dir="/workspace/eval_outputs/${INFERENCE_MODE}_${RESET_TAG}_rp${REPLAN_EVERY}_${GRIPPER_OVERRIDE}_${close_tag}_jscale_${scale_tag}_clip_${clip_tag}_slew_${slew_tag}_${SUCCESS_MODE}"
+            mkdir -p "${out_dir}/action_dump" "${out_dir}/videos"
+            echo "Running direct closed-loop RoboFactory eval inference_mode=${INFERENCE_MODE}, reset_mode=${RESET_TAG}, replan=${REPLAN_EVERY}, scale=${JOINT_DELTA_SCALE}, server_cuda=${SERVER_CUDA_VISIBLE_DEVICES}, client_cuda=${CLIENT_CUDA_VISIBLE_DEVICES}, output_clip=${JOINT_DELTA_OUTPUT_CLIP}, ref=${JOINT_DELTA_SCALE_REFERENCE}, slew_rate=${JOINT_TARGET_SLEW_RATE}, gripper override ${GRIPPER_OVERRIDE}, left close step ${LEFT_GRIPPER_CLOSE_AFTER_STEP}, right close step ${RIGHT_GRIPPER_CLOSE_AFTER_STEP}, success_mode ${SUCCESS_MODE}, binarize threshold ${GRIPPER_BINARIZE_THRESHOLD}"
+            set +e
+            timeout 10800 env CUDA_VISIBLE_DEVICES="${CLIENT_CUDA_VISIBLE_DEVICES}" python /workspace/code/dreamzero/scripts/eval/eval_robofactory_ws.py \
+              --host 127.0.0.1 \
+              --port "$PORT" \
+              --task "$TASK" \
+              --seed-start "$SEED_START" \
+              --num-episodes "$NUM_EPISODES" \
+              --max-steps "$MAX_STEPS" \
+              --replan-every "$REPLAN_EVERY" \
+              --prompt "$PROMPT" \
+              --log "${out_dir}/results.json" \
+              --ckpt-dir "$LOCAL_EVAL_CKPT_ROOT" \
+              --ckpt-setting "$CKPT_SETTING" \
+              --gripper-override "$GRIPPER_OVERRIDE" \
+              --gripper-policy-close-threshold "$GRIPPER_POLICY_CLOSE_THRESHOLD" \
+              --gripper-policy-close-min-step "$GRIPPER_POLICY_CLOSE_MIN_STEP" \
+              --gripper-close-after-step "$GRIPPER_CLOSE_AFTER_STEP" \
+              --left-gripper-close-after-step "$LEFT_GRIPPER_CLOSE_AFTER_STEP" \
+              --right-gripper-close-after-step "$RIGHT_GRIPPER_CLOSE_AFTER_STEP" \
+              --joint-delta-scale "$JOINT_DELTA_SCALE" \
+              --joint-delta-output-clip "$JOINT_DELTA_OUTPUT_CLIP" \
+              --joint-delta-scale-reference "$JOINT_DELTA_SCALE_REFERENCE" \
+              --joint-target-slew-rate "$JOINT_TARGET_SLEW_RATE" \
+              --success-mode "$SUCCESS_MODE" \
+              --strict-success-min-grasp-count "$STRICT_SUCCESS_MIN_GRASP_COUNT" \
+              --dump-actions "${out_dir}/action_dump" \
+              --video-dir "${out_dir}/videos" \
+              2>&1 | tee "/tmp/client_${INFERENCE_MODE}_${RESET_TAG}_rp${REPLAN_EVERY}_${GRIPPER_OVERRIDE}_close${close_tag}_jscale_${scale_tag}_clip_${clip_tag}_slew_${slew_tag}_${SUCCESS_MODE}.log"
+            client_status=${PIPESTATUS[0]}
+            set -e
+
+            echo "Client replan=${REPLAN_EVERY} scale=${JOINT_DELTA_SCALE} slew_rate=${JOINT_TARGET_SLEW_RATE} exit status: ${client_status}"
+            echo "Last 220 client log lines for replan=${REPLAN_EVERY} scale=${JOINT_DELTA_SCALE} slew_rate=${JOINT_TARGET_SLEW_RATE}:"
+            tail -n 220 "/tmp/client_${INFERENCE_MODE}_${RESET_TAG}_rp${REPLAN_EVERY}_${GRIPPER_OVERRIDE}_close${close_tag}_jscale_${scale_tag}_clip_${clip_tag}_slew_${slew_tag}_${SUCCESS_MODE}.log" || true
+            cp -f "/tmp/client_${INFERENCE_MODE}_${RESET_TAG}_rp${REPLAN_EVERY}_${GRIPPER_OVERRIDE}_close${close_tag}_jscale_${scale_tag}_clip_${clip_tag}_slew_${slew_tag}_${SUCCESS_MODE}.log" "${out_dir}/client.log"
+            if [ "$client_status" -ne 0 ]; then
+              overall_status="$client_status"
+            fi
+
+            if [ -d "${out_dir}/action_dump" ] && find "${out_dir}/action_dump" -name "episode_*.npz" -print -quit | grep -q .; then
+              echo "Analyzing gripper/action dump for replan=${REPLAN_EVERY} scale=${JOINT_DELTA_SCALE} slew_rate=${JOINT_TARGET_SLEW_RATE}"
+              python /workspace/code/dreamzero/scripts/eval/analyze_gripper_dump.py \
+                "${out_dir}/action_dump" \
+                --json-out "${out_dir}/action_dump_summary.json" \
+                2>&1 | tee "${out_dir}/action_dump_summary.txt"
+            else
+              echo "No action dump episode files found for replan=${REPLAN_EVERY} scale=${JOINT_DELTA_SCALE} slew_rate=${JOINT_TARGET_SLEW_RATE}"
+            fi
+            done
+            done
+          done
+          done
+
+          echo "Last 260 server log lines after inference_mode=${INFERENCE_MODE} reset_mode=${RESET_TAG}:"
+          tail -n 260 "$SERVER_LOG" || true
+          cp -f "$SERVER_LOG" "/workspace/eval_outputs/server_${INFERENCE_MODE}_${RESET_TAG}.log"
+          if [ -n "${SERVER_PID:-}" ] && kill -0 "$SERVER_PID" 2>/dev/null; then
+            echo "Stopping policy server pid=${SERVER_PID} after inference_mode=${INFERENCE_MODE}"
+            kill "$SERVER_PID" 2>/dev/null || true
+            wait "$SERVER_PID" 2>/dev/null || true
+          fi
+          unset SERVER_PID
+          done
+          done
+
+          if [ -d /workspace/eval_outputs/video_pred ] && find /workspace/eval_outputs/video_pred -name "*.mp4" -print -quit | grep -q .; then
+            echo "Analyzing saved predicted videos"
+            find /workspace/eval_outputs/video_pred -name "manifest.jsonl" -print | sort > /workspace/eval_outputs/video_pred_manifests.txt || true
+            python /workspace/code/dreamzero/scripts/eval/analyze_video_pred_quality.py \
+              /workspace/eval_outputs/video_pred \
+              --output-json /workspace/eval_outputs/video_pred_quality.json \
+              --output-txt /workspace/eval_outputs/video_pred_quality.txt \
+              --contact-sheet /workspace/eval_outputs/video_pred_quality_contact.jpg \
+              2>&1 | tee /workspace/eval_outputs/video_pred_quality.log || true
+          else
+            echo "No predicted video mp4 files found for video quality analysis"
+          fi
+
+          if find /workspace/eval_outputs -path "*/results.json" -print -quit | grep -q .; then
+            python - <<'PY' | tee /workspace/eval_outputs/summary.txt
+          import glob
+          import json
+          import os
+          rows = []
+          for path in sorted(glob.glob("/workspace/eval_outputs/*/results.json")):
+              with open(path) as f:
+                  data = json.load(f)
+              cfg = data.get("eval_config", {})
+              server_meta = data.get("server", {}).get("meta", {})
+              rows.append(
+                  {
+                      "variant_dir": os.path.basename(os.path.dirname(path)),
+                      "inference_mode": os.path.basename(os.path.dirname(path)).split("_rp", 1)[0],
+                      "reset_causal_state_each_infer": server_meta.get("reset_causal_state_each_infer"),
+                      "write_denoised_context_cache": server_meta.get("write_denoised_context_cache"),
+                      "video_pred_rollout_mode": server_meta.get("video_pred_rollout_mode"),
+                      "shared_global_wrist_window_mode": server_meta.get("shared_global_wrist_window_mode"),
+                      "replan_every": cfg.get("replan_every"),
+                      "gripper_override": cfg.get("gripper_override"),
+                      "success_mode": cfg.get("success_mode"),
+                      "scale": cfg.get("joint_delta_scale"),
+                      "output_clip": cfg.get("joint_delta_output_clip"),
+                      "target_slew_rate": cfg.get("joint_target_slew_rate"),
+                      "effective_scale": cfg.get("effective_joint_delta_scale"),
+                      "effective_output_clip": cfg.get("effective_joint_delta_output_clip"),
+                      "allow_absolute_joint_delta_scale": cfg.get("allow_absolute_joint_delta_scale"),
+                      "close_after_step": cfg.get("gripper_close_after_step"),
+                      "left_close_after_step": cfg.get("left_gripper_close_after_step"),
+                      "right_close_after_step": cfg.get("right_gripper_close_after_step"),
+                      "success_rate": data.get("success_rate"),
+                      "results": data.get("results", []),
+                  }
+              )
+          print(json.dumps(rows, indent=2, sort_keys=True))
+          best = [row for row in rows if any(r.get("success") for r in row.get("results", []))]
+          print(f"any_success={bool(best)} n_success_scales={len(best)}")
+          PY
+          else
+            echo "results.json missing for all scale variants"
+            overall_status=1
+          fi
+
+          if [ "$overall_status" -ne 0 ]; then
+            exit "$overall_status"
+          fi
+
+          SERVE_ROOT="/workspace/eval_outputs_http"
+          ARCHIVE="${SERVE_ROOT}/gamma_1seed_artifacts.tar"
+          mkdir -p "$SERVE_ROOT"
+          echo "Creating HTTP artifact archive ${ARCHIVE}"
+          tar -C /workspace/eval_outputs -cf "$ARCHIVE" .
+          sha256sum "$ARCHIVE" > "${ARCHIVE}.sha256"
+          split -b 1m -d -a 4 "$ARCHIVE" "${ARCHIVE}.part."
+          find "$SERVE_ROOT" -maxdepth 1 -type f -print -exec ls -lh {} \; | sort
+          echo "DROID-width DROID-warm openphasejoint checkpoint-50000 50k-scratch seed1000 gamma inference strict-lift noncausal pred-video eval complete"
+          echo "Serving split artifacts from ${SERVE_ROOT} on 0.0.0.0:8765"
+          python -m http.server 8765 --bind 0.0.0.0 --directory "$SERVE_ROOT"
+        path: /tmp/run_closedloop_openphasejoint_50kscratch_c50000_gamma_1seed_h100.sh
+      image: nvcr.io/nvidian/groot-ci-base-eval:latest@sha256:de6e59614be213f06f95c8c1e8311f0b700c963aed6c39eeec1fb56cd40c6ee7
+      lead: true
+      name: eval
+  name: dz-rf2-lb50k-c50000-gamma-1seed1000-xz-20260620
+  resources:
+    default:
+      cpu: 84
+      gpu: 8
+      memory: 1681Gi
+      nodesExcluded:
+      - aks-gpu-61109112-vmss00000v
+      - aks-gpu-61109112-vmss000012
+      - aks-gpu-61109112-vmss00004c
+      - aks-gpu-61109112-vmss00000r
+      - aks-gpu-61109112-vmss00002e
+      - aks-gpu-61109112-vmss00007l
+      - aks-gpu-92777625-vmss00000k
+      - aks-gpu-92777625-vmss00002n
+      - aks-gpu-92777625-vmss000020
+      - aks-gpu-92777625-vmss00007b
+      - aks-gpu-92777625-vmss00002u
+      - aks-gpu-92777625-vmss0002jl
+      - aks-gpu-92777625-vmss00002g
+      - aks-gpu-92777625-vmss00007h
+      platform: dgx-h100
+      storage: 620Gi
+  timeout:
+    exec_timeout: 5h
+    queue_timeout: 2h

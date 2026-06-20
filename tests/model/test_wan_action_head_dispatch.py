@@ -14,6 +14,7 @@ diffusion model + scheduler + VAE-shaped inputs) in
 import importlib.util
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -96,3 +97,129 @@ def test_detect_three_agents():
         "action": torch.zeros(2, 3, 24, 5),
     })
     assert inst._detect_multi_agent(af) == 3
+
+
+def test_reset_causal_state_clears_multi_agent_cache_progress():
+    Cls = _maybe_load_head()
+    inst = Cls.__new__(Cls)
+    inst.kv_cache1 = object()
+    inst.kv_cache_neg = object()
+    inst.crossattn_cache = object()
+    inst.crossattn_cache_neg = object()
+    inst.clip_feas = object()
+    inst.ys = object()
+    inst.current_start_frame = 17
+    inst._ma_cached_token_agent_id = torch.ones(3)
+    inst._ma_cached_token_agent_id_neg = torch.ones(3)
+    inst._ma_cached_until_frame = 17
+    inst.language = torch.ones(1)
+    inst.model = SimpleNamespace(_cached_token_agent_id=torch.ones(3))
+
+    inst.reset_causal_state()
+
+    assert inst.kv_cache1 is None
+    assert inst.kv_cache_neg is None
+    assert inst.crossattn_cache is None
+    assert inst.crossattn_cache_neg is None
+    assert inst.clip_feas is None
+    assert inst.ys is None
+    assert inst.current_start_frame == 0
+    assert inst._ma_cached_token_agent_id is None
+    assert inst._ma_cached_token_agent_id_neg is None
+    assert inst._ma_cached_until_frame == 0
+    assert inst.language is None
+    assert inst.model._cached_token_agent_id is None
+
+
+def test_write_denoised_context_cache_default_on(monkeypatch):
+    Cls = _maybe_load_head()
+    inst = Cls.__new__(Cls)
+    inst._ma_cached_until_frame = 0
+    calls = []
+
+    def _fake_run(**kwargs):
+        calls.append(kwargs)
+        return []
+
+    inst._run_multi_agent_diffusion_steps = _fake_run
+    monkeypatch.delenv("MAI_WRITE_DENOISED_CONTEXT_CACHE", raising=False)
+    noisy_video = torch.randn(1, 2, requires_grad=True)
+    noisy_action = torch.randn(1, 2, 3, 4, requires_grad=True)
+    state_features = torch.randn(1, 2, 1, 5, requires_grad=True)
+    embodiment_id = torch.tensor([0])
+    latents = torch.zeros(1)
+    y_source = torch.arange(6).reshape(1, 1, 6)
+    clean_latents = torch.arange(24).reshape(1, 1, 2, 6, 1, 2)
+    global_latents = torch.arange(10).reshape(1, 1, 10)
+
+    wrote = inst._write_multi_agent_denoised_context_cache(
+        noisy_video=noisy_video,
+        B=1,
+        block=2,
+        latents=latents,
+        prompt_embs=[torch.zeros(1, 1)],
+        seq_len=8,
+        noisy_action=noisy_action,
+        state_features=state_features,
+        embodiment_id=embodiment_id,
+        y_source=y_source,
+        clip_feature=torch.zeros(1, 1),
+        kv_caches=[torch.empty(0)],
+        crossattn_caches=[torch.empty(0)],
+        current_start_frame=4,
+        clean_latents=clean_latents,
+        global_latents=global_latents,
+    )
+
+    assert wrote is True
+    assert inst._ma_cached_until_frame == 6
+    assert len(calls) == 1
+    call = calls[0]
+    assert call["noisy_input"].requires_grad is False
+    assert call["action"].requires_grad is False
+    assert call["state"].requires_grad is False
+    torch.testing.assert_close(call["action"], noisy_action.detach())
+    torch.testing.assert_close(call["state"], state_features.detach())
+    assert call["embodiment_id"] is embodiment_id
+    assert call["seq_len"] == 8
+    assert call["kv_cache_metadata"] == {
+        "start_frame": 4,
+        "update_kv_cache": True,
+    }
+    torch.testing.assert_close(call["timestep"], torch.zeros(1, 2, dtype=torch.int64))
+    torch.testing.assert_close(call["timestep_action"], torch.zeros(1, 3, dtype=torch.int64))
+    torch.testing.assert_close(call["y"], y_source.narrow(2, 4, 2))
+    torch.testing.assert_close(call["global_video"], global_latents.narrow(2, 4, 2))
+    torch.testing.assert_close(call["clean_x"], clean_latents.narrow(3, 4, 2))
+
+
+def test_write_denoised_context_cache_can_be_disabled(monkeypatch):
+    Cls = _maybe_load_head()
+    inst = Cls.__new__(Cls)
+    inst._ma_cached_until_frame = 7
+    calls = []
+    inst._run_multi_agent_diffusion_steps = lambda **kwargs: calls.append(kwargs)
+    monkeypatch.setenv("MAI_WRITE_DENOISED_CONTEXT_CACHE", "0")
+
+    wrote = inst._write_multi_agent_denoised_context_cache(
+        noisy_video=torch.zeros(1),
+        B=1,
+        block=2,
+        latents=torch.zeros(1),
+        prompt_embs=[torch.zeros(1, 1)],
+        seq_len=8,
+        noisy_action=None,
+        state_features=None,
+        embodiment_id=None,
+        y_source=None,
+        clip_feature=None,
+        kv_caches=[torch.empty(0)],
+        crossattn_caches=[torch.empty(0)],
+        current_start_frame=4,
+        clean_latents=None,
+        global_latents=None,
+    )
+
+    assert wrote is False
+    assert calls == []
+    assert inst._ma_cached_until_frame == 7

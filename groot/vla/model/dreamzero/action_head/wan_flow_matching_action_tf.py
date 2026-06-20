@@ -312,6 +312,7 @@ class WANPolicyHead(ActionHead):
         self.language = None
         self._ma_cached_token_agent_id = None
         self._ma_cached_token_agent_id_neg = None
+        self._ma_cached_until_frame = 0
 
         self.ip_rank = 0
         self.ip_size = 1
@@ -1227,6 +1228,7 @@ class WANPolicyHead(ActionHead):
         self.current_start_frame = 0
         self._ma_cached_token_agent_id = None
         self._ma_cached_token_agent_id_neg = None
+        self._ma_cached_until_frame = 0
         if hasattr(self.model, "_cached_token_agent_id"):
             self.model._cached_token_agent_id = None
 
@@ -1234,6 +1236,88 @@ class WANPolicyHead(ActionHead):
         """Reset stateful causal video/action inference between episodes."""
         self._reset_cached_video_state()
         self.language = None
+
+    @staticmethod
+    def _slice_latent_frames(
+        tensor: torch.Tensor | None,
+        start: int,
+        length: int,
+    ) -> torch.Tensor | None:
+        if tensor is None:
+            return None
+        frame_dim = 3 if tensor.dim() == 6 else 2
+        total = tensor.shape[frame_dim]
+        if total == length:
+            return tensor
+        start = max(min(start, max(total - length, 0)), 0)
+        return tensor.narrow(frame_dim, start, length)
+
+    def _write_multi_agent_denoised_context_cache(
+        self,
+        *,
+        noisy_video: torch.Tensor,
+        B: int,
+        block: int,
+        latents: torch.Tensor,
+        prompt_embs: list[torch.Tensor],
+        seq_len: int,
+        noisy_action: torch.Tensor | None,
+        state_features: torch.Tensor | None,
+        embodiment_id: torch.Tensor | None,
+        y_source: torch.Tensor | None,
+        clip_feature: torch.Tensor | None,
+        kv_caches: list[KVCacheType],
+        crossattn_caches: list[KVCacheType],
+        current_start_frame: int,
+        clean_latents: torch.Tensor | None,
+        global_latents: torch.Tensor | None,
+    ) -> bool:
+        write_denoised_context_cache = (
+            os.environ.get("MAI_WRITE_DENOISED_CONTEXT_CACHE", "1").lower()
+            in ("1", "true", "yes", "on")
+        )
+        if not write_denoised_context_cache:
+            return False
+
+        # Gamma-World/self-forcing semantics: after a block is denoised,
+        # run one context pass at t=0 so future chunks attend to the
+        # generated video+hub K/V, not a delayed repeated observation.
+        context_timestep = torch.zeros(
+            [B, block], device=latents.device, dtype=torch.int64
+        )
+        context_timestep_action = None
+        if noisy_action is not None:
+            context_timestep_action = torch.zeros(
+                [B, noisy_action.shape[2]],
+                device=latents.device,
+                dtype=torch.int64,
+            )
+        self._run_multi_agent_diffusion_steps(
+            noisy_input=noisy_video.detach(),
+            timestep=context_timestep,
+            action=noisy_action.detach() if noisy_action is not None else None,
+            timestep_action=context_timestep_action,
+            state=state_features.detach() if state_features is not None else None,
+            embodiment_id=embodiment_id,
+            context=prompt_embs,
+            seq_len=seq_len,
+            y=self._slice_latent_frames(y_source, current_start_frame, block),
+            clip_feature=clip_feature,
+            kv_caches=kv_caches,
+            crossattn_caches=crossattn_caches,
+            kv_cache_metadata=dict(
+                start_frame=current_start_frame,
+                update_kv_cache=True,
+            ),
+            clean_x=self._slice_latent_frames(
+                clean_latents, current_start_frame, block
+            ),
+            global_video=self._slice_latent_frames(
+                global_latents, current_start_frame, block
+            ),
+        )
+        self._ma_cached_until_frame = current_start_frame + block
+        return True
 
     def preprocess_image(self, image):
         image = (image * (2 / 255) - 1).permute(0, 1, 4, 2, 3)
@@ -1994,20 +2078,6 @@ class WANPolicyHead(ActionHead):
         )
         current_image = current_image.to(dtype=latents.dtype)
 
-        def _slice_latent_frames(
-            tensor: torch.Tensor | None,
-            start: int,
-            length: int,
-        ) -> torch.Tensor | None:
-            if tensor is None:
-                return None
-            frame_dim = 3 if tensor.dim() == 6 else 2
-            total = tensor.shape[frame_dim]
-            if total == length:
-                return tensor
-            start = max(min(start, max(total - length, 0)), 0)
-            return tensor.narrow(frame_dim, start, length)
-
         def _repeat_current_to_block(image: torch.Tensor) -> torch.Tensor:
             if block == 1:
                 return image
@@ -2027,6 +2097,7 @@ class WANPolicyHead(ActionHead):
             )
             self._ma_cached_token_agent_id = None
             self._ma_cached_token_agent_id_neg = None
+            self._ma_cached_until_frame = 0
 
         assert self.kv_cache1 is not None and self.kv_cache_neg is not None
         assert self.crossattn_cache is not None and self.crossattn_cache_neg is not None
@@ -2046,17 +2117,18 @@ class WANPolicyHead(ActionHead):
                 embodiment_id=None,
                 context=prompt_embs,
                 seq_len=P * H_g * W_g,
-                y=_slice_latent_frames(self.ys, 0, 1),
+                y=self._slice_latent_frames(self.ys, 0, 1),
                 clip_feature=self.clip_feas,
                 kv_caches=kv_caches,
                 crossattn_caches=crossattn_caches,
                 kv_cache_metadata=dict(start_frame=0, update_kv_cache=True),
-                clean_x=_slice_latent_frames(clean_latents, 0, 1),
-                global_video=_slice_latent_frames(global_latents, 0, 1),
+                clean_x=self._slice_latent_frames(clean_latents, 0, 1),
+                global_video=self._slice_latent_frames(global_latents, 0, 1),
             )
             self.current_start_frame += 1
+            self._ma_cached_until_frame = max(self._ma_cached_until_frame, 1)
 
-        if self.current_start_frame != 1:
+        if self.current_start_frame > self._ma_cached_until_frame:
             ref_block = _repeat_current_to_block(current_image)
             ref_start = self.current_start_frame - block
             self._run_multi_agent_diffusion_steps(
@@ -2068,7 +2140,7 @@ class WANPolicyHead(ActionHead):
                 embodiment_id=None,
                 context=prompt_embs,
                 seq_len=seq_len,
-                y=_slice_latent_frames(self.ys, ref_start, block),
+                y=self._slice_latent_frames(self.ys, ref_start, block),
                 clip_feature=self.clip_feas,
                 kv_caches=kv_caches,
                 crossattn_caches=crossattn_caches,
@@ -2076,9 +2148,10 @@ class WANPolicyHead(ActionHead):
                     start_frame=ref_start,
                     update_kv_cache=True,
                 ),
-                clean_x=_slice_latent_frames(clean_latents, ref_start, block),
-                global_video=_slice_latent_frames(global_latents, ref_start, block),
+                clean_x=self._slice_latent_frames(clean_latents, ref_start, block),
+                global_video=self._slice_latent_frames(global_latents, ref_start, block),
             )
+            self._ma_cached_until_frame = self.current_start_frame
 
         noisy_video = self.generate_noise(
             (B, P, c_lat, block, h_lat, w_lat),
@@ -2179,7 +2252,7 @@ class WANPolicyHead(ActionHead):
                         embodiment_id=embodiment_id,
                         context=prompt_embs,
                         seq_len=seq_len,
-                        y=_slice_latent_frames(self.ys, self.current_start_frame, block),
+                        y=self._slice_latent_frames(self.ys, self.current_start_frame, block),
                         clip_feature=self.clip_feas,
                         kv_caches=kv_caches,
                         crossattn_caches=crossattn_caches,
@@ -2187,10 +2260,10 @@ class WANPolicyHead(ActionHead):
                             start_frame=self.current_start_frame,
                             update_kv_cache=False,
                         ),
-                        clean_x=_slice_latent_frames(
+                        clean_x=self._slice_latent_frames(
                             clean_latents, self.current_start_frame, block
                         ),
-                        global_video=_slice_latent_frames(
+                        global_video=self._slice_latent_frames(
                             global_latents, self.current_start_frame, block
                         ),
                     )
@@ -2245,6 +2318,25 @@ class WANPolicyHead(ActionHead):
                         sample=noisy_action,
                         to_final=(index == self._mai_num_inference_steps - 1),
                     )
+
+        self._write_multi_agent_denoised_context_cache(
+            noisy_video=noisy_video,
+            B=B,
+            block=block,
+            latents=latents,
+            prompt_embs=prompt_embs,
+            seq_len=seq_len,
+            noisy_action=noisy_action,
+            state_features=state_features,
+            embodiment_id=embodiment_id,
+            y_source=self.ys,
+            clip_feature=self.clip_feas,
+            kv_caches=kv_caches,
+            crossattn_caches=crossattn_caches,
+            current_start_frame=self.current_start_frame,
+            clean_latents=clean_latents,
+            global_latents=global_latents,
+        )
 
         video_output = noisy_video
         if self.current_start_frame == 1:

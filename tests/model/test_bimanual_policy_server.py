@@ -22,6 +22,13 @@ def _make_policy(metadata):
     policy.action_dim = 16
     policy.num_frames = 3
     policy._metadata = metadata
+    policy.save_video_pred = False
+    policy.video_pred_dir = None
+    policy.return_action_debug = False
+    policy.action_representation = "robotwin_delta"
+    policy.shared_global_wrist_window_mode = "history-current-first"
+    policy.reset_causal_state_each_infer = False
+    policy.video_pred_rollout_mode = "action"
     policy.gripper_convention = "auto"
     policy._relative_action = True
     policy._relative_action_per_horizon = False
@@ -157,6 +164,53 @@ def test_distributed_policy_proxy_worker_executes_received_commands():
         ("reset", {"session_id": "abc"}),
         ("infer", {"qpos": [4, 5, 6]}),
     ]
+
+
+def test_websocket_config_exposes_video_pred_and_gamma_diagnostics(
+    monkeypatch, tmp_path
+):
+    mod = _load_server_module()
+    policy = _make_policy(_metadata_with_action_stats())
+    shared_global_transform = _DummyTransform()
+    shared_global_transform.global_views = [0]
+    policy._transform = _DummyTransform(transforms=[shared_global_transform])
+    policy.save_video_pred = True
+    policy.video_pred_dir = tmp_path / "video_pred"
+    policy.reset_causal_state_each_infer = True
+    policy.video_pred_rollout_mode = "noncausal"
+    monkeypatch.setenv("MAI_WRITE_DENOISED_CONTEXT_CACHE", "0")
+    monkeypatch.setenv("MAI_CAUSAL_SCHEDULER", "flowmatch")
+    monkeypatch.setenv("MAI_NUM_INFERENCE_STEPS", "5")
+
+    server = mod.BimanualWebsocketServer(policy, host="127.0.0.1", port=59999)
+
+    cfg = server._cfg
+    assert cfg.save_video_pred is True
+    assert cfg.video_pred_dir == str(tmp_path / "video_pred")
+    assert cfg.write_denoised_context_cache is False
+    assert cfg.mai_causal_scheduler == "flowmatch"
+    assert cfg.mai_num_inference_steps == 5
+    assert cfg.shared_global_wrist_window_mode == "history-current-first"
+    assert cfg.reset_causal_state_each_infer is True
+    assert cfg.video_pred_rollout_mode == "noncausal"
+
+
+def test_reset_causal_state_each_infer_resets_action_head():
+    policy = _make_policy(_metadata_with_action_stats())
+    policy.reset_causal_state_each_infer = True
+
+    class _ActionHead:
+        def __init__(self):
+            self.calls = 0
+
+        def reset_causal_state(self):
+            self.calls += 1
+
+    action_head = _ActionHead()
+    policy._model = SimpleNamespace(action_head=action_head)
+
+    assert policy._maybe_reset_action_head_causal_state_for_infer() is True
+    assert action_head.calls == 1
 
 
 def test_metadata_tag_prefers_robotwin_over_legacy_robofactory():
@@ -656,7 +710,7 @@ def _constant_rgb(value: int) -> np.ndarray:
     return np.full((2, 3, 3), value, dtype=np.uint8)
 
 
-def test_shared_global_video_window_repeats_current_frame_for_all_streams():
+def test_shared_global_video_window_uses_current_first_wrist_history_by_default():
     policy = _make_policy(_metadata_with_action_stats())
     policy.num_frames = 3
     shared_global_transform = _DummyTransform()
@@ -671,8 +725,28 @@ def test_shared_global_video_window_repeats_current_frame_for_all_streams():
     global_video, agent0_video, agent1_video = policy._build_video_windows(history)
 
     np.testing.assert_array_equal(global_video[:, 0, 0, 0], [2, 2, 2])
-    np.testing.assert_array_equal(agent0_video[:, 0, 0, 0], [12, 12, 12])
-    np.testing.assert_array_equal(agent1_video[:, 0, 0, 0], [22, 22, 22])
+    np.testing.assert_array_equal(agent0_video[:, 0, 0, 0], [12, 10, 11])
+    np.testing.assert_array_equal(agent1_video[:, 0, 0, 0], [22, 20, 21])
+
+
+def test_shared_global_video_window_can_preserve_chronological_wrist_history():
+    policy = _make_policy(_metadata_with_action_stats())
+    policy.num_frames = 3
+    policy.shared_global_wrist_window_mode = "history-chronological"
+    shared_global_transform = _DummyTransform()
+    shared_global_transform.global_views = [0]
+    policy._transform = _DummyTransform(transforms=[shared_global_transform])
+    history = [
+        (_constant_rgb(0), _constant_rgb(10), _constant_rgb(20)),
+        (_constant_rgb(1), _constant_rgb(11), _constant_rgb(21)),
+        (_constant_rgb(2), _constant_rgb(12), _constant_rgb(22)),
+    ]
+
+    global_video, agent0_video, agent1_video = policy._build_video_windows(history)
+
+    np.testing.assert_array_equal(global_video[:, 0, 0, 0], [2, 2, 2])
+    np.testing.assert_array_equal(agent0_video[:, 0, 0, 0], [10, 11, 12])
+    np.testing.assert_array_equal(agent1_video[:, 0, 0, 0], [20, 21, 22])
 
 
 def test_legacy_video_window_preserves_all_camera_histories():

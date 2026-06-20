@@ -94,6 +94,33 @@ class BimanualServerConfig:
     gripper_convention: str = "auto"
     gripper_close_value: float = 0.0
     gripper_open_value: float = 1.0
+    save_video_pred: bool = False
+    video_pred_dir: str | None = None
+    write_denoised_context_cache: bool = True
+    mai_causal_scheduler: str = "unipc"
+    mai_num_inference_steps: int | None = None
+    shared_global_wrist_window_mode: str = "history-current-first"
+    reset_causal_state_each_infer: bool = False
+    video_pred_rollout_mode: str = "action"
+
+
+_SHARED_GLOBAL_WRIST_WINDOW_MODES = (
+    "repeat-current",
+    "history-current-first",
+    "history-chronological",
+)
+
+_VIDEO_PRED_ROLLOUT_MODES = ("action", "noncausal")
+
+
+def _resolve_video_pred_rollout_mode(value: str | None) -> str:
+    mode = str(value or "action").strip().lower()
+    if mode not in _VIDEO_PRED_ROLLOUT_MODES:
+        raise ValueError(
+            "video_pred_rollout_mode must be one of "
+            f"{_VIDEO_PRED_ROLLOUT_MODES}; got {value!r}"
+        )
+    return mode
 
 
 def _make_packer():
@@ -153,6 +180,11 @@ class DistributedServingContext:
 def _env_int(name: str, default: int) -> int:
     value = os.environ.get(name, "").strip()
     return int(value) if value else default
+
+
+def _optional_env_int(name: str) -> int | None:
+    value = os.environ.get(name, "").strip()
+    return int(value) if value else None
 
 
 def _resolve_inference_parallel_size(
@@ -365,6 +397,7 @@ class BimanualPolicy:
         action_dim: int = 16,
         save_video_pred: bool = False,
         video_pred_dir: str | None = None,
+        video_pred_rollout_mode: str | None = None,
         return_action_debug: bool = False,
         prompt_override: str | None = None,
         gripper_binarize_threshold: float | None = None,
@@ -373,6 +406,8 @@ class BimanualPolicy:
         gripper_close_value: float | None = None,
         gripper_force_open_until_infer: int | None = None,
         gripper_convention: str = "auto",
+        shared_global_wrist_window_mode: str | None = None,
+        reset_causal_state_each_infer: bool | None = None,
         device: str | None = None,
         device_mesh: Any | None = None,
     ):
@@ -387,6 +422,14 @@ class BimanualPolicy:
         self.action_dim = action_dim
         self.save_video_pred = save_video_pred
         self.video_pred_dir = Path(video_pred_dir) if video_pred_dir else None
+        if video_pred_rollout_mode is None:
+            video_pred_rollout_mode = os.environ.get(
+                "DREAMZERO_VIDEO_PRED_ROLLOUT_MODE",
+                "action",
+            )
+        self.video_pred_rollout_mode = _resolve_video_pred_rollout_mode(
+            video_pred_rollout_mode
+        )
         self.return_action_debug = return_action_debug
         self.prompt_override = (
             prompt_override
@@ -441,6 +484,25 @@ class BimanualPolicy:
                 "gripper_force_open_until_infer must be >= 0, got "
                 f"{self.gripper_force_open_until_infer}"
             )
+        if shared_global_wrist_window_mode is None:
+            shared_global_wrist_window_mode = os.environ.get(
+                "DREAMZERO_SHARED_GLOBAL_WRIST_WINDOW_MODE",
+                "history-current-first",
+            )
+        self.shared_global_wrist_window_mode = str(
+            shared_global_wrist_window_mode or "history-current-first"
+        ).strip().lower()
+        if self.shared_global_wrist_window_mode not in _SHARED_GLOBAL_WRIST_WINDOW_MODES:
+            raise ValueError(
+                "shared_global_wrist_window_mode must be one of "
+                f"{_SHARED_GLOBAL_WRIST_WINDOW_MODES}; got "
+                f"{shared_global_wrist_window_mode!r}"
+            )
+        if reset_causal_state_each_infer is None:
+            reset_causal_state_each_infer = self._parse_bool(
+                os.environ.get("DREAMZERO_RESET_CAUSAL_STATE_EACH_INFER", "0")
+            )
+        self.reset_causal_state_each_infer = bool(reset_causal_state_each_infer)
         self._last_action_debug: dict[str, np.ndarray] = {}
         self._relative_action = False
         self._relative_action_per_horizon = False
@@ -456,6 +518,18 @@ class BimanualPolicy:
             self._resolved_gripper_convention(),
             self._gripper_close_target(),
             self._gripper_open_target(),
+        )
+        logging.info(
+            "Shared-global wrist window mode: %s",
+            self.shared_global_wrist_window_mode,
+        )
+        logging.info(
+            "Reset causal state each infer: %s",
+            self.reset_causal_state_each_infer,
+        )
+        logging.info(
+            "Predicted-video rollout mode: %s",
+            self.video_pred_rollout_mode,
         )
 
     def _effective_prompt(self, prompt: str | None) -> str:
@@ -587,6 +661,13 @@ class BimanualPolicy:
     @classmethod
     def _env_bool(cls, name: str) -> bool:
         value = os.environ.get(name, "0")
+        return cls._parse_bool(value)
+
+    @classmethod
+    def _env_bool_default(cls, name: str, default: bool) -> bool:
+        value = os.environ.get(name, "").strip()
+        if not value:
+            return default
         return cls._parse_bool(value)
 
     def _model_resize_resolution(self) -> tuple[int, int] | None:
@@ -943,11 +1024,23 @@ class BimanualPolicy:
         sess["history"].clear()
         sess["prompt"] = prompt
         sess["infer_idx"] = 0
+        sess.pop("condition_debug_dumped", None)
+        self._reset_action_head_causal_state("episode reset")
+        return "reset successful"
+
+    def _reset_action_head_causal_state(self, reason: str) -> bool:
         model = getattr(self, "_model", None)
         action_head = getattr(model, "action_head", None)
         if action_head is not None and hasattr(action_head, "reset_causal_state"):
             action_head.reset_causal_state()
-        return "reset successful"
+            logging.debug("Reset action-head causal state for %s", reason)
+            return True
+        return False
+
+    def _maybe_reset_action_head_causal_state_for_infer(self) -> bool:
+        if not self.reset_causal_state_each_infer:
+            return False
+        return self._reset_action_head_causal_state("infer")
 
     def _uses_shared_global(self) -> bool:
         """Whether the loaded transform emits ``video_global``.
@@ -1005,11 +1098,17 @@ class BimanualPolicy:
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Return global/left/right video windows for the transform input.
 
-        Shared-global training uses ``global_condition_mode=current_repeat``:
-        frame 0 is the current observation and the action head uses frame 0
-        for per-agent I2V conditioning whenever ``video_global`` is present.
-        Repeat all camera streams from the current observation so the
-        closed-loop path conditions on the same frame index as training.
+        Shared-global training uses frame 0 as the current observation and
+        future frames afterward. The global scene stream is repeated from
+        frame 0 when ``global_condition_mode=current_repeat``. Wrist streams
+        stay configurable for eval diagnostics:
+
+        * repeat-current: repeat the current wrist frames, matching the old
+          closed-loop server behavior.
+        * history-current-first: put the current wrist frame at index 0, then
+          append the rest of the rolling history.
+        * history-chronological: keep the rolling history unchanged.
+
         Legacy non-shared-global checkpoints keep the rolling history window.
         """
         global_history = np.stack([h for (h, _, _) in history], axis=0)
@@ -1018,8 +1117,32 @@ class BimanualPolicy:
         if self._uses_shared_global():
             current_global, current_agent0, current_agent1 = history[-1]
             global_history = np.repeat(current_global[None], self.num_frames, axis=0)
-            agent0_history = np.repeat(current_agent0[None], self.num_frames, axis=0)
-            agent1_history = np.repeat(current_agent1[None], self.num_frames, axis=0)
+            mode = getattr(
+                self,
+                "shared_global_wrist_window_mode",
+                "history-current-first",
+            )
+            if mode == "repeat-current":
+                agent0_history = np.repeat(
+                    current_agent0[None], self.num_frames, axis=0
+                )
+                agent1_history = np.repeat(
+                    current_agent1[None], self.num_frames, axis=0
+                )
+            elif mode == "history-current-first":
+                agent0_history = np.concatenate(
+                    [agent0_history[-1:], agent0_history[:-1]], axis=0
+                )
+                agent1_history = np.concatenate(
+                    [agent1_history[-1:], agent1_history[:-1]], axis=0
+                )
+            elif mode == "history-chronological":
+                pass
+            else:
+                raise ValueError(
+                    "shared_global_wrist_window_mode must be one of "
+                    f"{_SHARED_GLOBAL_WRIST_WINDOW_MODES}; got {mode!r}"
+                )
         return global_history, agent0_history, agent1_history
 
     # ----- inference ----------------------------------------------------
@@ -1048,6 +1171,15 @@ class BimanualPolicy:
         sess = self._session(sid)
         if obs.get("prompt"):
             sess["prompt"] = self._effective_prompt(obs["prompt"])
+        if "step" in obs and obs["step"] is not None:
+            sess["last_env_step"] = int(obs["step"])
+        else:
+            sess["last_env_step"] = None
+        if obs.get("replan_every") is not None:
+            sess["last_replan_every"] = int(obs["replan_every"])
+        if obs.get("chunk_start_index") is not None:
+            sess["last_chunk_start_index"] = int(obs["chunk_start_index"])
+        self._maybe_reset_action_head_causal_state_for_infer()
 
         qpos = np.asarray(obs["qpos"], dtype=np.float32).reshape(-1)
         assert qpos.shape == (16,), f"need 16-dim qpos, got {qpos.shape}"
@@ -1072,6 +1204,12 @@ class BimanualPolicy:
         # (matches the LeRobot v2 camera naming written by
         # ``scripts/data/robofactory_to_lerobot_v2.py``).
         global_video, agent0_video, agent1_video = self._build_video_windows(history)
+        self._record_observed_video_debug(
+            sess,
+            global_video=global_video,
+            agent0_video=agent0_video,
+            agent1_video=agent1_video,
+        )
 
         # Per-arm state slices (T_s=1, current step only).
         T_s = 1
@@ -1179,19 +1317,21 @@ class BimanualPolicy:
 
             outputs = self._model.get_action(inputs_gpu)
 
-        if self.save_video_pred:
-            try:
-                self._dump_video_pred(sess, sid)
-                self._dump_conditioning_pred(sess, sid)
-            except Exception:
-                logging.exception("save_video_pred failed; continuing without")
-        sess["infer_idx"] = sess.get("infer_idx", 0) + 1
-
         flat_action = self._denorm_action(outputs, qpos)
         self._apply_gripper_force_open(sess, flat_action)
         self._apply_gripper_override(sess, flat_action)
         self._last_action_debug["action_physical_final"] = flat_action.copy()
         self._log_action_summary(sess, sid, flat_action)
+
+        if self.save_video_pred:
+            try:
+                if self.video_pred_rollout_mode == "noncausal":
+                    self._run_noncausal_video_pred_rollout(inputs_gpu)
+                self._dump_video_pred(sess, sid)
+                self._dump_conditioning_pred(sess, sid)
+            except Exception:
+                logging.exception("save_video_pred failed; continuing without")
+
         reply = {"action_chunk": flat_action.astype(np.float32)}
         if self.return_action_debug:
             reply.update(
@@ -1200,16 +1340,55 @@ class BimanualPolicy:
                     for key, value in self._last_action_debug.items()
                 }
             )
+        sess["infer_idx"] = sess.get("infer_idx", 0) + 1
         return reply
+
+    @staticmethod
+    def _video_pred_context(sess: dict) -> tuple[int, int | None, str]:
+        infer_idx = int(sess.get("infer_idx", 0))
+        raw_env_step = sess.get("last_env_step")
+        env_step = None if raw_env_step is None else int(raw_env_step)
+        if env_step is None:
+            prefix = f"infer{infer_idx:04d}_envunknown"
+        else:
+            prefix = f"infer{infer_idx:04d}_env{env_step:04d}"
+        return infer_idx, env_step, prefix
+
+    @staticmethod
+    def _append_video_pred_manifest(out_dir: Path, entry: dict[str, Any]) -> None:
+        manifest_path = out_dir / "manifest.jsonl"
+        with manifest_path.open("a") as f:
+            f.write(json.dumps(entry, sort_keys=True) + "\n")
+
+    def _run_noncausal_video_pred_rollout(self, inputs_gpu: dict[str, Any]) -> None:
+        """Refresh ``_last_video_pred`` with noncausal flowmatch for diagnostics.
+
+        The control action has already been computed before this runs; this
+        second pass only makes the saved pred video easier to inspect when the
+        primary action rollout is causal/unipc.
+        """
+        import torch
+
+        old_causal = os.environ.get("MAI_USE_CAUSAL_INFERENCE")
+        os.environ["MAI_USE_CAUSAL_INFERENCE"] = "0"
+        logging.info(
+            "Running noncausal predicted-video diagnostic rollout; control "
+            "action remains from the primary action rollout"
+        )
+        try:
+            with torch.inference_mode():
+                self._model.get_action(inputs_gpu)
+        finally:
+            if old_causal is None:
+                os.environ.pop("MAI_USE_CAUSAL_INFERENCE", None)
+            else:
+                os.environ["MAI_USE_CAUSAL_INFERENCE"] = old_causal
 
     def _dump_video_pred(self, sess: dict, sid: str) -> None:
         """VAE-decode the action_head's last denoised video latents and
         write one mp4 per agent. Called from infer() when save_video_pred
         is on. Adds ~5-15s per call (heavy VAE decode); diagnostic only.
         """
-        import torch
-        import av
-
         action_head = self._model.action_head
         latents = getattr(action_head, "_last_video_pred", None)
         if latents is None:
@@ -1228,49 +1407,70 @@ class BimanualPolicy:
             getattr(action_head, "_mai_anchor_i2v_first_frame", None),
             getattr(action_head, "_mai_causal_scheduler", None),
         )
-        # latents: [B=1, P, C_lat, F_lat, H_lat, W_lat] in self._dtype
-        B, P, C_lat, F_lat, H_lat, W_lat = latents.shape
-        # VAE.decode expects [B, C, T, H, W]; fold P into batch.
-        lat_bp = latents.reshape(B * P, C_lat, F_lat, H_lat, W_lat)
-        with torch.inference_mode():
-            frames = action_head.vae.decode(
-                lat_bp.to(self._device, dtype=self._dtype),
-                tiled=action_head.tiled,
-                tile_size=(action_head.tile_size_height,
-                           action_head.tile_size_width),
-                tile_stride=(action_head.tile_stride_height,
-                             action_head.tile_stride_width),
-            )                                                # [B*P, C, T, H, W]
-        frames = frames.float()
-        frames = ((frames + 1.0) * 127.5).clamp(0, 255).to(torch.uint8)
-        frames = frames.cpu().numpy()                        # [B*P, C, T, H, W]
-        # -> [P, T, H, W, C]; B is always 1 at inference.
-        frames = frames.transpose(0, 2, 3, 4, 1).reshape(
-            B, P, -1, frames.shape[3], frames.shape[4], 3
-        )[0]
+        frames = self._decode_latent_video(latents)
 
         out_dir = self.video_pred_dir or (self.ckpt_dir / "video_pred")
         out_dir = Path(out_dir) / f"session_{sid[:12]}"
         out_dir.mkdir(parents=True, exist_ok=True)
-        step = sess.get("infer_idx", 0)
-        T, H, W = frames.shape[1], frames.shape[2], frames.shape[3]
-        for p in range(P):
-            out_path = out_dir / f"step{step:04d}_agent{p}.mp4"
-            with av.open(str(out_path), mode="w") as container:
-                stream = container.add_stream("h264", rate=20)
-                stream.width = W
-                stream.height = H
-                stream.pix_fmt = "yuv420p"
-                stream.options = {"crf": "23"}
-                for t in range(T):
-                    img = frames[p, t]                       # [H, W, 3] uint8
-                    av_frame = av.VideoFrame.from_ndarray(img, format="rgb24")
-                    for packet in stream.encode(av_frame):
-                        container.mux(packet)
-                for packet in stream.encode():
-                    container.mux(packet)
-        logging.info("wrote predicted video: step=%d session=%s dir=%s",
-                     step, sid[:12], out_dir)
+        infer_idx, env_step, prefix = self._video_pred_context(sess)
+        P, T, H, W = frames.shape[0], frames.shape[1], frames.shape[2], frames.shape[3]
+        pred_files = self._write_decoded_video_set(frames, out_dir, prefix)
+        observed_files: list[str] = []
+        comparison_files: list[str] = []
+        observed_videos = sess.get("last_observed_video_debug")
+        if isinstance(observed_videos, dict):
+            observed_dir = out_dir / "observed"
+            observed_files = [
+                str(Path("observed") / name)
+                for name in self._write_observed_video_windows(
+                    observed_videos,
+                    observed_dir,
+                    prefix,
+                )
+            ]
+            comparison_files = [
+                str(Path("comparison") / name)
+                for name in self._write_pred_observed_comparison(
+                    pred_frames=frames,
+                    observed_videos=observed_videos,
+                    out_dir=out_dir / "comparison",
+                    prefix=prefix,
+                )
+            ]
+        self._append_video_pred_manifest(
+            out_dir,
+            {
+                "infer_idx": infer_idx,
+                "env_step": env_step,
+                "session_id_prefix": sid[:12],
+                "latent_shape": list(latents.shape),
+                "decoded_shape": [int(P), int(T), int(H), int(W), 3],
+                "pred_files": pred_files,
+                "observed_files": observed_files,
+                "comparison_files": comparison_files,
+                "replan_every": sess.get("last_replan_every"),
+                "chunk_start_index": sess.get("last_chunk_start_index"),
+                "shared_global_wrist_window_mode": self.shared_global_wrist_window_mode,
+                "reset_causal_state_each_infer": self.reset_causal_state_each_infer,
+                "video_pred_rollout_mode": self.video_pred_rollout_mode,
+                "write_denoised_context_cache": self._env_bool_default(
+                    "MAI_WRITE_DENOISED_CONTEXT_CACHE",
+                    True,
+                ),
+                "pred_video_semantics": (
+                    "decoded denoised wrist-future latents; comparison panels use "
+                    "the observed conditioning-window frame at the same displayed "
+                    "index, clamped to the final observed frame"
+                ),
+            },
+        )
+        logging.info(
+            "wrote predicted video: infer_idx=%d env_step=%s session=%s dir=%s",
+            infer_idx,
+            "unknown" if env_step is None else env_step,
+            sid[:12],
+            out_dir,
+        )
 
     def _decode_latent_video(self, latents):
         """Decode VAE latents in ``[B, P, C, F, H, W]`` layout."""
@@ -1295,13 +1495,15 @@ class BimanualPolicy:
             B, P, -1, frames.shape[3], frames.shape[4], 3
         )[0]
 
-    def _write_decoded_video_set(self, frames, out_dir: Path, prefix: str) -> None:
+    def _write_decoded_video_set(self, frames, out_dir: Path, prefix: str) -> list[str]:
         import av
 
         out_dir.mkdir(parents=True, exist_ok=True)
         P, T, H, W = frames.shape[0], frames.shape[1], frames.shape[2], frames.shape[3]
+        written: list[str] = []
         for p in range(P):
-            out_path = out_dir / f"{prefix}_agent{p}.mp4"
+            out_name = f"{prefix}_agent{p}.mp4"
+            out_path = out_dir / out_name
             with av.open(str(out_path), mode="w") as container:
                 stream = container.add_stream("h264", rate=20)
                 stream.width = W
@@ -1314,6 +1516,187 @@ class BimanualPolicy:
                         container.mux(packet)
                 for packet in stream.encode():
                     container.mux(packet)
+            written.append(out_name)
+        return written
+
+    def _current_observed_frame_index(self, frames: np.ndarray) -> int:
+        if frames.shape[0] <= 1:
+            return 0
+        if self._uses_shared_global():
+            mode = getattr(
+                self,
+                "shared_global_wrist_window_mode",
+                "history-current-first",
+            )
+            return frames.shape[0] - 1 if mode == "history-chronological" else 0
+        return frames.shape[0] - 1
+
+    @staticmethod
+    def _observed_frame_index_for_pred_step(frames: np.ndarray, pred_step: int) -> int:
+        if frames.shape[0] <= 1:
+            return 0
+        return min(max(int(pred_step), 0), frames.shape[0] - 1)
+
+    @staticmethod
+    def _resize_rgb_frame(frame: np.ndarray, height: int, width: int) -> np.ndarray:
+        frame = np.asarray(frame, dtype=np.uint8)
+        if frame.shape[:2] == (height, width):
+            return frame.copy()
+        import cv2
+
+        return cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
+
+    @staticmethod
+    def _label_rgb_frame(frame: np.ndarray, label: str) -> np.ndarray:
+        import cv2
+
+        out = np.asarray(frame, dtype=np.uint8).copy()
+        cv2.rectangle(out, (0, 0), (min(out.shape[1], 178), 24), (0, 0, 0), -1)
+        cv2.putText(
+            out,
+            label,
+            (6, 17),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.48,
+            (255, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
+        return out
+
+    def _write_pred_observed_comparison(
+        self,
+        *,
+        pred_frames: np.ndarray,
+        observed_videos: dict[str, np.ndarray],
+        out_dir: Path,
+        prefix: str,
+    ) -> list[str]:
+        import av
+
+        pred_frames = np.asarray(pred_frames, dtype=np.uint8)
+        if pred_frames.ndim != 5 or pred_frames.shape[-1] != 3:
+            logging.warning(
+                "Skipping pred/observed comparison with unexpected pred shape %s",
+                tuple(pred_frames.shape),
+            )
+            return []
+        if "global" not in observed_videos:
+            return []
+
+        out_dir.mkdir(parents=True, exist_ok=True)
+        P, T, H, W = (
+            pred_frames.shape[0],
+            pred_frames.shape[1],
+            pred_frames.shape[2],
+            pred_frames.shape[3],
+        )
+        global_video = np.asarray(observed_videos["global"], dtype=np.uint8)
+        if global_video.ndim != 4 or global_video.shape[-1] != 3:
+            return []
+        written: list[str] = []
+        for p in range(P):
+            wrist_name = f"agent{p}"
+            wrist_video = np.asarray(observed_videos.get(wrist_name), dtype=np.uint8)
+            if wrist_video.ndim != 4 or wrist_video.shape[-1] != 3:
+                logging.warning(
+                    "Skipping pred/observed comparison for %s with observed shape %s",
+                    wrist_name,
+                    tuple(wrist_video.shape),
+                )
+                continue
+            out_name = f"{prefix}_agent{p}_compare.mp4"
+            out_path = out_dir / out_name
+            with av.open(str(out_path), mode="w") as container:
+                stream = container.add_stream("h264", rate=20)
+                stream.width = W * 3
+                stream.height = H
+                stream.pix_fmt = "yuv420p"
+                stream.options = {"crf": "23"}
+                for t in range(T):
+                    global_idx = self._observed_frame_index_for_pred_step(
+                        global_video, t
+                    )
+                    wrist_idx = self._observed_frame_index_for_pred_step(
+                        wrist_video, t
+                    )
+                    global_frame = self._resize_rgb_frame(global_video[global_idx], H, W)
+                    wrist_frame = self._resize_rgb_frame(wrist_video[wrist_idx], H, W)
+                    global_panel = self._label_rgb_frame(
+                        global_frame,
+                        f"global obs[{global_idx}]",
+                    )
+                    wrist_panel = self._label_rgb_frame(
+                        wrist_frame,
+                        f"{wrist_name} obs[{wrist_idx}]",
+                    )
+                    pred_panel = self._label_rgb_frame(
+                        pred_frames[p, t],
+                        f"{wrist_name} pred",
+                    )
+                    canvas = np.concatenate(
+                        [global_panel, wrist_panel, pred_panel],
+                        axis=1,
+                    )
+                    av_frame = av.VideoFrame.from_ndarray(canvas, format="rgb24")
+                    for packet in stream.encode(av_frame):
+                        container.mux(packet)
+                for packet in stream.encode():
+                    container.mux(packet)
+            written.append(out_name)
+        return written
+
+    @staticmethod
+    def _record_observed_video_debug(
+        sess: dict,
+        *,
+        global_video: np.ndarray,
+        agent0_video: np.ndarray,
+        agent1_video: np.ndarray,
+    ) -> None:
+        """Keep a copy of the exact RGB windows fed to the transform."""
+        sess["last_observed_video_debug"] = {
+            "global": np.asarray(global_video, dtype=np.uint8).copy(),
+            "agent0": np.asarray(agent0_video, dtype=np.uint8).copy(),
+            "agent1": np.asarray(agent1_video, dtype=np.uint8).copy(),
+        }
+
+    def _write_observed_video_windows(
+        self,
+        videos: dict[str, np.ndarray],
+        out_dir: Path,
+        prefix: str,
+    ) -> list[str]:
+        import av
+
+        out_dir.mkdir(parents=True, exist_ok=True)
+        written: list[str] = []
+        for name, frames in videos.items():
+            frames = np.asarray(frames, dtype=np.uint8)
+            if frames.ndim != 4 or frames.shape[-1] != 3:
+                logging.warning(
+                    "Skipping observed video %s with unexpected shape %s",
+                    name,
+                    tuple(frames.shape),
+                )
+                continue
+            T, H, W = frames.shape[0], frames.shape[1], frames.shape[2]
+            out_name = f"{prefix}_observed_{name}.mp4"
+            out_path = out_dir / out_name
+            with av.open(str(out_path), mode="w") as container:
+                stream = container.add_stream("h264", rate=20)
+                stream.width = W
+                stream.height = H
+                stream.pix_fmt = "yuv420p"
+                stream.options = {"crf": "23"}
+                for t in range(T):
+                    av_frame = av.VideoFrame.from_ndarray(frames[t], format="rgb24")
+                    for packet in stream.encode(av_frame):
+                        container.mux(packet)
+                for packet in stream.encode():
+                    container.mux(packet)
+            written.append(out_name)
+        return written
 
     def _dump_conditioning_pred(self, sess: dict, sid: str) -> None:
         """Decode the I2V conditioning latents once for debugging.
@@ -1323,23 +1706,41 @@ class BimanualPolicy:
         ``stepXXXX_agent*.mp4`` is noise, the denoising/video-conditioning
         path is the problem, not the VAE diagnostic decode path.
         """
-        step = sess.get("infer_idx", 0)
-        if step != 0 or sess.get("condition_debug_dumped", False):
+        infer_idx, env_step, prefix = self._video_pred_context(sess)
+        if infer_idx != 0 or sess.get("condition_debug_dumped", False):
             return
 
         action_head = self._model.action_head
         out_dir = self.video_pred_dir or (self.ckpt_dir / "video_pred")
         out_dir = Path(out_dir) / f"session_{sid[:12]}" / "conditioning"
 
+        observed_videos = sess.get("last_observed_video_debug")
+        if isinstance(observed_videos, dict):
+            self._write_observed_video_windows(
+                observed_videos,
+                out_dir,
+                prefix,
+            )
+            logging.info(
+                "wrote observed RGB conditioning videos: infer_idx=%d env_step=%s session=%s dir=%s",
+                infer_idx,
+                "unknown" if env_step is None else env_step,
+                sid[:12],
+                out_dir,
+            )
+
         clean_latents = getattr(action_head, "_last_clean_video_cond", None)
         if clean_latents is not None:
             clean_frames = self._decode_latent_video(clean_latents)
             self._write_decoded_video_set(
-                clean_frames, out_dir, f"step{step:04d}_clean_x"
+                clean_frames, out_dir, f"{prefix}_clean_x"
             )
             logging.info(
-                "wrote conditioning clean_x video: step=%d session=%s dir=%s",
-                step, sid[:12], out_dir,
+                "wrote conditioning clean_x video: infer_idx=%d env_step=%s session=%s dir=%s",
+                infer_idx,
+                "unknown" if env_step is None else env_step,
+                sid[:12],
+                out_dir,
             )
 
         # ``y`` is [B, P, mask_channels + latent_channels, F, H, W].
@@ -1352,11 +1753,14 @@ class BimanualPolicy:
                 y_tail = y_latents[:, :, -c_lat:]
                 y_frames = self._decode_latent_video(y_tail)
                 self._write_decoded_video_set(
-                    y_frames, out_dir, f"step{step:04d}_y_latent"
+                    y_frames, out_dir, f"{prefix}_y_latent"
                 )
                 logging.info(
-                    "wrote conditioning y-latent video: step=%d session=%s dir=%s",
-                    step, sid[:12], out_dir,
+                    "wrote conditioning y-latent video: infer_idx=%d env_step=%s session=%s dir=%s",
+                    infer_idx,
+                    "unknown" if env_step is None else env_step,
+                    sid[:12],
+                    out_dir,
                 )
 
         sess["condition_debug_dumped"] = True
@@ -1677,6 +2081,20 @@ class BimanualWebsocketServer:
             gripper_convention=policy._resolved_gripper_convention(),
             gripper_close_value=policy._gripper_close_target(),
             gripper_open_value=policy._gripper_open_target(),
+            save_video_pred=bool(policy.save_video_pred),
+            video_pred_dir=(
+                str(policy.video_pred_dir) if policy.video_pred_dir else None
+            ),
+            write_denoised_context_cache=policy._env_bool_default(
+                "MAI_WRITE_DENOISED_CONTEXT_CACHE", True
+            ),
+            mai_causal_scheduler=os.environ.get(
+                "MAI_CAUSAL_SCHEDULER", "unipc"
+            ).strip().lower() or "unipc",
+            mai_num_inference_steps=_optional_env_int("MAI_NUM_INFERENCE_STEPS"),
+            shared_global_wrist_window_mode=policy.shared_global_wrist_window_mode,
+            reset_causal_state_each_infer=policy.reset_causal_state_each_infer,
+            video_pred_rollout_mode=policy.video_pred_rollout_mode,
         )
         logging.getLogger("websockets.server").setLevel(logging.INFO)
 
@@ -1868,6 +2286,15 @@ def main():
              "{ckpt_dir}/video_pred/session_{sid}.",
     )
     parser.add_argument(
+        "--video-pred-rollout-mode",
+        default=os.environ.get("DREAMZERO_VIDEO_PRED_ROLLOUT_MODE", "action"),
+        choices=_VIDEO_PRED_ROLLOUT_MODES,
+        help="Which model rollout supplies saved predicted-video latents. "
+             "'action' uses the same rollout that produced the control action; "
+             "'noncausal' keeps control action unchanged but runs a second "
+             "noncausal flowmatch pass only for diagnostic video artifacts.",
+    )
+    parser.add_argument(
         "--return-action-debug",
         action="store_true",
         help="Include raw and clipped normalized action chunks in infer replies.",
@@ -1923,6 +2350,27 @@ def main():
              "1-based boundary. For example, 6 keeps infer 1-5 open and lets "
              "infer 6 close if the model predicts close.",
     )
+    parser.add_argument(
+        "--shared-global-wrist-window-mode",
+        default=os.environ.get(
+            "DREAMZERO_SHARED_GLOBAL_WRIST_WINDOW_MODE",
+            "history-current-first",
+        ),
+        choices=_SHARED_GLOBAL_WRIST_WINDOW_MODES,
+        help="Eval diagnostic for shared-global checkpoints. history-current-first "
+             "keeps the current wrist frame at index 0 and appends rolling "
+             "history; repeat-current matches the historical server behavior; "
+             "history-chronological keeps wrist history unchanged.",
+    )
+    parser.add_argument(
+        "--reset-causal-state-each-infer",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Reset the WAN causal video/KV state before every infer() call. "
+             "Useful for closed-loop replanning where each request supplies the "
+             "current observation window. If unset, "
+             "DREAMZERO_RESET_CAUSAL_STATE_EACH_INFER is honored.",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -1953,6 +2401,7 @@ def main():
         action_horizon=args.action_horizon,
         save_video_pred=args.save_video_pred,
         video_pred_dir=args.video_pred_dir,
+        video_pred_rollout_mode=args.video_pred_rollout_mode,
         return_action_debug=args.return_action_debug,
         prompt_override=args.prompt_override,
         gripper_binarize_threshold=args.gripper_binarize_threshold,
@@ -1961,6 +2410,8 @@ def main():
         gripper_close_value=args.gripper_close_value,
         gripper_force_open_until_infer=args.gripper_force_open_until_infer,
         gripper_convention=args.gripper_convention,
+        shared_global_wrist_window_mode=args.shared_global_wrist_window_mode,
+        reset_causal_state_each_infer=args.reset_causal_state_each_infer,
         device=dist_ctx.device,
         device_mesh=dist_ctx.device_mesh,
     )

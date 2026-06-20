@@ -6,18 +6,32 @@ from pathlib import Path
 import numpy as np
 
 
+EVAL_SCRIPT = (
+    Path(__file__).resolve().parents[2] / "scripts" / "eval" / "eval_robofactory_ws.py"
+)
+
+
 def _load_eval_module(monkeypatch):
     robofactory = types.ModuleType("robofactory")
     tasks = types.ModuleType("robofactory.tasks")
     monkeypatch.setitem(sys.modules, "robofactory", robofactory)
     monkeypatch.setitem(sys.modules, "robofactory.tasks", tasks)
 
-    path = Path(__file__).resolve().parents[2] / "scripts" / "eval" / "eval_robofactory_ws.py"
-    spec = importlib.util.spec_from_file_location("eval_robofactory_ws_for_test", path)
+    spec = importlib.util.spec_from_file_location(
+        "eval_robofactory_ws_for_test", EVAL_SCRIPT
+    )
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)
     return module
+
+
+def test_infer_request_includes_replan_context_for_server_manifest():
+    source = EVAL_SCRIPT.read_text()
+
+    assert '"step": int(steps)' in source
+    assert '"replan_every": int(replan_every)' in source
+    assert '"chunk_start_index": int(steps)' in source
 
 
 def test_close_after_step_does_not_force_open_before_threshold(monkeypatch):

@@ -473,6 +473,8 @@ def run_episode(
                     "left_rgb": left,
                     "right_rgb": right,
                     "step": int(steps),
+                    "replan_every": int(replan_every),
+                    "chunk_start_index": int(steps),
                     "prompt": prompt,
                 },
                 use_bin_type=True,
