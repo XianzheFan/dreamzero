@@ -361,7 +361,7 @@ def prepare_env_action_target(
             if action_representation == "absolute_qpos"
             else np.asarray(rolling_qpos16, dtype=np.float32)
         )
-    elif reference_mode in ("infer", "inference", "anchor"):
+    elif reference_mode in ("infer", "inference", "anchor", "observed", "obs"):
         scale_reference = np.asarray(infer_qpos16, dtype=np.float32)
     elif reference_mode in ("rolling", "previous", "current"):
         scale_reference = np.asarray(rolling_qpos16, dtype=np.float32)
@@ -379,6 +379,25 @@ def prepare_env_action_target(
     )
 
 
+def limit_joint_target_slew(
+    action16: np.ndarray,
+    previous_action16: np.ndarray | None,
+    max_joint_delta: float | None,
+) -> np.ndarray:
+    """Limit per-env-step joint target jumps while preserving gripper commands."""
+    out = np.asarray(action16, dtype=np.float32).copy()
+    if previous_action16 is None or max_joint_delta is None or max_joint_delta <= 0.0:
+        return out
+    if not np.isfinite(max_joint_delta):
+        raise ValueError(f"joint target slew rate must be finite, got {max_joint_delta}")
+
+    prev = np.asarray(previous_action16, dtype=np.float32)
+    for start, end in ((0, 7), (8, 15)):
+        delta = np.clip(out[start:end] - prev[start:end], -max_joint_delta, max_joint_delta)
+        out[start:end] = prev[start:end] + delta
+    return out
+
+
 def apply_gripper_override(
     action16: np.ndarray,
     step: int,
@@ -386,6 +405,11 @@ def apply_gripper_override(
     close_after_step: int,
     open_value: float,
     close_value: float,
+    latch_state: dict[str, bool] | None = None,
+    policy_close_threshold: float = 0.0,
+    policy_close_min_step: int = 0,
+    left_close_after_step: int | None = None,
+    right_close_after_step: int | None = None,
 ) -> np.ndarray:
     """Optionally override RoboFactory gripper commands.
 
@@ -402,11 +426,37 @@ def apply_gripper_override(
     elif mode == "close":
         target = close_value
     elif mode == "close-after-step":
-        if step < close_after_step:
-            return out
-        target = close_value
+        for dim, threshold in (
+            (7, close_after_step if left_close_after_step is None else left_close_after_step),
+            (15, close_after_step if right_close_after_step is None else right_close_after_step),
+        ):
+            if step >= threshold:
+                out[dim] = close_value
+        return out
+    elif mode == "open-until-step":
+        for dim, threshold in (
+            (7, close_after_step if left_close_after_step is None else left_close_after_step),
+            (15, close_after_step if right_close_after_step is None else right_close_after_step),
+        ):
+            if step < threshold:
+                out[dim] = open_value
+        return out
     elif mode == "open-then-close-after-step":
-        target = open_value if step < close_after_step else close_value
+        for dim, threshold in (
+            (7, close_after_step if left_close_after_step is None else left_close_after_step),
+            (15, close_after_step if right_close_after_step is None else right_close_after_step),
+        ):
+            out[dim] = open_value if step < threshold else close_value
+        return out
+    elif mode == "policy-close-latch":
+        if latch_state is None:
+            latch_state = {}
+        for key, dim in (("left", 7), ("right", 15)):
+            if step >= policy_close_min_step and out[dim] <= policy_close_threshold:
+                latch_state[key] = True
+            if latch_state.get(key, False):
+                out[dim] = close_value
+        return out
     else:
         raise ValueError(f"unknown gripper override mode: {mode}")
 
@@ -425,6 +475,36 @@ def _bool_from(info_val) -> bool:
     return bool(info_val)
 
 
+def _current_grasp_count(env) -> int:
+    root = _env_root(env)
+    barrier = getattr(root, "barrier", None)
+    agents_root = getattr(root, "agent", None)
+    agents = list(getattr(agents_root, "agents", []) or [])
+    count = 0
+    for agent in agents[:2]:
+        if agent is not None and barrier is not None and hasattr(agent, "is_grasping"):
+            try:
+                count += int(_bool_from(agent.is_grasping(barrier)))
+            except Exception:
+                pass
+    return count
+
+
+def episode_success(
+    env,
+    info,
+    mode: str,
+    strict_success_min_grasp_count: int,
+) -> bool:
+    env_success = _bool_from(info.get("success", False)) if isinstance(info, dict) else _bool_from(info)
+    normalized_mode = mode.replace("_", "-")
+    if normalized_mode in ("env", "default"):
+        return env_success
+    if normalized_mode == "strict-lift":
+        return env_success and _current_grasp_count(env) >= strict_success_min_grasp_count
+    raise ValueError(f"unknown success mode: {mode!r}")
+
+
 def run_episode(
     env,
     ws,
@@ -440,8 +520,15 @@ def run_episode(
     right_joint_target_scale: float | None,
     gripper_override: str,
     gripper_close_after_step: int,
+    left_gripper_close_after_step: int | None,
+    right_gripper_close_after_step: int | None,
     gripper_open_value: float,
     gripper_close_value: float,
+    gripper_policy_close_threshold: float,
+    gripper_policy_close_min_step: int,
+    joint_target_slew_rate: float,
+    success_mode: str,
+    strict_success_min_grasp_count: int,
     dump: dict | None = None,
 ):
     # RoboFactory's RFSceneBuilder samples object poses with global np.random
@@ -461,6 +548,8 @@ def run_episode(
     _ = ws.recv()  # ack
 
     steps = 0
+    last_commanded: np.ndarray | None = None
+    gripper_latch_state = {"left": False, "right": False}
     while steps < max_steps:
         head, left, right, qpos = extract_obs(raw_obs)
         ws.send(
@@ -525,14 +614,26 @@ def run_episode(
                 gripper_close_after_step,
                 gripper_open_value,
                 gripper_close_value,
+                latch_state=gripper_latch_state,
+                policy_close_threshold=gripper_policy_close_threshold,
+                policy_close_min_step=gripper_policy_close_min_step,
+                left_close_after_step=left_gripper_close_after_step,
+                right_close_after_step=right_gripper_close_after_step,
             )
+            abs16 = limit_joint_target_slew(abs16, last_commanded, joint_target_slew_rate)
             raw_obs, reward, term, trunc, info = env.step(env_action_dict(abs16))
+            last_commanded = abs16.copy()
             cur = abs16
             steps += 1
             if dump is not None:
                 dump["exec_action"].append(abs16.copy())
                 dump["env_trace"].append(collect_env_trace(env, steps, abs16, info))
-            if _bool_from(info.get("success", False)):
+            if episode_success(
+                env,
+                info,
+                success_mode,
+                strict_success_min_grasp_count,
+            ):
                 return True, steps
             if _bool_from(term) or _bool_from(trunc):
                 return False, steps
@@ -565,7 +666,9 @@ def main():
             "open",
             "close",
             "close-after-step",
+            "open-until-step",
             "open-then-close-after-step",
+            "policy-close-latch",
         ),
         default="none",
         help="Diagnostic RoboFactory gripper override. RoboFactory uses +1=open, -1=close.",
@@ -580,8 +683,43 @@ def main():
             "this step."
         ),
     )
+    ap.add_argument(
+        "--left-gripper-close-after-step",
+        type=int,
+        default=None,
+        help=(
+            "Optional left-arm override for --gripper-close-after-step. "
+            "Defaults to the shared schedule step."
+        ),
+    )
+    ap.add_argument(
+        "--right-gripper-close-after-step",
+        type=int,
+        default=None,
+        help=(
+            "Optional right-arm override for --gripper-close-after-step. "
+            "Defaults to the shared schedule step."
+        ),
+    )
     ap.add_argument("--gripper-open-value", type=float, default=1.0)
     ap.add_argument("--gripper-close-value", type=float, default=-1.0)
+    ap.add_argument(
+        "--gripper-policy-close-threshold",
+        type=float,
+        default=0.0,
+        help=(
+            "For --gripper-override=policy-close-latch, latch each gripper closed "
+            "once the policy command is <= this threshold."
+        ),
+    )
+    ap.add_argument(
+        "--gripper-policy-close-min-step",
+        type=int,
+        default=0,
+        help=(
+            "Earliest env step where policy-close-latch may latch a gripper closed."
+        ),
+    )
     ap.add_argument(
         "--joint-target-scale",
         "--joint-delta-scale",
@@ -599,7 +737,17 @@ def main():
         "--joint-delta-scale-reference",
         dest="joint_target_scale_reference",
         default="auto",
-        choices=("auto", "infer", "inference", "anchor", "rolling", "previous", "current"),
+        choices=(
+            "auto",
+            "infer",
+            "inference",
+            "anchor",
+            "observed",
+            "obs",
+            "rolling",
+            "previous",
+            "current",
+        ),
         help=(
             "Reference qpos for --joint-target-scale. auto preserves the "
             "safe default: absolute_qpos chunks use the inference-time qpos "
@@ -609,12 +757,22 @@ def main():
     ap.add_argument(
         "--joint-target-scale-clip",
         "--joint-delta-scale-clip",
+        "--joint-delta-output-clip",
         dest="joint_target_scale_clip",
         type=float,
         default=0.0,
         help=(
             "Optional eval-only per-joint displacement clip in radians after "
             "scaling. 0 disables clipping."
+        ),
+    )
+    ap.add_argument(
+        "--joint-target-slew-rate",
+        type=float,
+        default=0.0,
+        help=(
+            "Optional eval-only per-step joint target slew limit in radians. "
+            "0 disables smoothing. Gripper commands are not smoothed."
         ),
     )
     ap.add_argument(
@@ -652,6 +810,21 @@ def main():
         "normalized chunks, the qpos the model saw, and executed actions. "
         "Gripper dims are 7 (left) and 15 (right): >0=open, <0=close.",
     )
+    ap.add_argument(
+        "--success-mode",
+        choices=("env", "default", "strict-lift"),
+        default="env",
+        help=(
+            "Success predicate. strict-lift requires env success and at least "
+            "--strict-success-min-grasp-count current grasping arms."
+        ),
+    )
+    ap.add_argument(
+        "--strict-success-min-grasp-count",
+        type=int,
+        default=1,
+        help="Minimum current grasping arms required for --success-mode=strict-lift.",
+    )
     args = ap.parse_args()
 
     # Late imports so a server-side schema mismatch fails before the heavy
@@ -671,6 +844,7 @@ def main():
     print(f"Joint scale:   {args.joint_target_scale}")
     print(f"Joint ref:     {args.joint_target_scale_reference}")
     print(f"Joint clip:    {args.joint_target_scale_clip}")
+    print(f"Joint slew:    {args.joint_target_slew_rate}")
     if args.left_joint_target_scale is not None or args.right_joint_target_scale is not None:
         effective_left = (
             args.joint_target_scale
@@ -684,8 +858,35 @@ def main():
         )
         print(f"Arm scales:    left={effective_left} right={effective_right}")
     print(f"Gripper mode:  {args.gripper_override}")
-    if args.gripper_override in ("close-after-step", "open-then-close-after-step"):
-        print(f"Close after:   {args.gripper_close_after_step}")
+    if args.gripper_override in (
+        "close-after-step",
+        "open-until-step",
+        "open-then-close-after-step",
+    ):
+        left_close_after = (
+            args.gripper_close_after_step
+            if args.left_gripper_close_after_step is None
+            else args.left_gripper_close_after_step
+        )
+        right_close_after = (
+            args.gripper_close_after_step
+            if args.right_gripper_close_after_step is None
+            else args.right_gripper_close_after_step
+        )
+        print(
+            f"Close after:   {args.gripper_close_after_step} "
+            f"(left={left_close_after} right={right_close_after})"
+        )
+    if args.gripper_override == "policy-close-latch":
+        print(
+            "Policy close latch: "
+            f"threshold={args.gripper_policy_close_threshold} "
+            f"min_step={args.gripper_policy_close_min_step}"
+        )
+    print(
+        f"Success mode:  {args.success_mode} "
+        f"(min_grasp={args.strict_success_min_grasp_count})"
+    )
 
     # Build env FIRST (sapien init takes ~30-60s); only then open the
     # ws connection. The sync ws client doesn't service pings while
@@ -761,15 +962,28 @@ def main():
                         "max_steps": args.max_steps,
                         "replan_every": args.replan_every,
                         "joint_target_scale": args.joint_target_scale,
+                        "joint_delta_scale": args.joint_target_scale,
                         "left_joint_target_scale": args.left_joint_target_scale,
                         "right_joint_target_scale": args.right_joint_target_scale,
                         "joint_target_scale_reference": args.joint_target_scale_reference,
+                        "joint_delta_scale_reference": args.joint_target_scale_reference,
                         "joint_target_scale_clip": args.joint_target_scale_clip,
+                        "joint_delta_output_clip": args.joint_target_scale_clip,
+                        "joint_target_slew_rate": args.joint_target_slew_rate,
+                        "effective_joint_delta_scale": args.joint_target_scale,
+                        "effective_joint_delta_output_clip": args.joint_target_scale_clip,
+                        "allow_absolute_joint_delta_scale": True,
                         "prompt": args.prompt,
                         "gripper_override": args.gripper_override,
                         "gripper_close_after_step": args.gripper_close_after_step,
+                        "left_gripper_close_after_step": args.left_gripper_close_after_step,
+                        "right_gripper_close_after_step": args.right_gripper_close_after_step,
                         "gripper_open_value": args.gripper_open_value,
                         "gripper_close_value": args.gripper_close_value,
+                        "gripper_policy_close_threshold": args.gripper_policy_close_threshold,
+                        "gripper_policy_close_min_step": args.gripper_policy_close_min_step,
+                        "success_mode": args.success_mode,
+                        "strict_success_min_grasp_count": args.strict_success_min_grasp_count,
                     },
                     "n_completed": len(results),
                     "n_target": args.num_episodes,
@@ -828,8 +1042,15 @@ def main():
                 right_joint_target_scale=args.right_joint_target_scale,
                 gripper_override=args.gripper_override,
                 gripper_close_after_step=args.gripper_close_after_step,
+                left_gripper_close_after_step=args.left_gripper_close_after_step,
+                right_gripper_close_after_step=args.right_gripper_close_after_step,
                 gripper_open_value=args.gripper_open_value,
                 gripper_close_value=args.gripper_close_value,
+                gripper_policy_close_threshold=args.gripper_policy_close_threshold,
+                gripper_policy_close_min_step=args.gripper_policy_close_min_step,
+                joint_target_slew_rate=args.joint_target_slew_rate,
+                success_mode=args.success_mode,
+                strict_success_min_grasp_count=args.strict_success_min_grasp_count,
                 dump=dump,
             )
         except Exception as e:

@@ -79,6 +79,90 @@ def test_open_then_close_after_step_forces_schedule(monkeypatch):
     np.testing.assert_allclose(late[[7, 15]], [-1.0, -1.0])
 
 
+def test_scheduled_gripper_override_accepts_per_arm_thresholds(monkeypatch):
+    mod = _load_eval_module(monkeypatch)
+    action = np.zeros(16, dtype=np.float32)
+    action[7] = 0.25
+    action[15] = 0.75
+
+    out = mod.apply_gripper_override(
+        action,
+        step=100,
+        mode="open-then-close-after-step",
+        close_after_step=40,
+        open_value=1.0,
+        close_value=-1.0,
+        left_close_after_step=96,
+        right_close_after_step=144,
+    )
+
+    np.testing.assert_allclose(out[[7, 15]], [-1.0, 1.0])
+
+
+def test_open_until_step_leaves_policy_after_threshold(monkeypatch):
+    mod = _load_eval_module(monkeypatch)
+    action = np.zeros(16, dtype=np.float32)
+    action[7] = -0.25
+    action[15] = -0.75
+
+    early = mod.apply_gripper_override(
+        action,
+        step=10,
+        mode="open-until-step",
+        close_after_step=40,
+        open_value=1.0,
+        close_value=-1.0,
+    )
+    late = mod.apply_gripper_override(
+        action,
+        step=41,
+        mode="open-until-step",
+        close_after_step=40,
+        open_value=1.0,
+        close_value=-1.0,
+    )
+
+    np.testing.assert_allclose(early[[7, 15]], [1.0, 1.0])
+    np.testing.assert_allclose(late[[7, 15]], [-0.25, -0.75])
+
+
+def test_policy_close_latch_is_sticky_per_arm(monkeypatch):
+    mod = _load_eval_module(monkeypatch)
+    state = {"left": False, "right": False}
+    action = np.zeros(16, dtype=np.float32)
+    action[7] = -0.3
+    action[15] = 0.8
+
+    first = mod.apply_gripper_override(
+        action,
+        step=10,
+        mode="policy-close-latch",
+        close_after_step=0,
+        open_value=1.0,
+        close_value=-1.0,
+        latch_state=state,
+        policy_close_threshold=-0.2,
+        policy_close_min_step=5,
+    )
+    action[7] = 0.9
+    action[15] = -0.4
+    second = mod.apply_gripper_override(
+        action,
+        step=11,
+        mode="policy-close-latch",
+        close_after_step=0,
+        open_value=1.0,
+        close_value=-1.0,
+        latch_state=state,
+        policy_close_threshold=-0.2,
+        policy_close_min_step=5,
+    )
+
+    np.testing.assert_allclose(first[[7, 15]], [-1.0, 0.8])
+    np.testing.assert_allclose(second[[7, 15]], [-1.0, -1.0])
+    assert state == {"left": True, "right": True}
+
+
 def test_scale_joint_targets_preserves_grippers(monkeypatch):
     mod = _load_eval_module(monkeypatch)
     qpos = np.arange(16, dtype=np.float32)
@@ -92,6 +176,22 @@ def test_scale_joint_targets_preserves_grippers(monkeypatch):
 
     np.testing.assert_allclose(out[0:7], qpos[0:7] + 0.2, atol=1e-6)
     np.testing.assert_allclose(out[8:15], qpos[8:15] - 0.4, atol=1e-6)
+    np.testing.assert_allclose(out[[7, 15]], [-1.0, 1.0])
+
+
+def test_limit_joint_target_slew_limits_joints_only(monkeypatch):
+    mod = _load_eval_module(monkeypatch)
+    previous = np.zeros(16, dtype=np.float32)
+    action = np.zeros(16, dtype=np.float32)
+    action[0:7] = 1.0
+    action[8:15] = -1.0
+    action[7] = -1.0
+    action[15] = 1.0
+
+    out = mod.limit_joint_target_slew(action, previous, max_joint_delta=0.2)
+
+    np.testing.assert_allclose(out[0:7], 0.2, atol=1e-6)
+    np.testing.assert_allclose(out[8:15], -0.2, atol=1e-6)
     np.testing.assert_allclose(out[[7, 15]], [-1.0, 1.0])
 
 
@@ -140,6 +240,30 @@ def test_scale_joint_targets_accepts_per_arm_scale(monkeypatch):
 
     np.testing.assert_allclose(out[0:7], 0.3, atol=1e-6)
     np.testing.assert_allclose(out[8:15], -0.5, atol=1e-6)
+    np.testing.assert_allclose(out[[7, 15]], [-1.0, 1.0])
+
+
+def test_prepare_env_action_target_observed_reference_alias(monkeypatch):
+    mod = _load_eval_module(monkeypatch)
+    infer_qpos = np.zeros(16, dtype=np.float32)
+    rolling_qpos = np.ones(16, dtype=np.float32)
+    action = np.zeros(16, dtype=np.float32)
+    action[0:7] = 0.2
+    action[8:15] = -0.3
+    action[7] = -1.0
+    action[15] = 1.0
+
+    out = mod.prepare_env_action_target(
+        action,
+        rolling_qpos,
+        infer_qpos,
+        action_representation="absolute_qpos",
+        joint_target_scale=2.0,
+        joint_target_scale_reference="observed",
+    )
+
+    np.testing.assert_allclose(out[0:7], 0.4, atol=1e-6)
+    np.testing.assert_allclose(out[8:15], -0.6, atol=1e-6)
     np.testing.assert_allclose(out[[7, 15]], [-1.0, 1.0])
 
 
@@ -267,3 +391,47 @@ def test_collect_env_trace_records_barrier_tcp_and_gripper(monkeypatch):
     np.testing.assert_allclose(values["right_tcp_to_barrier"], 0.10, atol=1e-6)
     np.testing.assert_allclose(values["left_tcp_to_grasp_target"], 0.0, atol=1e-6)
     np.testing.assert_allclose(values["right_tcp_to_grasp_target"], 0.0, atol=1e-6)
+
+
+def test_strict_lift_success_requires_current_grasp(monkeypatch):
+    mod = _load_eval_module(monkeypatch)
+
+    class Agent:
+        def __init__(self, grasping):
+            self._grasping = grasping
+
+        def is_grasping(self, _actor):
+            return np.asarray([self._grasping])
+
+    class MultiAgent:
+        def __init__(self, agents):
+            self.agents = agents
+
+    class Env:
+        @property
+        def unwrapped(self):
+            return self
+
+    env = Env()
+    env.barrier = object()
+    env.agent = MultiAgent([Agent(False), Agent(False)])
+
+    assert mod.episode_success(
+        env,
+        {"success": np.asarray([True])},
+        mode="env",
+        strict_success_min_grasp_count=1,
+    )
+    assert not mod.episode_success(
+        env,
+        {"success": np.asarray([True])},
+        mode="strict-lift",
+        strict_success_min_grasp_count=1,
+    )
+    env.agent = MultiAgent([Agent(True), Agent(False)])
+    assert mod.episode_success(
+        env,
+        {"success": np.asarray([True])},
+        mode="strict-lift",
+        strict_success_min_grasp_count=1,
+    )

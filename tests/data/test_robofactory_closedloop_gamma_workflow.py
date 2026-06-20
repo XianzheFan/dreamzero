@@ -57,8 +57,20 @@ def test_closedloop_gamma_workflow_runs_causal_cache_diagnostics():
         '"write_denoised_context_cache": server_meta.get("write_denoised_context_cache")',
         '"video_pred_rollout_mode": server_meta.get("video_pred_rollout_mode")',
         '"shared_global_wrist_window_mode": server_meta.get("shared_global_wrist_window_mode")',
+        '--joint-target-slew-rate "$JOINT_TARGET_SLEW_RATE"',
+        '--success-mode "$SUCCESS_MODE"',
+        '--strict-success-min-grasp-count "$STRICT_SUCCESS_MIN_GRASP_COUNT"',
+        '--left-gripper-close-after-step "$LEFT_GRIPPER_CLOSE_AFTER_STEP"',
+        '--right-gripper-close-after-step "$RIGHT_GRIPPER_CLOSE_AFTER_STEP"',
     ):
         assert marker in script
+
+
+def test_closedloop_gamma_workflow_does_not_patch_dreamzero_at_runtime():
+    _, script = _workflow_and_script()
+
+    assert "git -C /workspace/code/dreamzero apply" not in script
+    assert "<<'PATCH'" not in script
 
 
 def test_closedloop_gamma_workflow_embedded_script_is_valid_bash():
