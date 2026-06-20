@@ -55,6 +55,7 @@ from groot.vla.experiment.utils import (
     mprint,
     safe_save_model_for_hf_trainer,
 )
+from groot.vla.utils.training_args import resolve_training_run_name
 from groot.vla.utils.timer import ContextTimer
 
 # Fix resume: https://github.com/huggingface/transformers/pull/34632/files
@@ -64,6 +65,7 @@ allowlist = [np_core.multiarray._reconstruct, np.ndarray, np.dtype]
 # all versions of numpy
 allowlist += [type(np.dtype(np.uint32))]
 torch.serialization.add_safe_globals(allowlist)
+
 
 # Define LayerNorm classes locally to replace deprecated ALL_LAYERNORM_LAYERS
 LAYERNORM_LAYERS = [
@@ -653,7 +655,7 @@ class BaseExperiment(ABC):
 
         # Instantiate the training arguments.
         cfg.training_args.output_dir = cfg.training_args.output_dir.rstrip("/")
-        cfg.training_args.run_name = cfg.training_args.output_dir.split("/")[-1]
+        cfg.training_args.run_name = resolve_training_run_name(cfg.training_args)
         print(f"Run name: {cfg.training_args.run_name}")
         training_args = instantiate(cfg.training_args)
         set_seed(training_args.seed)
