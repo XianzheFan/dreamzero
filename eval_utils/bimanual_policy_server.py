@@ -1487,6 +1487,9 @@ class BimanualPolicy:
                 "last_video_pred_rollout_mode": getattr(
                     action_head, "_last_video_pred_rollout_mode", None
                 ),
+                "clean_video_cond_source": getattr(
+                    action_head, "_mai_clean_video_cond_source", None
+                ),
                 "write_denoised_context_cache": self._env_bool_default(
                     "MAI_WRITE_DENOISED_CONTEXT_CACHE",
                     True,

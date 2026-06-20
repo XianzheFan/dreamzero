@@ -1415,17 +1415,17 @@ class WANPolicyHead(ActionHead):
         )
 
         image = frame.permute(0, 1, 3, 2, 4, 5).reshape(b * p, 1, c, h, w)
-        clip_bp, y_bp, _ = self.encode_image(image, t, h, w)
+        clip_bp, y_bp, clean_image_bp = self.encode_image(image, t, h, w)
         clip_feature = clip_bp.reshape(b, p, *clip_bp.shape[1:]).to(self._device)
         y = y_bp.reshape(b, p, *y_bp.shape[1:]).to(self._device)
 
-        latent_frame_index = condition_frame_index
-        clean_frame = latents[:, :, :, latent_frame_index:latent_frame_index + 1]
-        if latent_frame_index < 0:
-            clean_frame = latents[:, :, :, latent_frame_index:]
+        clean_frame = clean_image_bp.reshape(
+            b, p, *clean_image_bp.shape[1:]
+        ).to(self._device)
         clean_x = clean_frame.expand(
             -1, -1, -1, latents.shape[3], -1, -1
         ).contiguous()
+        self._mai_clean_video_cond_source = "encode_image"
 
         return clip_feature, y, clean_x
     

@@ -243,6 +243,43 @@ def test_multi_agent_noise_streams_use_distinct_seeds(monkeypatch):
     assert not torch.equal(video, action)
 
 
+def test_multi_agent_i2v_clean_condition_uses_encode_image_latent():
+    Cls = _maybe_load_head()
+    inst = Cls.__new__(Cls)
+    inst.model = SimpleNamespace(model_type="i2v")
+    inst.image_encoder = object()
+    inst.vae = object()
+    inst._device = "cpu"
+
+    videos = torch.zeros(1, 2, 3, 5, 4, 4)
+    latents = torch.zeros(1, 2, 4, 3, 2, 2)
+    latents[:, :, :, 0] = 11.0
+    clean_image = torch.full((2, 4, 1, 2, 2), 7.0)
+
+    def _fake_encode_image(image, num_frames, height, width):
+        assert image.shape == (2, 1, 3, 4, 4)
+        assert num_frames == 5
+        assert height == 4
+        assert width == 4
+        clip = torch.ones(2, 6)
+        y = torch.ones(2, 8, 3, 2, 2)
+        return clip, y, clean_image
+
+    inst.encode_image = _fake_encode_image
+
+    clip, y, clean_x = inst._prepare_multi_agent_i2v_conditioning(
+        videos=videos,
+        latents=latents,
+        condition_frame_index=0,
+    )
+
+    assert clip.shape == (1, 2, 6)
+    assert y.shape == (1, 2, 8, 3, 2, 2)
+    assert clean_x.shape == latents.shape
+    torch.testing.assert_close(clean_x, torch.full_like(latents, 7.0))
+    assert inst._mai_clean_video_cond_source == "encode_image"
+
+
 def test_write_denoised_context_cache_default_on(monkeypatch):
     Cls = _maybe_load_head()
     inst = Cls.__new__(Cls)
