@@ -28,7 +28,7 @@ workflow:
 
           RUN_NAME="dz-rf2-lb500-lm32-c8000-strict-actpred-predfix-s1000-gpu1-xz-20260620"
           DREAMZERO_GIT_URL="https://github.com/XianzheFan/dreamzero.git"
-          DREAMZERO_GIT_COMMIT="e954d54c78edf80fe28c7e26fbcbfd5d9e15446e"
+          DREAMZERO_GIT_COMMIT="253cc0cc19023f66f3f941c093b32bb7f97adcd2"
           ROBOFACTORY_GIT_URL="https://github.com/MARS-EAI/RoboFactory.git"
           ROBOFACTORY_GIT_COMMIT="5868242322414a91454e22f1dd9641f613ba1bcf"
           DATA_S3_URI="s3://GearHome/users/xianzhef/oci-migration/data/robofactory_lerobot_v2/LiftBarrier-rf-500"
