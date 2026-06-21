@@ -11,8 +11,8 @@ DROIDWIDTH_TEACHER_WORKFLOW_PATH = (
 )
 CODE_CACHE_URI = "swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_gamma_jerkloss_32e8028_20260621"
 EXPECTED_CODE_COMMIT = "32e80283df4d1655045dacea9cc14ad49760b7d2"
-STAGED_CODE_CACHE_URI = "swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_gamma_self_forcing_e6e2d2f_20260621"
-STAGED_EXPECTED_CODE_COMMIT = "e6e2d2f8612b7723389548d1c49b2e07ebd1adc4"
+STAGED_CODE_CACHE_URI = "swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_gamma_warmup_ae60ba7_20260621"
+STAGED_EXPECTED_CODE_COMMIT = "ae60ba7bac5e9b50b47780c6ed77c8d8b9410d33"
 
 
 def _task_by_name(workflow, name):
