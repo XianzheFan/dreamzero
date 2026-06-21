@@ -1165,7 +1165,7 @@ default-values:
   data_s3_uri: s3://GearHome/users/xianzhef/oci-migration/data/robofactory_lerobot_v2/LiftBarrier-rf-500
   stage1_max_steps: "10000"
   stage2_max_steps: "40000"
-  save_steps: "500"
+  save_steps: "2000"
   save_total_limit: "4"
   learning_rate: "1e-5"
   action_jerk_loss_weight: "0.0"

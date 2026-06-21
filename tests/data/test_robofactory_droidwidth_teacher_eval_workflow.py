@@ -115,13 +115,13 @@ def test_droidwidth_teacher_h100_eval_targets_h100_pool_resources():
     defaults = workflow["default-values"]
     assert workflow["workflow"]["name"] == "{{workflow_name}}"
     assert defaults["workflow_name"] == (
-        "dz-rf-sg-gamma-dwteacher-50kfrom0-c500-slim-eval-h100-1seed1000-xz-20260621"
+        "dz-rf-sg-gamma-dwteacher-50kfrom0-c2000-slim-eval-h100-1seed1000-xz-20260621"
     )
     assert defaults["run_name"] == (
-        "dz-rf-sg-gamma-dwteacher-50kfrom0-c500-slim-eval-h100-1seed1000-xz-20260621"
+        "dz-rf-sg-gamma-dwteacher-50kfrom0-c2000-slim-eval-h100-1seed1000-xz-20260621"
     )
-    assert defaults["ckpt_setting"] == "checkpoint-500"
-    assert defaults["local_eval_ckpt_root"] == "gamma_droidwidth_teacher_50kfrom0_c500_slim_eval_h100_1seed1000"
+    assert defaults["ckpt_setting"] == "checkpoint-2000"
+    assert defaults["local_eval_ckpt_root"] == "gamma_droidwidth_teacher_50kfrom0_c2000_slim_eval_h100_1seed1000"
     assert defaults["temporal_action_ensemble_decays"] == "0"
     assert task["image"].startswith("nvcr.io/nvidian/groot-ci-base-eval:")
     assert 'RUN_NAME="{{run_name}}"' in script

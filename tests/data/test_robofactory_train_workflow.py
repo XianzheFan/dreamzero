@@ -277,6 +277,7 @@ def test_liftbarrier_gamma_staged_workflow_runs_dense_teacher_then_sparse_studen
     assert defaults["stage1_max_steps"] == "10000"
     assert defaults["stage2_warmup_max_steps"] == "3000"
     assert defaults["stage2_max_steps"] == "37000"
+    assert defaults["save_steps"] == "2000"
 
     script = _task_by_name(workflow, "train")["files"][0]["contents"]
     for marker in (
@@ -415,6 +416,7 @@ def test_liftbarrier_gamma_droidwidth_teacher_workflow_preserves_droid_base_head
     assert defaults["code_s3_uri"] == CODE_CACHE_URI
     assert defaults["expected_code_commit"] == EXPECTED_CODE_COMMIT
     assert defaults["stage1_max_steps"] == "10000"
+    assert defaults["save_steps"] == "2000"
     assert defaults["action_jerk_loss_weight"] == "0.0"
     assert defaults["strict_resume_run_name"] == ""
 
