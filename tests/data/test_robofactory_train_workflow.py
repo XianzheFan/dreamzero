@@ -369,6 +369,7 @@ def test_liftbarrier_gamma_droidwidth_teacher_workflow_preserves_droid_base_head
     assert defaults["code_s3_uri"] == CODE_CACHE_URI
     assert defaults["expected_code_commit"] == EXPECTED_CODE_COMMIT
     assert defaults["stage1_max_steps"] == "10000"
+    assert defaults["action_jerk_loss_weight"] == "0.0"
 
     train_task = _task_by_name(workflow, "train")
     assert train_task["args"] == ["/tmp/train_liftbarrier_gamma_droidwidth_teacher.sh"]
@@ -382,12 +383,21 @@ def test_liftbarrier_gamma_droidwidth_teacher_workflow_preserves_droid_base_head
         'export MODEL_ACTION_DIM="${MODEL_ACTION_DIM:-32}"',
         'export AGENT_STATE_PAD_DIM="${AGENT_STATE_PAD_DIM:-64}"',
         'export AGENT_ACTION_PAD_DIM="${AGENT_ACTION_PAD_DIM:-32}"',
+        'export BASE_ACTION_JERK_LOSS_WEIGHT="${ACTION_JERK_LOSS_WEIGHT:-{{action_jerk_loss_weight}}}"',
         'export STAGE1_OUTPUT_DIR="${STAGE1_OUTPUT_DIR:-${BASE_OUTPUT_DIR}/teacher}"',
         'echo "MODEL_MAX_STATE_DIM=$MODEL_MAX_STATE_DIM"',
         'echo "MODEL_ACTION_DIM=$MODEL_ACTION_DIM"',
         'echo "AGENT_STATE_PAD_DIM=$AGENT_STATE_PAD_DIM"',
         'echo "AGENT_ACTION_PAD_DIM=$AGENT_ACTION_PAD_DIM"',
         "DREAMZERO_DROID_PRETRAINED_DIR=\"$PRETRAINED_DIR\"",
+        "restore_stage1_checkpoints()",
+        "Attempting to restore droidwidth teacher checkpoints from RESTORE_RUN_NAME",
+        "Restored checkpoints will be staged under STAGE1_OUTPUT_DIR",
+        "restore_checkpoints_from_s3 \"$RESTORE_CACHE_S3_URI\" \"restore_cache\"",
+        "restore_checkpoints_from_s3 \"$RESTORE_S3_URI\" \"restore_primary\"",
+        "No restore run configured; droidwidth teacher will start fresh.",
+        "No previous droidwidth teacher checkpoints restored; training will start fresh.",
+        "restore_stage1_checkpoints",
         '"droidwidth-teacher-style"',
         'TEACHER_CKPT="$(latest_complete_checkpoint "$STAGE1_OUTPUT_DIR" || true)"',
         "Teacher complete checkpoint selected",
@@ -399,6 +409,7 @@ def test_liftbarrier_gamma_droidwidth_teacher_workflow_preserves_droid_base_head
 
     assert '"sparse-causal-student-style"' not in script
     assert "Stage1 complete checkpoint selected for stage2 warm-start" not in script
+    assert "RESTORE_RUN_NAME is ignored by the droidwidth teacher workflow" not in script
 
 
 def test_liftbarrier_gamma_droidwidth_teacher_workflow_embedded_python_blocks_compile():

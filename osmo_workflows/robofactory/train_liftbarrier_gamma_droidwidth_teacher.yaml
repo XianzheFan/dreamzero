@@ -524,7 +524,7 @@ workflow:
             export BASE_ACTION_PREFIX_LOSS_WEIGHT="${ACTION_PREFIX_LOSS_WEIGHT:-2.0}"
             export ACTION_PREFIX_LOSS_LEN="${ACTION_PREFIX_LOSS_LEN:-8}"
             export BASE_ACTION_DELTA_LOSS_WEIGHT="${ACTION_DELTA_LOSS_WEIGHT:-0.2}"
-            export BASE_ACTION_JERK_LOSS_WEIGHT="${ACTION_JERK_LOSS_WEIGHT:-0.1}"
+            export BASE_ACTION_JERK_LOSS_WEIGHT="${ACTION_JERK_LOSS_WEIGHT:-{{action_jerk_loss_weight}}}"
             export ACTION_DELTA_MAX_SIGMA="${ACTION_DELTA_MAX_SIGMA:-0.75}"
             export ACTION_DELTA_EXCLUDE_GRIPPER="${ACTION_DELTA_EXCLUDE_GRIPPER:-true}"
             export STAGE1_DYNAMICS_LOSS_WEIGHT="${STAGE1_DYNAMICS_LOSS_WEIGHT:-2.0}"
@@ -908,13 +908,31 @@ workflow:
               fi
             }
 
-            if [ -n "$RESTORE_RUN_NAME" ]; then
-              echo "RESTORE_RUN_NAME is ignored by the droidwidth teacher workflow; teacher starts from DreamZero-DROID."
-            fi
+            restore_stage1_checkpoints() {
+              if [ -z "$RESTORE_RUN_NAME" ]; then
+                echo "No restore run configured; droidwidth teacher will start fresh."
+                return 0
+              fi
+
+              echo "Attempting to restore droidwidth teacher checkpoints from RESTORE_RUN_NAME=${RESTORE_RUN_NAME}"
+              echo "Restored checkpoints will be staged under STAGE1_OUTPUT_DIR=${STAGE1_OUTPUT_DIR}"
+              mkdir -p "$STAGE1_OUTPUT_DIR"
+              OUTPUT_DIR="$STAGE1_OUTPUT_DIR"
+              if restore_checkpoints_from_s3 "$RESTORE_CACHE_S3_URI" "restore_cache"; then
+                echo "Restored droidwidth teacher checkpoints from cache URI ${RESTORE_CACHE_S3_URI}."
+                return 0
+              fi
+              if restore_checkpoints_from_s3 "$RESTORE_S3_URI" "restore_primary"; then
+                echo "Restored droidwidth teacher checkpoints from primary URI ${RESTORE_S3_URI}."
+                return 0
+              fi
+              echo "No previous droidwidth teacher checkpoints restored; training will start fresh."
+            }
 
             require_wandb
 
             DREAMZERO_DROID_PRETRAINED_DIR="$PRETRAINED_DIR"
+            restore_stage1_checkpoints
             run_training_stage \
               "droidwidth-teacher-style" \
               "$STAGE1_RUN_NAME" \
@@ -947,3 +965,4 @@ default-values:
   save_steps: "500"
   save_total_limit: "4"
   learning_rate: "1e-5"
+  action_jerk_loss_weight: "0.0"
