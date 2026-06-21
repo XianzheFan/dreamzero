@@ -114,6 +114,7 @@ WANDB_PROJECT=${WANDB_PROJECT:-dreamzero_robofactory_smoke}
 WANDB_RUN_NAME=${WANDB_RUN_NAME:-robofactory_bimanual_smoke}
 DATASET_SHARD_SAMPLING_RATE=${DATASET_SHARD_SAMPLING_RATE:-1.0}
 ACTION_LOSS_WEIGHT=${ACTION_LOSS_WEIGHT:-5.0}
+DYNAMICS_LOSS_WEIGHT=${DYNAMICS_LOSS_WEIGHT:-1.0}
 GRIPPER_ACTION_LOSS_WEIGHT=${GRIPPER_ACTION_LOSS_WEIGHT:-6.0}
 GRIPPER_CLOSE_ACTION_LOSS_WEIGHT=${GRIPPER_CLOSE_ACTION_LOSS_WEIGHT:-4.0}
 GRIPPER_CLOSE_THRESHOLD=${GRIPPER_CLOSE_THRESHOLD:-0.0}
@@ -149,7 +150,7 @@ USE_SPARSE_HUB_ATTENTION=${USE_SPARSE_HUB_ATTENTION:-true}
 
 echo "save_steps=$SAVE_STEPS  save_total_limit=$SAVE_TOTAL_LIMIT"
 echo "dataset_shard_sampling_rate=$DATASET_SHARD_SAMPLING_RATE"
-echo "action_loss_weight=$ACTION_LOSS_WEIGHT  gripper_action_loss_weight=$GRIPPER_ACTION_LOSS_WEIGHT  gripper_close_action_loss_weight=$GRIPPER_CLOSE_ACTION_LOSS_WEIGHT  gripper_close_threshold=$GRIPPER_CLOSE_THRESHOLD  gripper_action_dims=[$GRIPPER_ACTION_DIMS]  gripper_clean_action_loss_weight=$GRIPPER_CLEAN_ACTION_LOSS_WEIGHT  gripper_clean_close_action_loss_weight=$GRIPPER_CLEAN_CLOSE_ACTION_LOSS_WEIGHT  gripper_clean_max_sigma=$GRIPPER_CLEAN_MAX_SIGMA  action_prefix_loss_weight=$ACTION_PREFIX_LOSS_WEIGHT  action_prefix_loss_len=$ACTION_PREFIX_LOSS_LEN"
+echo "dynamics_loss_weight=$DYNAMICS_LOSS_WEIGHT  action_loss_weight=$ACTION_LOSS_WEIGHT  gripper_action_loss_weight=$GRIPPER_ACTION_LOSS_WEIGHT  gripper_close_action_loss_weight=$GRIPPER_CLOSE_ACTION_LOSS_WEIGHT  gripper_close_threshold=$GRIPPER_CLOSE_THRESHOLD  gripper_action_dims=[$GRIPPER_ACTION_DIMS]  gripper_clean_action_loss_weight=$GRIPPER_CLEAN_ACTION_LOSS_WEIGHT  gripper_clean_close_action_loss_weight=$GRIPPER_CLEAN_CLOSE_ACTION_LOSS_WEIGHT  gripper_clean_max_sigma=$GRIPPER_CLEAN_MAX_SIGMA  action_prefix_loss_weight=$ACTION_PREFIX_LOSS_WEIGHT  action_prefix_loss_len=$ACTION_PREFIX_LOSS_LEN"
 echo "gripper_binary_action_loss_weight=$GRIPPER_BINARY_ACTION_LOSS_WEIGHT  gripper_binary_close_action_loss_weight=$GRIPPER_BINARY_CLOSE_ACTION_LOSS_WEIGHT  gripper_binary_logit_scale=$GRIPPER_BINARY_LOGIT_SCALE  gripper_binary_max_sigma=$GRIPPER_BINARY_MAX_SIGMA"
 echo "first_close_joint_loss_weight=$FIRST_CLOSE_JOINT_LOSS_WEIGHT  first_close_joint_loss_window_before=$FIRST_CLOSE_JOINT_LOSS_WINDOW_BEFORE  first_close_joint_loss_window_after=$FIRST_CLOSE_JOINT_LOSS_WINDOW_AFTER"
 echo "joint_prefix_loss_weight=$JOINT_PREFIX_LOSS_WEIGHT  joint_prefix_loss_len=$JOINT_PREFIX_LOSS_LEN  pre_close_joint_loss_weight=$PRE_CLOSE_JOINT_LOSS_WEIGHT  pre_close_joint_loss_window_before=$PRE_CLOSE_JOINT_LOSS_WINDOW_BEFORE  open_phase_joint_loss_weight=$OPEN_PHASE_JOINT_LOSS_WEIGHT"
@@ -224,6 +225,7 @@ torchrun --nproc_per_node $NUM_GPUS --standalone groot/vla/experiment/experiment
     pretrained_model_path=$PRETRAINED_DIR \
     ++action_head_cfg.config.skip_component_loading=true \
     ++action_head_cfg.config.defer_lora_injection=true \
+    ++action_head_cfg.config.dynamics_loss_weight=$DYNAMICS_LOSS_WEIGHT \
     ++action_head_cfg.config.action_loss_weight=$ACTION_LOSS_WEIGHT \
     ++action_head_cfg.config.gripper_action_loss_weight=$GRIPPER_ACTION_LOSS_WEIGHT \
     ++action_head_cfg.config.gripper_close_action_loss_weight=$GRIPPER_CLOSE_ACTION_LOSS_WEIGHT \

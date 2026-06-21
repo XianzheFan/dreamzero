@@ -198,10 +198,11 @@ def test_forward_multi_agent_runs_and_emits_loss_dict(cuda_available):
 
     out = head.forward(backbone_output, action_input)
 
-    assert "loss" in out and "dynamics_loss" in out and "action_loss" in out
+    assert {"loss", "dynamics_loss", "unscaled_dynamics_loss", "action_loss"} <= set(out)
     assert out["loss"].ndim == 0
     assert torch.isfinite(out["loss"]).item()
     assert torch.isfinite(out["dynamics_loss"]).item()
+    assert torch.isfinite(out["unscaled_dynamics_loss"]).item()
     assert torch.isfinite(out["action_loss"]).item()
     # The joint-denoising contract: with a non-zero action mask and
     # has_real_action=1, the action loss must be > 0.
@@ -292,6 +293,7 @@ def test_forward_multi_agent_global_video_dropout_skips_global_encode(cuda_avail
     assert (B, 3, T, H, W) not in encode_video_shapes
     assert torch.isfinite(out["loss"]).item()
     assert torch.isfinite(out["dynamics_loss"]).item()
+    assert torch.isfinite(out["unscaled_dynamics_loss"]).item()
     assert torch.isfinite(out["action_loss"]).item()
     assert out["action_loss"].item() > 0.0
 

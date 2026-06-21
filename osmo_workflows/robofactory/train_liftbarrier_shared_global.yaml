@@ -359,6 +359,7 @@ workflow:
             require_code_marker \
               scripts/train/robofactory_bimanual_training.sh \
               "DATASET_SHARD_SAMPLING_RATE" \
+              "dynamics_loss_weight" \
               "gripper_binary_action_loss_weight" \
               "ROPE_AGENT_DIM" \
               "GLOBAL_VIDEO_DROPOUT_PROB" \
@@ -433,6 +434,7 @@ workflow:
             export SAVE_STEPS="${SAVE_STEPS:-{{save_steps}}}"
             export SAVE_TOTAL_LIMIT="${SAVE_TOTAL_LIMIT:-{{save_total_limit}}}"
             export LEARNING_RATE="${LEARNING_RATE:-{{learning_rate}}}"
+            export DYNAMICS_LOSS_WEIGHT="${DYNAMICS_LOSS_WEIGHT:-1.0}"
             export ACTION_LOSS_WEIGHT="${ACTION_LOSS_WEIGHT:-5.0}"
             export GRIPPER_ACTION_LOSS_WEIGHT="${GRIPPER_ACTION_LOSS_WEIGHT:-6.0}"
             export GRIPPER_CLOSE_ACTION_LOSS_WEIGHT="${GRIPPER_CLOSE_ACTION_LOSS_WEIGHT:-4.0}"
@@ -595,6 +597,7 @@ workflow:
             echo "CACHE_OUTPUT_S3_URI=$CACHE_OUTPUT_S3_URI"
             echo "RESTORE_RUN_NAME=$RESTORE_RUN_NAME"
             echo "GRIPPER_ACTION_DIMS=$GRIPPER_ACTION_DIMS"
+            echo "DYNAMICS_LOSS_WEIGHT=$DYNAMICS_LOSS_WEIGHT"
             echo "GRIPPER_BINARY_ACTION_LOSS_WEIGHT=$GRIPPER_BINARY_ACTION_LOSS_WEIGHT"
             echo "GRIPPER_BINARY_CLOSE_ACTION_LOSS_WEIGHT=$GRIPPER_BINARY_CLOSE_ACTION_LOSS_WEIGHT"
             echo "GRIPPER_BINARY_LOGIT_SCALE=$GRIPPER_BINARY_LOGIT_SCALE"

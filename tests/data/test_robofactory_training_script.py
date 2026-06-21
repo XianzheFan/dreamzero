@@ -18,6 +18,9 @@ def test_robofactory_training_script_passes_binary_gripper_loss_knobs():
     script = SCRIPT_PATH.read_text()
 
     for marker in (
+        "DYNAMICS_LOSS_WEIGHT=${DYNAMICS_LOSS_WEIGHT:-1.0}",
+        "dynamics_loss_weight=$DYNAMICS_LOSS_WEIGHT",
+        "++action_head_cfg.config.dynamics_loss_weight=$DYNAMICS_LOSS_WEIGHT",
         "GRIPPER_BINARY_ACTION_LOSS_WEIGHT=${GRIPPER_BINARY_ACTION_LOSS_WEIGHT:-4.0}",
         "GRIPPER_BINARY_CLOSE_ACTION_LOSS_WEIGHT=${GRIPPER_BINARY_CLOSE_ACTION_LOSS_WEIGHT:-6.0}",
         "GRIPPER_BINARY_LOGIT_SCALE=${GRIPPER_BINARY_LOGIT_SCALE:-4.0}",

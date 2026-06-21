@@ -128,6 +128,10 @@ class WANPolicyHeadConfig(PretrainedConfig):
         default=None,
         metadata={"help": "Number of inference steps for noise diffusion."},
     )
+    dynamics_loss_weight: float = field(
+        default=1.0,
+        metadata={"help": "Global multiplier for video dynamics diffusion loss."},
+    )
     action_loss_weight: float = field(
         default=1.0,
         metadata={"help": "Global multiplier for action diffusion loss."},
@@ -1926,7 +1930,9 @@ class WANPolicyHead(ActionHead):
                 .to(self._device)
             )  # [B, F]
             weight_dynamics = dynamics_loss_per_sample * train_w.unsqueeze(1)
-            weighted_dynamics_loss = weight_dynamics.mean()
+            dynamics_loss_weight = self._config_float("dynamics_loss_weight", 1.0)
+            unscaled_dynamics_loss = weight_dynamics.mean()
+            weighted_dynamics_loss = unscaled_dynamics_loss * dynamics_loss_weight
 
             if actions.numel() > 0:
                 # action_noise_pred / target: [B, P, T_a, D_a]; mask same shape.
@@ -2032,6 +2038,7 @@ class WANPolicyHead(ActionHead):
         output_dict = {
             "loss": loss,
             "dynamics_loss": weighted_dynamics_loss,
+            "unscaled_dynamics_loss": unscaled_dynamics_loss,
             "action_loss": weighted_action_loss,
             "gripper_clean_action_loss": gripper_clean_action_loss,
             "gripper_binary_action_loss": gripper_binary_action_loss,
@@ -2916,7 +2923,9 @@ class WANPolicyHead(ActionHead):
             ).mean(dim=(1,3,4))  # shape: [B, ...]
 
             weight_dynamics = dynamics_loss_per_sample * self.scheduler.training_weight(timestep.flatten(0, 1)).unflatten(0, (noise.shape[0], noise.shape[1])).to(self._device)
-            weighted_dynamics_loss = weight_dynamics.mean()
+            dynamics_loss_weight = self._config_float("dynamics_loss_weight", 1.0)
+            unscaled_dynamics_loss = weight_dynamics.mean()
+            weighted_dynamics_loss = unscaled_dynamics_loss * dynamics_loss_weight
             
             if actions.numel() > 0:
                 action_loss_per_sample = torch.nn.functional.mse_loss(
@@ -3017,6 +3026,7 @@ class WANPolicyHead(ActionHead):
         output_dict = {
             "loss": loss,
             "dynamics_loss": weighted_dynamics_loss,
+            "unscaled_dynamics_loss": unscaled_dynamics_loss,
             "action_loss": weighted_action_loss,
             "gripper_clean_action_loss": gripper_clean_action_loss,
             "gripper_binary_action_loss": gripper_binary_action_loss,

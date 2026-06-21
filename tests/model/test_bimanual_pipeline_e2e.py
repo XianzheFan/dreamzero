@@ -254,6 +254,7 @@ def test_e2e_yam_bimanual_through_forward(cuda_available):
     out = head.forward(type(action_input)(data={}), action_input)
     assert torch.isfinite(out["loss"]).item()
     assert torch.isfinite(out["dynamics_loss"]).item()
+    assert torch.isfinite(out["unscaled_dynamics_loss"]).item()
     assert torch.isfinite(out["action_loss"]).item()
     # Joint denoising contract: with a real action mask the action loss
     # is non-trivial.
