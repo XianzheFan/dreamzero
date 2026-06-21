@@ -33,13 +33,14 @@ workflow:
           ROBOFACTORY_GIT_COMMIT="5868242322414a91454e22f1dd9641f613ba1bcf"
           DATA_S3_URI="s3://GearHome/users/xianzhef/oci-migration/data/robofactory_lerobot_v2/LiftBarrier-rf-500"
           MODEL_CACHE_S3_URI="s3://GearHome/users/xianzhef/oci-migration/checkpoints"
-          CKPT_S3_BASE="s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/dz-rf-sg-gamma-staged-lb500-r4-actiondelta-xianzhef-20260621-dense-teacher-slim-eval/checkpoints/dz-rf-sg-gamma-staged-lb500-r4-actiondelta-xianzhef-20260621-dense-teacher-slim-eval"
-          CKPT_AMLFS_BASE="/mnt/amlfs-01/home/xianzhef/osmo_cache/dreamzero/checkpoints/dz-rf-sg-gamma-staged-lb500-r4-actiondelta-xianzhef-20260621-dense-teacher-slim-eval/dz-rf-sg-gamma-staged-lb500-r4-actiondelta-xianzhef-20260621-dense-teacher-slim-eval"
+          CKPT_S3_BASE="s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/dz-rf-sg-gamma-staged-lb500-r4-actiondelta-xianzhef-20260621-dense-teacher/checkpoints/dz-rf-sg-gamma-staged-lb500-r4-actiondelta-xianzhef-20260621-dense-teacher"
+          CKPT_AMLFS_BASE="/mnt/amlfs-01/home/xianzhef/osmo_cache/dreamzero/checkpoints/dz-rf-sg-gamma-staged-lb500-r4-actiondelta-xianzhef-20260621-dense-teacher/dz-rf-sg-gamma-staged-lb500-r4-actiondelta-xianzhef-20260621-dense-teacher"
           CKPT_SETTING="checkpoint-500"
           CKPT_WAIT_TIMEOUT_SECONDS=5400
           CKPT_WAIT_INTERVAL_SECONDS=120
           LOCAL_EVAL_CKPT_ROOT="/workspace/eval_ckpts/gamma_staged_r4_stage1_c500_slim_eval_1seed1000"
           AMLFS_MODEL_CACHE_DIR="/mnt/amlfs-01/home/xianzhef/osmo_cache/dreamzero/checkpoints"
+          DREAMZERO_VENV="/mnt/amlfs-01/home/xianzhef/osmo_cache/dreamzero/venvs/gb200_rf_eval_py312"
           ROBOFACTORY_ASSET_CACHE="/mnt/amlfs-01/home/xianzhef/osmo_cache/robofactory/assets"
           RUN_S3_ROOT="s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/${RUN_NAME}"
           DROID_HF_REPO="GEAR-Dreams/DreamZero-DROID"
@@ -141,7 +142,11 @@ workflow:
           export NO_ALBUMENTATIONS_UPDATE=1
           export PIP_ROOT_USER_ACTION=ignore
           export MUJOCO_GL=glfw
-          export LD_LIBRARY_PATH="/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}"
+          if [ -d /usr/lib/aarch64-linux-gnu ]; then
+            export LD_LIBRARY_PATH="/usr/lib/aarch64-linux-gnu:${LD_LIBRARY_PATH:-}"
+          elif [ -d /usr/lib/x86_64-linux-gnu ]; then
+            export LD_LIBRARY_PATH="/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}"
+          fi
 
           mkdir -p \
             /workspace/code \
@@ -155,6 +160,7 @@ workflow:
             /workspace/hf \
             /workspace/cache \
             /workspace/cuda_cache \
+            "$(dirname "$DREAMZERO_VENV")" \
             /tmp/nvidia-vulkan \
             /tmp/nvidia-egl
 
@@ -180,38 +186,56 @@ workflow:
           export __GLX_VENDOR_LIBRARY_NAME=nvidia
 
           echo "Installing Python packages for DreamZero + RoboFactory eval"
-          python -m pip install -q --no-cache-dir --upgrade "pip<25.3" "setuptools>=64,<80" wheel "huggingface_hub[cli]"
-          python -m pip install -q --no-cache-dir "mani_skill==3.0.0b12"
-          python -m pip install -q --no-cache-dir \
-            "websockets>=12" \
-            msgpack \
-            msgpack-numpy \
-            hydra-core \
-            omegaconf \
-            safetensors \
-            "einops==0.8.1" \
-            "transformers==4.51.3" \
-            "diffusers==0.30.2" \
-            "peft==0.5.0" \
-            accelerate \
-            dm-tree \
-            "albumentations==1.4.18" \
-            torchvision \
-            "av==15.0.0" \
-            pillow \
-            ftfy \
-            sentencepiece \
-            termcolor \
-            tiktoken \
-            timm \
-            loguru \
-            matplotlib \
-            h5py \
-            "opencv-python-headless==4.10.0.84" \
-            decord \
-            pandas \
-            pyarrow
-          python -m pip install -q --no-cache-dir "numpy==1.26.4"
+          if ! command -v uv >/dev/null 2>&1; then
+            echo "FATAL: uv is required to create the GB200 Python 3.12 eval venv." >&2
+            exit 65
+          fi
+          if [ ! -x /usr/bin/python3.12 ]; then
+            echo "FATAL: /usr/bin/python3.12 is required for the GB200 eval venv." >&2
+            exit 65
+          fi
+          if [ ! -x "${DREAMZERO_VENV}/bin/python" ]; then
+            uv venv --python /usr/bin/python3.12 --system-site-packages "$DREAMZERO_VENV"
+          fi
+          export PATH="${DREAMZERO_VENV}/bin:${PATH}"
+          python --version
+          python -m pip install -q --upgrade "pip<25.3" "setuptools>=64,<80" wheel "huggingface_hub[cli]"
+          if [ ! -f "${DREAMZERO_VENV}/.robofactory_eval_deps_v1" ]; then
+            python -m pip install -q "mani_skill==3.0.0b12"
+            python -m pip install -q \
+              "websockets>=12" \
+              msgpack \
+              msgpack-numpy \
+              hydra-core \
+              omegaconf \
+              safetensors \
+              "einops==0.8.1" \
+              "transformers==4.51.3" \
+              "diffusers==0.30.2" \
+              "peft==0.5.0" \
+              accelerate \
+              dm-tree \
+              "albumentations==1.4.18" \
+              torchvision \
+              "av==15.0.0" \
+              pillow \
+              ftfy \
+              sentencepiece \
+              termcolor \
+              tiktoken \
+              timm \
+              loguru \
+              matplotlib \
+              h5py \
+              "opencv-python-headless==4.10.0.84" \
+              decord \
+              pandas \
+              pyarrow
+            python -m pip install -q "numpy==1.26.4"
+            date -u +"%Y-%m-%dT%H:%M:%SZ" > "${DREAMZERO_VENV}/.robofactory_eval_deps_v1"
+          else
+            echo "RoboFactory eval dependency cache already present: ${DREAMZERO_VENV}"
+          fi
 
           mkdir -p /workspace/checkpoints
 
@@ -916,7 +940,7 @@ workflow:
           echo "Serving split artifacts from ${SERVE_ROOT} on 0.0.0.0:8765"
           python -m http.server 8765 --bind 0.0.0.0 --directory "$SERVE_ROOT"
         path: /tmp/run_closedloop_gamma_staged_r4_stage1_c500_slim_eval_1seed_gb200.sh
-      image: nvcr.io/nvidian/groot-ci-base-eval:latest@sha256:de6e59614be213f06f95c8c1e8311f0b700c963aed6c39eeec1fb56cd40c6ee7
+      image: nvcr.io/nvidian/gr00t_isaac:v1.5
       lead: true
       name: eval
   name: dz-rf-sg-gamma-r4-stage1-c500-slim-eval-gb200-1seed1000-xz-20260621
