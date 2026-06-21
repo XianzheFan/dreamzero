@@ -223,6 +223,10 @@ WAN_CKPT_DIR=${WAN_CKPT_DIR:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agenti
 TOKENIZER_DIR=${TOKENIZER_DIR:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/umt5-xxl"}
 PRETRAINED_DIR=${PRETRAINED_DIR:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/DreamZero-DROID"}
 
+dreamzero_pretrained_has_weights() {
+    [ -f "$PRETRAINED_DIR/model.safetensors" ] || [ -f "$PRETRAINED_DIR/model.safetensors.index.json" ]
+}
+
 if [ ! -d "$WAN_CKPT_DIR" ] || [ -z "$(ls -A "$WAN_CKPT_DIR" 2>/dev/null)" ]; then
     echo "Wan2.1-I2V-14B-480P not found at $WAN_CKPT_DIR. Downloading from HuggingFace..."
     huggingface-cli download Wan-AI/Wan2.1-I2V-14B-480P --local-dir "$WAN_CKPT_DIR"
@@ -230,6 +234,16 @@ fi
 if [ ! -d "$TOKENIZER_DIR" ] || [ -z "$(ls -A "$TOKENIZER_DIR" 2>/dev/null)" ]; then
     echo "umt5-xxl tokenizer not found at $TOKENIZER_DIR. Downloading from HuggingFace..."
     huggingface-cli download google/umt5-xxl --local-dir "$TOKENIZER_DIR"
+fi
+if ! dreamzero_pretrained_has_weights; then
+    echo "DreamZero-DROID pretrained weights not found at $PRETRAINED_DIR. Downloading from HuggingFace..."
+    mkdir -p "$PRETRAINED_DIR"
+    huggingface-cli download GEAR-Dreams/DreamZero-DROID --repo-type model --local-dir "$PRETRAINED_DIR"
+fi
+if ! dreamzero_pretrained_has_weights; then
+    echo "ERROR: DreamZero-DROID checkpoint at $PRETRAINED_DIR is missing model.safetensors or model.safetensors.index.json" >&2
+    find "$PRETRAINED_DIR" -maxdepth 2 -type f | sort | head -50 >&2 || true
+    exit 1
 fi
 if [ ! -d "$ROBOFACTORY_DATA_ROOT" ]; then
     echo "ERROR: RoboFactory LeRobot v2 dataset not found at $ROBOFACTORY_DATA_ROOT"
