@@ -2,6 +2,23 @@
 
 Reusable OSMO workflow specs for the DreamZero RoboFactory LiftBarrier runs.
 
+## Training Code Cache
+
+The gamma droidwidth teacher and staged training workflows intentionally leave
+`code_s3_uri` and `expected_code_commit` empty by default. Upload the current
+branch source and pass both values explicitly when submitting; the container
+fails fast if either value is missing, which prevents accidentally training an
+old cached code snapshot.
+
+```bash
+osmo workflow submit osmo_workflows/robofactory/train_liftbarrier_gamma_droidwidth_teacher.yaml \
+  --pool groot-h100-02 \
+  --priority LOW \
+  --set-string \
+  code_s3_uri=swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/<current-code-cache> \
+  expected_code_commit=$(git rev-parse HEAD)
+```
+
 ## 2k Checkpoint Eval Grid
 
 The droidwidth teacher training workflow saves checkpoints every 2000 optimizer

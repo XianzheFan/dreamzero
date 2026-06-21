@@ -11,8 +11,9 @@ DROIDWIDTH_TEACHER_WORKFLOW_PATH = (
 )
 CODE_CACHE_URI = "swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_gamma_jerkloss_32e8028_20260621"
 EXPECTED_CODE_COMMIT = "32e80283df4d1655045dacea9cc14ad49760b7d2"
-STAGED_CODE_CACHE_URI = "swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_gamma_warmup_ae60ba7_20260621"
-STAGED_EXPECTED_CODE_COMMIT = "ae60ba7bac5e9b50b47780c6ed77c8d8b9410d33"
+REQUIRE_CURRENT_CODE_CACHE_MESSAGE = (
+    "code_s3_uri and expected_code_commit must be set to a current uploaded DreamZero code cache"
+)
 
 
 def _task_by_name(workflow, name):
@@ -272,8 +273,8 @@ def test_liftbarrier_gamma_staged_workflow_runs_dense_teacher_then_sparse_studen
     assert defaults["workflow_name"] == "dz-rf-sg-gamma-staged-lb500-xianzhef-20260621"
     assert defaults["run_name"] == "dz-rf-sg-gamma-staged-lb500-xianzhef-20260621"
     assert defaults["restore_run_name"] == ""
-    assert defaults["code_s3_uri"] == STAGED_CODE_CACHE_URI
-    assert defaults["expected_code_commit"] == STAGED_EXPECTED_CODE_COMMIT
+    assert defaults["code_s3_uri"] == ""
+    assert defaults["expected_code_commit"] == ""
     assert defaults["stage1_max_steps"] == "10000"
     assert defaults["stage2_warmup_max_steps"] == "3000"
     assert defaults["stage2_max_steps"] == "37000"
@@ -353,6 +354,8 @@ def test_liftbarrier_gamma_staged_workflow_runs_dense_teacher_then_sparse_studen
         'RESTORE_RUN_NAME is ignored by the staged workflow',
         'osmo data upload "${BASE_LOG_S3_URI}/" /tmp/train_liftbarrier_gamma_staged.log',
         "Staged Gamma training complete.",
+        REQUIRE_CURRENT_CODE_CACHE_MESSAGE,
+        "Pass --set-string code_s3_uri=... expected_code_commit=...",
     ):
         assert marker in script
 
@@ -413,8 +416,8 @@ def test_liftbarrier_gamma_droidwidth_teacher_workflow_preserves_droid_base_head
     defaults = workflow["default-values"]
     assert defaults["workflow_name"] == "dz-rf-sg-gamma-droidwidth-teacher-lb500-xianzhef-20260621"
     assert defaults["run_name"] == "dz-rf-sg-gamma-droidwidth-teacher-lb500-xianzhef-20260621"
-    assert defaults["code_s3_uri"] == CODE_CACHE_URI
-    assert defaults["expected_code_commit"] == EXPECTED_CODE_COMMIT
+    assert defaults["code_s3_uri"] == ""
+    assert defaults["expected_code_commit"] == ""
     assert defaults["stage1_max_steps"] == "10000"
     assert defaults["save_steps"] == "2000"
     assert defaults["action_jerk_loss_weight"] == "0.0"
@@ -478,6 +481,8 @@ def test_liftbarrier_gamma_droidwidth_teacher_workflow_preserves_droid_base_head
         "Droidwidth Gamma teacher training complete.",
         'osmo data upload "${BASE_LOG_S3_URI}/" /tmp/train_liftbarrier_gamma_droidwidth_teacher.log',
         "bash scripts/train/robofactory_bimanual_training.sh",
+        REQUIRE_CURRENT_CODE_CACHE_MESSAGE,
+        "Pass --set-string code_s3_uri=... expected_code_commit=...",
     ):
         assert marker in script
 
