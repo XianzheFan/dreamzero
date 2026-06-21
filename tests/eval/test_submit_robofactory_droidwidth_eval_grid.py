@@ -53,6 +53,8 @@ def test_build_submit_command_uses_checkpoint_specific_names():
         ckpt_run_name=module.DEFAULT_CKPT_RUN_NAME,
         ckpt_s3_base_value=module.checkpoint_s3_base(module.DEFAULT_CKPT_RUN_NAME),
         ckpt_amlfs_base_value=module.checkpoint_amlfs_base(module.DEFAULT_CKPT_RUN_NAME),
+        dreamzero_git_ref="gamma",
+        dreamzero_expected_git_commit="abc123",
     )
 
     assert command[:4] == ["osmo", "workflow", "submit", "eval.yaml"]
@@ -81,10 +83,13 @@ def test_build_submit_command_uses_checkpoint_specific_names():
         "local_eval_ckpt_root=gamma_droidwidth_teacher_bidir_nodrop_50k_c4000_slim_eval_h100_1seed1000"
         in command
     )
+    assert "dreamzero_git_ref=gamma" in command
+    assert "dreamzero_expected_git_commit=abc123" in command
 
 
-def test_main_prints_dry_run_commands_without_submitting(capsys):
+def test_main_prints_dry_run_commands_without_submitting(monkeypatch, capsys):
     module = _load_module()
+    monkeypatch.setattr(module, "current_git_head", lambda: "abc123")
 
     status = module.main(
         [
@@ -110,6 +115,8 @@ def test_main_prints_dry_run_commands_without_submitting(capsys):
     assert "ckpt_setting=checkpoint-2500" not in out
     assert "--pool groot-h100-01" in out
     assert "ckpt_run_name=dz-rf-sg-gamma-dwteacher-bidir-nodrop-lb500-50k-xz-20260622-teacher" in out
+    assert "dreamzero_git_ref=gamma" in out
+    assert "dreamzero_expected_git_commit=abc123" in out
 
 
 def test_main_rejects_explicit_off_grid_steps_by_default():

@@ -27,6 +27,8 @@ DEFAULT_LOCAL_ROOT_TEMPLATE = (
 DEFAULT_CKPT_RUN_NAME = "dz-rf-sg-gamma-dwteacher-bidir-nodrop-lb500-50k-xz-20260622-teacher"
 DEFAULT_CKPT_S3_RUNS_PREFIX = "s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs"
 DEFAULT_CKPT_AMLFS_RUNS_PREFIX = "/mnt/amlfs-01/home/xianzhef/osmo_cache/dreamzero/checkpoints"
+DEFAULT_DREAMZERO_GIT_REF = "gamma"
+REPO_ROOT = Path(__file__).resolve().parents[2]
 MODEL_MARKERS = ("model.safetensors", "model.safetensors.index.json")
 
 
@@ -41,6 +43,20 @@ class ExistingWorkflowCheck(NamedTuple):
     name: str
     exists: bool
     reason: str
+
+
+def current_git_head(repo_root: Path = REPO_ROOT) -> str:
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    head = result.stdout.strip()
+    if not head:
+        raise RuntimeError("git rev-parse HEAD returned an empty commit")
+    return head
 
 
 def checkpoint_s3_base(ckpt_run_name: str, *, runs_prefix: str = DEFAULT_CKPT_S3_RUNS_PREFIX) -> str:
@@ -159,6 +175,8 @@ def build_submit_command(
     ckpt_run_name: str,
     ckpt_s3_base_value: str,
     ckpt_amlfs_base_value: str,
+    dreamzero_git_ref: str = DEFAULT_DREAMZERO_GIT_REF,
+    dreamzero_expected_git_commit: str = "",
     extra_set_string: Sequence[str] = (),
     osmo_binary: str = "osmo",
 ) -> list[str]:
@@ -172,6 +190,8 @@ def build_submit_command(
         f"ckpt_amlfs_base={ckpt_amlfs_base_value}",
         f"ckpt_setting=checkpoint-{step}",
         f"local_eval_ckpt_root={local_root}",
+        f"dreamzero_git_ref={dreamzero_git_ref}",
+        f"dreamzero_expected_git_commit={dreamzero_expected_git_commit}",
         *extra_set_string,
     ]
     return [
@@ -245,6 +265,18 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--dreamzero-git-ref",
+        default=DEFAULT_DREAMZERO_GIT_REF,
+        help="DreamZero git ref cloned by the eval workflow. Defaults to gamma.",
+    )
+    parser.add_argument(
+        "--dreamzero-expected-git-commit",
+        help=(
+            "Expected DreamZero commit after resolving --dreamzero-git-ref. "
+            "Defaults to the current local HEAD; pass an empty string to disable the guard."
+        ),
+    )
+    parser.add_argument(
         "--set-string",
         action="append",
         default=[],
@@ -280,6 +312,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     steps = args.steps or checkpoint_steps(args.start_step, args.max_step, args.interval)
     ckpt_s3_base_value = args.ckpt_s3_base or checkpoint_s3_base(args.ckpt_run_name)
     ckpt_amlfs_base_value = args.ckpt_amlfs_base or checkpoint_amlfs_base(args.ckpt_run_name)
+    dreamzero_expected_git_commit = (
+        current_git_head()
+        if args.dreamzero_expected_git_commit is None
+        else args.dreamzero_expected_git_commit
+    )
     if args.steps and not args.allow_off_grid_steps:
         bad_steps = off_grid_steps(
             steps,
@@ -353,6 +390,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             ckpt_run_name=args.ckpt_run_name,
             ckpt_s3_base_value=ckpt_s3_base_value,
             ckpt_amlfs_base_value=ckpt_amlfs_base_value,
+            dreamzero_git_ref=args.dreamzero_git_ref,
+            dreamzero_expected_git_commit=dreamzero_expected_git_commit,
             extra_set_string=args.set_string,
             osmo_binary=args.osmo_binary,
         )

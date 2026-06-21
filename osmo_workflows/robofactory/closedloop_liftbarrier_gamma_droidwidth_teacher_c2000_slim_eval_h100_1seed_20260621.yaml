@@ -28,7 +28,8 @@ workflow:
 
           RUN_NAME="{{run_name}}"
           DREAMZERO_GIT_URL="https://github.com/XianzheFan/dreamzero.git"
-          DREAMZERO_GIT_REF="${DREAMZERO_GIT_REF:-gamma}"
+          DREAMZERO_GIT_REF="${DREAMZERO_GIT_REF:-{{dreamzero_git_ref}}}"
+          DREAMZERO_EXPECTED_GIT_COMMIT="{{dreamzero_expected_git_commit}}"
           ROBOFACTORY_GIT_URL="https://github.com/MARS-EAI/RoboFactory.git"
           ROBOFACTORY_GIT_COMMIT="5868242322414a91454e22f1dd9641f613ba1bcf"
           DATA_S3_URI="s3://GearHome/users/xianzhef/oci-migration/data/robofactory_lerobot_v2/LiftBarrier-rf-500"
@@ -132,6 +133,7 @@ workflow:
               LOCAL_EVAL_CKPT_ROOT="$LOCAL_EVAL_CKPT_ROOT" \
               DREAMZERO_GIT_REF="$DREAMZERO_GIT_REF" \
               DREAMZERO_GIT_COMMIT="${DREAMZERO_GIT_COMMIT:-}" \
+              DREAMZERO_EXPECTED_GIT_COMMIT="$DREAMZERO_EXPECTED_GIT_COMMIT" \
               ROBOFACTORY_GIT_COMMIT="$ROBOFACTORY_GIT_COMMIT" \
               CKPT_RUN_NAME="$CKPT_RUN_NAME" \
               CKPT_S3_BASE="$CKPT_S3_BASE" \
@@ -165,6 +167,7 @@ workflow:
               "LOCAL_EVAL_CKPT_ROOT",
               "DREAMZERO_GIT_REF",
               "DREAMZERO_GIT_COMMIT",
+              "DREAMZERO_EXPECTED_GIT_COMMIT",
               "ROBOFACTORY_GIT_COMMIT",
               "CKPT_RUN_NAME",
               "CKPT_S3_BASE",
@@ -488,6 +491,10 @@ workflow:
           git clone --no-checkout --filter=blob:none "$DREAMZERO_GIT_URL" /workspace/code/dreamzero
           git -C /workspace/code/dreamzero fetch --depth 1 origin "$DREAMZERO_GIT_REF"
           DREAMZERO_GIT_COMMIT="$(git -C /workspace/code/dreamzero rev-parse FETCH_HEAD)"
+          if [ -n "$DREAMZERO_EXPECTED_GIT_COMMIT" ] && [ "$DREAMZERO_GIT_COMMIT" != "$DREAMZERO_EXPECTED_GIT_COMMIT" ]; then
+            echo "ERROR: DreamZero ref ${DREAMZERO_GIT_REF} resolved to ${DREAMZERO_GIT_COMMIT}, expected ${DREAMZERO_EXPECTED_GIT_COMMIT}." >&2
+            exit 65
+          fi
           git -C /workspace/code/dreamzero checkout --detach "$DREAMZERO_GIT_COMMIT"
           test "$(git -C /workspace/code/dreamzero rev-parse HEAD)" = "$DREAMZERO_GIT_COMMIT"
           echo "Resolved DreamZero ref ${DREAMZERO_GIT_REF} to ${DREAMZERO_GIT_COMMIT}"
@@ -1192,6 +1199,8 @@ default-values:
   ckpt_s3_base: s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/dz-rf-sg-gamma-dwteacher-bidir-nodrop-lb500-50k-xz-20260622-teacher/checkpoints/dz-rf-sg-gamma-dwteacher-bidir-nodrop-lb500-50k-xz-20260622-teacher
   ckpt_amlfs_base: /mnt/amlfs-01/home/xianzhef/osmo_cache/dreamzero/checkpoints/dz-rf-sg-gamma-dwteacher-bidir-nodrop-lb500-50k-xz-20260622-teacher/dz-rf-sg-gamma-dwteacher-bidir-nodrop-lb500-50k-xz-20260622-teacher
   ckpt_setting: checkpoint-2000
+  dreamzero_git_ref: gamma
+  dreamzero_expected_git_commit: ""
   local_eval_ckpt_root: gamma_droidwidth_teacher_bidir_nodrop_50k_c2000_slim_eval_h100_1seed1000
   video_pred_rollout_modes: "action noncausal"
   replan_everys: "24 12"
