@@ -7,8 +7,10 @@ import argparse
 import datetime as dt
 import shlex
 import subprocess
+import sys
 from collections.abc import Sequence
 from pathlib import Path
+from typing import NamedTuple
 
 
 DEFAULT_WORKFLOW = (
@@ -25,6 +27,14 @@ DEFAULT_LOCAL_ROOT_TEMPLATE = (
 DEFAULT_CKPT_RUN_NAME = "dz-rf-sg-gamma-dwteacher-bidir-lb500-50k-xz-20260622-teacher"
 DEFAULT_CKPT_S3_RUNS_PREFIX = "s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs"
 DEFAULT_CKPT_AMLFS_RUNS_PREFIX = "/mnt/amlfs-01/home/xianzhef/osmo_cache/dreamzero/checkpoints"
+MODEL_MARKERS = ("model.safetensors", "model.safetensors.index.json")
+
+
+class ReadyCheck(NamedTuple):
+    step: int
+    uri: str
+    ready: bool
+    reason: str
 
 
 def checkpoint_s3_base(ckpt_run_name: str, *, runs_prefix: str = DEFAULT_CKPT_S3_RUNS_PREFIX) -> str:
@@ -37,6 +47,10 @@ def checkpoint_amlfs_base(
 ) -> str:
     prefix = runs_prefix.rstrip("/")
     return f"{prefix}/{ckpt_run_name}/{ckpt_run_name}"
+
+
+def checkpoint_s3_uri(ckpt_s3_base_value: str, step: int) -> str:
+    return f"{ckpt_s3_base_value.rstrip('/')}/checkpoint-{step}/"
 
 
 def checkpoint_steps(start_step: int, max_step: int, interval: int) -> list[int]:
@@ -73,6 +87,41 @@ def off_grid_steps(steps: Sequence[int], *, start_step: int, max_step: int, inte
         for step in steps
         if step < start_step or step > max_step or (step - start_step) % interval != 0
     ]
+
+
+def listing_has_ready_checkpoint(listing: str) -> bool:
+    has_model = any(marker in listing for marker in MODEL_MARKERS)
+    if ".cache_complete" in listing and has_model:
+        return True
+    has_trainer_state = "trainer_state.json" in listing
+    has_experiment_cfg = "experiment_cfg/conf.yaml" in listing or "experiment_cfg" in listing
+    return has_model and has_trainer_state and has_experiment_cfg
+
+
+def check_checkpoint_ready(*, osmo_binary: str, ckpt_s3_base_value: str, step: int) -> ReadyCheck:
+    uri = checkpoint_s3_uri(ckpt_s3_base_value, step)
+    result = subprocess.run(
+        [osmo_binary, "data", "list", "--no-pager", uri],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    listing = "\n".join(part for part in (result.stdout, result.stderr) if part)
+    if result.returncode != 0:
+        return ReadyCheck(
+            step=step,
+            uri=uri,
+            ready=False,
+            reason=f"osmo data list failed with status {result.returncode}",
+        )
+    if listing_has_ready_checkpoint(listing):
+        return ReadyCheck(step=step, uri=uri, ready=True, reason="ready")
+    return ReadyCheck(
+        step=step,
+        uri=uri,
+        ready=False,
+        reason="missing model/trainer_state/experiment_cfg ready markers",
+    )
 
 
 def build_submit_command(
@@ -180,6 +229,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--osmo-binary", default="osmo")
     parser.add_argument(
+        "--only-ready",
+        action="store_true",
+        help="Only emit/submit checkpoints whose S3 directory already contains complete checkpoint markers.",
+    )
+    parser.add_argument(
+        "--fail-if-none-ready",
+        action="store_true",
+        help="With --only-ready, return exit code 2 when no requested checkpoint is ready.",
+    )
+    parser.add_argument(
         "--submit",
         action="store_true",
         help="Actually submit the generated workflows. Without this flag, commands are printed only.",
@@ -207,6 +266,28 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"off-grid steps: {','.join(str(step) for step in bad_steps)}. "
                 "Use --allow-off-grid-steps only for one-off diagnostics."
             )
+    if args.only_ready:
+        ready_steps: list[int] = []
+        for step in steps:
+            check = check_checkpoint_ready(
+                osmo_binary=args.osmo_binary,
+                ckpt_s3_base_value=ckpt_s3_base_value,
+                step=step,
+            )
+            if check.ready:
+                print(f"READY checkpoint-{step}: {check.uri}", file=sys.stderr, flush=True)
+                ready_steps.append(step)
+            else:
+                print(
+                    f"SKIP checkpoint-{step}: {check.reason} at {check.uri}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+        steps = ready_steps
+        if not steps:
+            print("No ready checkpoints matched the requested eval grid.", file=sys.stderr, flush=True)
+            if args.fail_if_none_ready:
+                return 2
     commands = [
         build_submit_command(
             workflow=args.workflow,

@@ -66,6 +66,20 @@ python scripts/eval/submit_robofactory_droidwidth_eval_grid.py \
   --submit
 ```
 
+For periodic polling, let the helper skip checkpoints whose S3 checkpoint
+directory is not ready yet:
+
+```bash
+python scripts/eval/submit_robofactory_droidwidth_eval_grid.py \
+  --tag 20260621 \
+  --steps 2000,4000,6000 \
+  --only-ready \
+  --submit
+```
+
+Add `--fail-if-none-ready` when a scheduler or wrapper should treat "nothing to
+submit yet" as a nonzero exit instead of a clean no-op.
+
 Explicit `--steps` values are still checked against the same 2k cadence by
 default, so off-grid checkpoints such as `checkpoint-1000`,
 `checkpoint-1500`, or `checkpoint-3500` are rejected. Use

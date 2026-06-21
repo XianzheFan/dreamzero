@@ -143,3 +143,91 @@ def test_main_allows_explicit_off_grid_steps_for_one_off_diagnostics(capsys):
     assert status == 0
     out = capsys.readouterr().out
     assert "ckpt_setting=checkpoint-3500" in out
+
+
+def test_listing_has_ready_checkpoint_accepts_complete_marker():
+    module = _load_module()
+
+    listing = """
+    checkpoint-2000/.cache_complete
+    checkpoint-2000/model.safetensors
+    """
+
+    assert module.listing_has_ready_checkpoint(listing)
+
+
+def test_listing_has_ready_checkpoint_accepts_model_and_metadata():
+    module = _load_module()
+
+    listing = """
+    model.safetensors
+    trainer_state.json
+    experiment_cfg/conf.yaml
+    """
+
+    assert module.listing_has_ready_checkpoint(listing)
+
+
+def test_main_only_ready_filters_unavailable_steps(monkeypatch, capsys):
+    module = _load_module()
+
+    def fake_check_checkpoint_ready(*, osmo_binary, ckpt_s3_base_value, step):
+        return module.ReadyCheck(
+            step=step,
+            uri=f"{ckpt_s3_base_value}/checkpoint-{step}/",
+            ready=step == 4000,
+            reason="ready" if step == 4000 else "missing model/trainer_state/experiment_cfg ready markers",
+        )
+
+    monkeypatch.setattr(module, "check_checkpoint_ready", fake_check_checkpoint_ready)
+
+    status = module.main(
+        [
+            "--workflow",
+            "eval.yaml",
+            "--tag",
+            "20260621",
+            "--steps",
+            "2000,4000",
+            "--only-ready",
+        ]
+    )
+
+    assert status == 0
+    captured = capsys.readouterr()
+    assert "ckpt_setting=checkpoint-4000" in captured.out
+    assert "ckpt_setting=checkpoint-2000" not in captured.out
+    assert "SKIP checkpoint-2000" in captured.err
+    assert "READY checkpoint-4000" in captured.err
+
+
+def test_main_only_ready_can_fail_when_none_ready(monkeypatch, capsys):
+    module = _load_module()
+
+    def fake_check_checkpoint_ready(*, osmo_binary, ckpt_s3_base_value, step):
+        return module.ReadyCheck(
+            step=step,
+            uri=f"{ckpt_s3_base_value}/checkpoint-{step}/",
+            ready=False,
+            reason="missing model/trainer_state/experiment_cfg ready markers",
+        )
+
+    monkeypatch.setattr(module, "check_checkpoint_ready", fake_check_checkpoint_ready)
+
+    status = module.main(
+        [
+            "--workflow",
+            "eval.yaml",
+            "--tag",
+            "20260621",
+            "--steps",
+            "2000,4000",
+            "--only-ready",
+            "--fail-if-none-ready",
+        ]
+    )
+
+    assert status == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "No ready checkpoints matched the requested eval grid." in captured.err
