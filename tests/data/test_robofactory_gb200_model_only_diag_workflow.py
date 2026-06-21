@@ -25,6 +25,7 @@ def test_gb200_gamma_eval_defaults_to_model_only_diag_without_maniskill():
     assert 'MODEL_ONLY_DIAG="${MODEL_ONLY_DIAG:-1}"' in script
     assert 'DREAMZERO_VENV="/mnt/amlfs-01/home/xianzhef/osmo_cache/dreamzero/venvs/gb200_rf_eval_py312"' in script
     assert "uv venv --python /usr/bin/python3.12 --system-site-packages" in script
+    assert 'export PYTHONPATH="/workspace/code/dreamzero:${PYTHONPATH:-}"' in script
     assert 'if [ "$MODEL_ONLY_DIAG" != "1" ]; then' in script
     assert 'python -m pip install -q "mani_skill==3.0.0b12" decord' in script
 

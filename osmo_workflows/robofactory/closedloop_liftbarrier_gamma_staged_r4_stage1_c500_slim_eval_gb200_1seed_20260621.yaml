@@ -368,6 +368,7 @@ workflow:
 
           echo "Installing local DreamZero package"
           python -m pip install -q --no-cache-dir --ignore-requires-python -e /workspace/code/dreamzero --no-deps
+          export PYTHONPATH="/workspace/code/dreamzero:${PYTHONPATH:-}"
           if [ "$MODEL_ONLY_DIAG" = "1" ]; then
             python - <<'PY'
           import importlib.util
