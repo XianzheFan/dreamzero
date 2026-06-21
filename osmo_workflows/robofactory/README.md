@@ -36,3 +36,16 @@ Do not pack the whole grid into one eval workflow. A single H100 closed-loop
 eval already runs model load, action diagnostics, video prediction diagnostics,
 and a small physical sweep; separate OSMO workflows make retries and queueing
 cleaner.
+
+After downloading eval artifacts, summarize the checkpoint grid:
+
+```bash
+python scripts/eval/summarize_robofactory_checkpoint_grid.py \
+  /path/to/downloaded/eval/runs \
+  --csv-out checkpoint_grid.csv \
+  --json-out checkpoint_grid.json
+```
+
+The summary table compares the best physical setting per checkpoint, including
+success, reach/grasp margins, action saturation/clamping, boundary jumps, and
+predicted-video future MAE/drift.
