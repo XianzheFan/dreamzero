@@ -370,6 +370,7 @@ def test_liftbarrier_gamma_droidwidth_teacher_workflow_preserves_droid_base_head
     assert defaults["expected_code_commit"] == EXPECTED_CODE_COMMIT
     assert defaults["stage1_max_steps"] == "10000"
     assert defaults["action_jerk_loss_weight"] == "0.0"
+    assert defaults["strict_resume_run_name"] == ""
 
     train_task = _task_by_name(workflow, "train")
     assert train_task["args"] == ["/tmp/train_liftbarrier_gamma_droidwidth_teacher.sh"]
@@ -379,12 +380,26 @@ def test_liftbarrier_gamma_droidwidth_teacher_workflow_preserves_droid_base_head
         'exec > >(tee /tmp/train_liftbarrier_gamma_droidwidth_teacher.log) 2>&1',
         'STAGE1_RUN_NAME="${STAGE1_RUN_NAME:-${BASE_RUN_NAME}-teacher}"',
         'CHECKPOINT_UPLOAD_INTERVAL_SECONDS="${CHECKPOINT_UPLOAD_INTERVAL_SECONDS:-120}"',
+        'STRICT_RESUME_RUN_NAME="${STRICT_RESUME_RUN_NAME:-{{strict_resume_run_name}}}"',
+        'RESUME_OUTPUT_S3_URI="${RUN_S3_ROOT}/resume_checkpoints"',
+        'CACHE_RESUME_OUTPUT_S3_URI="${CACHE_RESUME_OUTPUT_S3_URI:-s3://GearHome/users/xianzhef/oci-migration/dreamzero_s3cache/resume_checkpoints/${RUN_NAME}}"',
+        'STRICT_RESUME_S3_URI="${STRICT_RESUME_S3_URI:-s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/${STRICT_RESUME_RUN_NAME}/resume_checkpoints}"',
+        'STRICT_RESUME_CACHE_S3_URI="${STRICT_RESUME_CACHE_S3_URI:-s3://GearHome/users/xianzhef/oci-migration/dreamzero_s3cache/resume_checkpoints/${STRICT_RESUME_RUN_NAME}}"',
         'export MODEL_MAX_STATE_DIM="${MODEL_MAX_STATE_DIM:-64}"',
         'export MODEL_ACTION_DIM="${MODEL_ACTION_DIM:-32}"',
         'export AGENT_STATE_PAD_DIM="${AGENT_STATE_PAD_DIM:-64}"',
         'export AGENT_ACTION_PAD_DIM="${AGENT_ACTION_PAD_DIM:-32}"',
         'export BASE_ACTION_JERK_LOSS_WEIGHT="${ACTION_JERK_LOSS_WEIGHT:-{{action_jerk_loss_weight}}}"',
+        'export PRESERVE_LOCAL_DEEPSPEED_CHECKPOINTS="${PRESERVE_LOCAL_DEEPSPEED_CHECKPOINTS:-true}"',
+        'export UPLOAD_STRICT_RESUME_CHECKPOINTS="${UPLOAD_STRICT_RESUME_CHECKPOINTS:-true}"',
         'export STAGE1_OUTPUT_DIR="${STAGE1_OUTPUT_DIR:-${BASE_OUTPUT_DIR}/teacher}"',
+        "Local checkpoint slimmer disabled; preserving DeepSpeed state for strict resume.",
+        "is_complete_strict_resume_checkpoint()",
+        "stage_resume_checkpoints_for_upload()",
+        "upload_resume_checkpoints_once()",
+        'osmo data upload "${RESUME_OUTPUT_S3_URI}/" "$resume_stage_dir"',
+        'osmo data upload "${CACHE_RESUME_OUTPUT_S3_URI}/" "$resume_stage_dir"',
+        "Skipping non-resumable checkpoint",
         'echo "MODEL_MAX_STATE_DIM=$MODEL_MAX_STATE_DIM"',
         'echo "MODEL_ACTION_DIM=$MODEL_ACTION_DIM"',
         'echo "AGENT_STATE_PAD_DIM=$AGENT_STATE_PAD_DIM"',
@@ -397,6 +412,13 @@ def test_liftbarrier_gamma_droidwidth_teacher_workflow_preserves_droid_base_head
         "restore_stage1_lora_from_s3 \"$RESTORE_CACHE_S3_URI\" \"restore_cache\"",
         "restore_stage1_lora_from_s3 \"$RESTORE_S3_URI\" \"restore_primary\"",
         "Selected LoRA warm-start checkpoint",
+        "restore_strict_resume_from_s3()",
+        "restore_strict_resume_checkpoint()",
+        "Attempting strict DeepSpeed resume from STRICT_RESUME_RUN_NAME",
+        "Strict resume requires full DeepSpeed checkpoint state; slim eval checkpoints are intentionally rejected.",
+        "Skipping non-strict restored checkpoint",
+        "ERROR: STRICT_RESUME_RUN_NAME was set, but no full DeepSpeed checkpoint could be restored.",
+        "restore_strict_resume_checkpoint",
         'export PRETRAINED_LORA_DIR="${STAGE1_PRETRAINED_LORA_DIR:-}"',
         'echo "PRETRAINED_LORA_DIR=$PRETRAINED_LORA_DIR"',
         "No restore run configured; droidwidth teacher will start from DreamZero-DROID.",

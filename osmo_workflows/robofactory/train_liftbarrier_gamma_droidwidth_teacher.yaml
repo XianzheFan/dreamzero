@@ -45,6 +45,7 @@ workflow:
             STAGE1_MAX_STEPS="${STAGE1_MAX_STEPS:-{{stage1_max_steps}}}"
             STAGE2_MAX_STEPS="${STAGE2_MAX_STEPS:-{{stage2_max_steps}}}"
             RESTORE_RUN_NAME="${RESTORE_RUN_NAME:-{{restore_run_name}}}"
+            STRICT_RESUME_RUN_NAME="${STRICT_RESUME_RUN_NAME:-{{strict_resume_run_name}}}"
             CODE_S3_URI="${CODE_S3_URI:-{{code_s3_uri}}}"
             EXPECTED_CODE_COMMIT="${EXPECTED_CODE_COMMIT:-{{expected_code_commit}}}"
             DATA_VARIANT="${DATA_VARIANT:-{{data_variant}}}"
@@ -57,6 +58,8 @@ workflow:
             OUTPUT_S3_URI="${RUN_S3_ROOT}/checkpoints"
             LOG_S3_URI="${RUN_S3_ROOT}/logs"
             CACHE_OUTPUT_S3_URI="${CACHE_OUTPUT_S3_URI:-s3://GearHome/users/xianzhef/oci-migration/dreamzero_s3cache/bootstrap_checkpoints/${RUN_NAME}}"
+            RESUME_OUTPUT_S3_URI="${RUN_S3_ROOT}/resume_checkpoints"
+            CACHE_RESUME_OUTPUT_S3_URI="${CACHE_RESUME_OUTPUT_S3_URI:-s3://GearHome/users/xianzhef/oci-migration/dreamzero_s3cache/resume_checkpoints/${RUN_NAME}}"
             if [ -n "$RESTORE_RUN_NAME" ]; then
               RESTORE_S3_URI="${RESTORE_S3_URI:-s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/${RESTORE_RUN_NAME}/checkpoints}"
               RESTORE_CACHE_S3_URI="${RESTORE_CACHE_S3_URI:-s3://GearHome/users/xianzhef/oci-migration/dreamzero_s3cache/bootstrap_checkpoints/${RESTORE_RUN_NAME}}"
@@ -64,9 +67,16 @@ workflow:
               RESTORE_S3_URI="${RESTORE_S3_URI:-}"
               RESTORE_CACHE_S3_URI="${RESTORE_CACHE_S3_URI:-}"
             fi
+            if [ -n "$STRICT_RESUME_RUN_NAME" ]; then
+              STRICT_RESUME_S3_URI="${STRICT_RESUME_S3_URI:-s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/${STRICT_RESUME_RUN_NAME}/resume_checkpoints}"
+              STRICT_RESUME_CACHE_S3_URI="${STRICT_RESUME_CACHE_S3_URI:-s3://GearHome/users/xianzhef/oci-migration/dreamzero_s3cache/resume_checkpoints/${STRICT_RESUME_RUN_NAME}}"
+            else
+              STRICT_RESUME_S3_URI="${STRICT_RESUME_S3_URI:-}"
+              STRICT_RESUME_CACHE_S3_URI="${STRICT_RESUME_CACHE_S3_URI:-}"
+            fi
             CHECKPOINT_UPLOAD_INTERVAL_SECONDS="${CHECKPOINT_UPLOAD_INTERVAL_SECONDS:-120}"
 
-            for uri in "$CODE_S3_URI" "$DATA_S3_URI" "$MODEL_CACHE_S3_URI" "$RUN_S3_ROOT" "$OUTPUT_S3_URI" "$LOG_S3_URI" "$CACHE_OUTPUT_S3_URI" "$RESTORE_S3_URI" "$RESTORE_CACHE_S3_URI"; do
+            for uri in "$CODE_S3_URI" "$DATA_S3_URI" "$MODEL_CACHE_S3_URI" "$RUN_S3_ROOT" "$OUTPUT_S3_URI" "$LOG_S3_URI" "$CACHE_OUTPUT_S3_URI" "$RESUME_OUTPUT_S3_URI" "$CACHE_RESUME_OUTPUT_S3_URI" "$RESTORE_S3_URI" "$RESTORE_CACHE_S3_URI" "$STRICT_RESUME_S3_URI" "$STRICT_RESUME_CACHE_S3_URI"; do
               [ -n "$uri" ] || continue
               case "$uri" in
                 s3://GearHome/users/xianzhef/*) ;;
@@ -122,6 +132,13 @@ workflow:
 
             dir_has_files() {
               [ -d "$1" ] && [ -n "$(find "$1" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]
+            }
+
+            is_truthy() {
+              case "${1:-}" in
+                1|true|TRUE|yes|YES|on|ON) return 0 ;;
+                *) return 1 ;;
+              esac
             }
 
             has_lerobot_meta() {
@@ -563,6 +580,8 @@ workflow:
             export GLOBAL_VIDEO_ATTENTION_MODE="${GLOBAL_VIDEO_ATTENTION_MODE:-read_only}"
             export ATTENTION_BACKEND="${ATTENTION_BACKEND:-flex}"
             export CHECKPOINT_SLIM_INTERVAL_SECONDS="${CHECKPOINT_SLIM_INTERVAL_SECONDS:-30}"
+            export PRESERVE_LOCAL_DEEPSPEED_CHECKPOINTS="${PRESERVE_LOCAL_DEEPSPEED_CHECKPOINTS:-true}"
+            export UPLOAD_STRICT_RESUME_CHECKPOINTS="${UPLOAD_STRICT_RESUME_CHECKPOINTS:-true}"
             export REPORT_TO=wandb
             export WANDB_PROJECT=dreamzero_robofactory
             export DATALOADER_NUM_WORKERS=4
@@ -601,6 +620,9 @@ workflow:
 
             slim_checkpoint_once() {
               ckpt_dir="$1"
+              if is_truthy "$PRESERVE_LOCAL_DEEPSPEED_CHECKPOINTS"; then
+                return 0
+              fi
               if ! is_complete_minimal_checkpoint "$ckpt_dir"; then
                 return 0
               fi
@@ -628,6 +650,72 @@ workflow:
                 [ -n "$ckpt_dir" ] || continue
                 slim_checkpoint_once "$ckpt_dir"
               done < <(find "$OUTPUT_DIR" -maxdepth 1 -type d -name 'checkpoint-*' | sort -V)
+            }
+
+            is_complete_strict_resume_checkpoint() {
+              ckpt_dir="$1"
+              is_complete_minimal_checkpoint "$ckpt_dir" || return 1
+              if [ ! -f "${ckpt_dir}/latest" ]; then
+                return 1
+              fi
+              ds_marker="$(find "$ckpt_dir" -mindepth 1 \( \
+                -type d -name 'global_step*' -o \
+                -type f -name 'zero_pp_rank_*' -o \
+                -type f -name '*optim_states.pt' -o \
+                -type f -name '*model_states.pt' \
+              \) -print -quit 2>/dev/null || true)"
+              [ -n "$ds_marker" ]
+            }
+
+            stage_resume_checkpoints_for_upload() {
+              if ! is_truthy "$UPLOAD_STRICT_RESUME_CHECKPOINTS"; then
+                echo "Strict resume checkpoint upload disabled by UPLOAD_STRICT_RESUME_CHECKPOINTS=${UPLOAD_STRICT_RESUME_CHECKPOINTS}."
+                return 1
+              fi
+
+              stage_root="/workspace/rf_resume_checkpoint_upload"
+              stage_dir="${stage_root}/${RUN_NAME}"
+              rm -rf "$stage_dir"
+              mkdir -p "$stage_dir"
+
+              for top_file in wandb_config.json loss_log.jsonl; do
+                if [ -f "${OUTPUT_DIR}/${top_file}" ]; then
+                  cp -a "${OUTPUT_DIR}/${top_file}" "$stage_dir/"
+                fi
+              done
+              if [ -d "${OUTPUT_DIR}/experiment_cfg" ]; then
+                cp -a "${OUTPUT_DIR}/experiment_cfg" "$stage_dir/"
+              fi
+
+              found=0
+              while IFS= read -r ckpt_dir; do
+                [ -n "$ckpt_dir" ] || continue
+                ckpt_name="$(basename "$ckpt_dir")"
+                if is_complete_strict_resume_checkpoint "$ckpt_dir"; then
+                  echo "Staging strict resume checkpoint ${ckpt_dir}"
+                  if ! cp -al "$ckpt_dir" "${stage_dir}/${ckpt_name}" 2>/dev/null; then
+                    cp -a "$ckpt_dir" "${stage_dir}/${ckpt_name}"
+                  fi
+                  found=1
+                else
+                  echo "Skipping non-resumable checkpoint ${ckpt_dir}; need model metadata plus DeepSpeed latest/global_step optimizer state."
+                fi
+              done < <(find "$OUTPUT_DIR" -maxdepth 1 -type d -name 'checkpoint-*' | sort -V)
+
+              if [ "$found" -eq 0 ]; then
+                echo "No strict-resume checkpoints ready for upload." >&2
+                return 1
+              fi
+              echo "$stage_dir"
+              return 0
+            }
+
+            upload_resume_checkpoints_once() {
+              resume_stage_dir="$(stage_resume_checkpoints_for_upload || true)"
+              if [ -n "$resume_stage_dir" ] && [ -d "$resume_stage_dir" ]; then
+                osmo data upload "${RESUME_OUTPUT_S3_URI}/" "$resume_stage_dir"
+                osmo data upload "${CACHE_RESUME_OUTPUT_S3_URI}/" "$resume_stage_dir"
+              fi
             }
 
             stage_checkpoints_for_upload() {
@@ -666,6 +754,7 @@ workflow:
             }
 
             upload_checkpoints_once() {
+              upload_resume_checkpoints_once || true
               slim_checkpoints_once || true
               stage_dir="$(stage_checkpoints_for_upload || true)"
               if [ -n "$stage_dir" ] && [ -d "$stage_dir" ]; then
@@ -691,6 +780,10 @@ workflow:
             }
 
             start_checkpoint_slimmer() {
+              if is_truthy "$PRESERVE_LOCAL_DEEPSPEED_CHECKPOINTS"; then
+                echo "Local checkpoint slimmer disabled; preserving DeepSpeed state for strict resume."
+                return 0
+              fi
               stop_checkpoint_slimmer
               checkpoint_slimmer_loop &
               CHECKPOINT_SLIMMER_PID=$!
@@ -790,6 +883,8 @@ workflow:
               OUTPUT_S3_URI="${RUN_S3_ROOT}/checkpoints"
               LOG_S3_URI="${RUN_S3_ROOT}/logs"
               CACHE_OUTPUT_S3_URI="s3://GearHome/users/xianzhef/oci-migration/dreamzero_s3cache/bootstrap_checkpoints/${RUN_NAME}"
+              RESUME_OUTPUT_S3_URI="${RUN_S3_ROOT}/resume_checkpoints"
+              CACHE_RESUME_OUTPUT_S3_URI="s3://GearHome/users/xianzhef/oci-migration/dreamzero_s3cache/resume_checkpoints/${RUN_NAME}"
             }
 
             configure_stage_loss_weights() {
@@ -932,10 +1027,10 @@ workflow:
               latest=""
               while IFS= read -r ckpt_dir; do
                 [ -n "$ckpt_dir" ] || continue
-                if is_complete_resume_checkpoint "$ckpt_dir"; then
+                if is_complete_minimal_checkpoint "$ckpt_dir"; then
                   latest="$ckpt_dir"
                 else
-                  echo "Skipping incomplete LoRA warm-start checkpoint ${ckpt_dir}; need model weights plus trainer_state.json."
+                  echo "Skipping incomplete LoRA warm-start checkpoint ${ckpt_dir}; need model weights, trainer_state.json, and experiment_cfg/conf.yaml."
                 fi
               done < <(find "$import_dir" -type d -name 'checkpoint-*' | sort -V)
 
@@ -968,10 +1063,78 @@ workflow:
               echo "No previous droidwidth teacher LoRA warm-start restored; training will start from DreamZero-DROID."
             }
 
+            restore_strict_resume_from_s3() {
+              src_uri="$1"
+              label="$2"
+              dest_dir="$3"
+              if [ -z "$src_uri" ]; then
+                return 1
+              fi
+              import_dir="/workspace/strict_resume_import/${label}"
+              rm -rf "$import_dir"
+              mkdir -p "$import_dir"
+              echo "Restoring strict DeepSpeed resume checkpoints from ${src_uri}/ into ${import_dir}"
+              set +e
+              osmo data download --resume "${src_uri}/" "$import_dir"
+              restore_status=$?
+              set -e
+              if [ "$restore_status" -ne 0 ]; then
+                echo "Strict resume restore from ${src_uri}/ failed with status=${restore_status}."
+                return 1
+              fi
+
+              found=0
+              mkdir -p "$dest_dir"
+              while IFS= read -r ckpt_dir; do
+                [ -n "$ckpt_dir" ] || continue
+                ckpt_name="$(basename "$ckpt_dir")"
+                if is_complete_strict_resume_checkpoint "$ckpt_dir"; then
+                  echo "Promoting strict resume checkpoint ${ckpt_dir} -> ${dest_dir}/${ckpt_name}"
+                  mkdir -p "${dest_dir}/${ckpt_name}"
+                  cp -an "${ckpt_dir}/." "${dest_dir}/${ckpt_name}/"
+                  found=1
+                else
+                  echo "Skipping non-strict restored checkpoint ${ckpt_dir}; need DeepSpeed latest/global_step optimizer state."
+                fi
+              done < <(find "$import_dir" -type d -name 'checkpoint-*' | sort -V)
+
+              if [ "$found" -eq 0 ]; then
+                echo "No usable strict-resume checkpoint-* directories found under ${src_uri}/."
+                return 1
+              fi
+              return 0
+            }
+
+            restore_strict_resume_checkpoint() {
+              if [ -z "$STRICT_RESUME_RUN_NAME" ]; then
+                return 0
+              fi
+
+              echo "Attempting strict DeepSpeed resume from STRICT_RESUME_RUN_NAME=${STRICT_RESUME_RUN_NAME}"
+              echo "Strict resume requires full DeepSpeed checkpoint state; slim eval checkpoints are intentionally rejected."
+              if [ -n "$RESTORE_RUN_NAME" ]; then
+                echo "RESTORE_RUN_NAME=${RESTORE_RUN_NAME} ignored because STRICT_RESUME_RUN_NAME is set."
+              fi
+              if restore_strict_resume_from_s3 "$STRICT_RESUME_CACHE_S3_URI" "strict_resume_cache" "$STAGE1_OUTPUT_DIR"; then
+                echo "Restored strict resume checkpoint from cache URI ${STRICT_RESUME_CACHE_S3_URI}."
+                return 0
+              fi
+              if restore_strict_resume_from_s3 "$STRICT_RESUME_S3_URI" "strict_resume_primary" "$STAGE1_OUTPUT_DIR"; then
+                echo "Restored strict resume checkpoint from primary URI ${STRICT_RESUME_S3_URI}."
+                return 0
+              fi
+              echo "ERROR: STRICT_RESUME_RUN_NAME was set, but no full DeepSpeed checkpoint could be restored." >&2
+              exit 65
+            }
+
             require_wandb
 
             DREAMZERO_DROID_PRETRAINED_DIR="$PRETRAINED_DIR"
-            restore_stage1_lora_checkpoint
+            if [ -n "$STRICT_RESUME_RUN_NAME" ]; then
+              restore_strict_resume_checkpoint
+            else
+              restore_stage1_lora_checkpoint
+            fi
             run_training_stage \
               "droidwidth-teacher-style" \
               "$STAGE1_RUN_NAME" \
@@ -994,6 +1157,7 @@ default-values:
   workflow_name: dz-rf-sg-gamma-droidwidth-teacher-lb500-xianzhef-20260621
   run_name: dz-rf-sg-gamma-droidwidth-teacher-lb500-xianzhef-20260621
   restore_run_name: ""
+  strict_resume_run_name: ""
   code_s3_uri: swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_gamma_jerkloss_32e8028_20260621
   expected_code_commit: "32e80283df4d1655045dacea9cc14ad49760b7d2"
   data_variant: LiftBarrier-rf-500
