@@ -41,6 +41,9 @@ workflow:
           LOCAL_EVAL_CKPT_ROOT="/workspace/eval_ckpts/gamma_staged_r4_stage1_c500_slim_eval_1seed1000"
           AMLFS_MODEL_CACHE_DIR="/mnt/amlfs-01/home/xianzhef/osmo_cache/dreamzero/checkpoints"
           DREAMZERO_VENV="/mnt/amlfs-01/home/xianzhef/osmo_cache/dreamzero/venvs/gb200_rf_eval_py312"
+          MODEL_ONLY_DIAG="${MODEL_ONLY_DIAG:-1}"
+          MODEL_ONLY_NUM_BATCHES="${MODEL_ONLY_NUM_BATCHES:-1}"
+          MODEL_ONLY_INFERENCE_MODES="${MODEL_ONLY_INFERENCE_MODES:-causal_flowmatch noncausal_flowmatch}"
           ROBOFACTORY_ASSET_CACHE="/mnt/amlfs-01/home/xianzhef/osmo_cache/robofactory/assets"
           RUN_S3_ROOT="s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/${RUN_NAME}"
           DROID_HF_REPO="GEAR-Dreams/DreamZero-DROID"
@@ -200,8 +203,15 @@ workflow:
           export PATH="${DREAMZERO_VENV}/bin:${PATH}"
           python --version
           python -m pip install -q --upgrade "pip<25.3" "setuptools>=64,<80" wheel "huggingface_hub[cli]"
-          if [ ! -f "${DREAMZERO_VENV}/.robofactory_eval_deps_v1" ]; then
-            python -m pip install -q "mani_skill==3.0.0b12"
+          if [ "$MODEL_ONLY_DIAG" = "1" ]; then
+            DEPS_MARKER="${DREAMZERO_VENV}/.gb200_model_only_eval_deps_v1"
+          else
+            DEPS_MARKER="${DREAMZERO_VENV}/.gb200_robofactory_eval_deps_v1"
+          fi
+          if [ ! -f "$DEPS_MARKER" ]; then
+            if [ "$MODEL_ONLY_DIAG" != "1" ]; then
+              python -m pip install -q "mani_skill==3.0.0b12"
+            fi
             python -m pip install -q \
               "websockets>=12" \
               msgpack \
@@ -230,11 +240,14 @@ workflow:
               "opencv-python-headless==4.10.0.84" \
               decord \
               pandas \
-              pyarrow
+              pyarrow \
+              "datasets==3.6.0" \
+              imageio \
+              imageio-ffmpeg
             python -m pip install -q "numpy==1.26.4"
-            date -u +"%Y-%m-%dT%H:%M:%SZ" > "${DREAMZERO_VENV}/.robofactory_eval_deps_v1"
+            date -u +"%Y-%m-%dT%H:%M:%SZ" > "$DEPS_MARKER"
           else
-            echo "RoboFactory eval dependency cache already present: ${DREAMZERO_VENV}"
+            echo "GB200 eval dependency cache already present: ${DEPS_MARKER}"
           fi
 
           mkdir -p /workspace/checkpoints
@@ -349,21 +362,32 @@ workflow:
           echo "$DREAMZERO_GIT_COMMIT" > /workspace/eval_outputs/dreamzero_code_commit.txt
             python -m py_compile \
             /workspace/code/dreamzero/eval_utils/bimanual_policy_server.py \
+            /workspace/code/dreamzero/eval_utils/offline_video_action_diagnostic.py \
             /workspace/code/dreamzero/scripts/eval/eval_robofactory_ws.py \
             /workspace/code/dreamzero/scripts/eval/analyze_gripper_dump.py \
             /workspace/code/dreamzero/scripts/eval/analyze_video_pred_quality.py
 
-          echo "Cloning RoboFactory at ${ROBOFACTORY_GIT_COMMIT}"
-          git clone --no-checkout --filter=blob:none "$ROBOFACTORY_GIT_URL" /workspace/code/RoboFactory
-          git -C /workspace/code/RoboFactory fetch --depth 1 origin "$ROBOFACTORY_GIT_COMMIT"
-          git -C /workspace/code/RoboFactory checkout --detach "$ROBOFACTORY_GIT_COMMIT"
-          test "$(git -C /workspace/code/RoboFactory rev-parse HEAD)" = "$ROBOFACTORY_GIT_COMMIT"
-
-          echo "Installing local DreamZero and RoboFactory packages"
+          echo "Installing local DreamZero package"
           python -m pip install -q --no-cache-dir --ignore-requires-python -e /workspace/code/dreamzero --no-deps
-          python -m pip install -q --no-cache-dir -e /workspace/code/RoboFactory --no-deps
-
-          python - <<'PY'
+          if [ "$MODEL_ONLY_DIAG" = "1" ]; then
+            python - <<'PY'
+          import importlib.util
+          required = ["torch", "groot", "datasets", "websockets", "msgpack_numpy", "pyarrow", "av", "cv2"]
+          for name in required:
+              print(f"{name}: {bool(importlib.util.find_spec(name))}", flush=True)
+          missing = [name for name in required if importlib.util.find_spec(name) is None]
+          if missing:
+              raise SystemExit(f"missing required model-only imports: {missing}")
+          PY
+          else
+            echo "Cloning RoboFactory at ${ROBOFACTORY_GIT_COMMIT}"
+            git clone --no-checkout --filter=blob:none "$ROBOFACTORY_GIT_URL" /workspace/code/RoboFactory
+            git -C /workspace/code/RoboFactory fetch --depth 1 origin "$ROBOFACTORY_GIT_COMMIT"
+            git -C /workspace/code/RoboFactory checkout --detach "$ROBOFACTORY_GIT_COMMIT"
+            test "$(git -C /workspace/code/RoboFactory rev-parse HEAD)" = "$ROBOFACTORY_GIT_COMMIT"
+            echo "Installing local RoboFactory package"
+            python -m pip install -q --no-cache-dir -e /workspace/code/RoboFactory --no-deps
+            python - <<'PY'
           import importlib.util
           required = ["torch", "groot", "robofactory", "mani_skill", "sapien", "gymnasium", "websockets", "msgpack_numpy", "pyarrow"]
           for name in required:
@@ -372,6 +396,7 @@ workflow:
           if missing:
               raise SystemExit(f"missing required imports: {missing}")
           PY
+          fi
 
           echo "Downloading RoboFactory LiftBarrier-rf-500 data"
           osmo data download --resume "${DATA_S3_URI}/" /workspace/data/LiftBarrier-rf
@@ -513,6 +538,34 @@ workflow:
             exit 26
           fi
           du -sh "$candidate_dir"
+
+          if [ "$MODEL_ONLY_DIAG" = "1" ]; then
+            echo "Running GB200 model-only action/video diagnostics"
+            for MODEL_ONLY_INFERENCE_MODE in ${MODEL_ONLY_INFERENCE_MODES}; do
+              diag_out="/workspace/eval_outputs/model_only_${MODEL_ONLY_INFERENCE_MODE}"
+              mkdir -p "$diag_out"
+              CUDA_VISIBLE_DEVICES=0 python -m eval_utils.offline_video_action_diagnostic \
+                --ckpt-dir "$LOCAL_EVAL_CKPT_ROOT" \
+                --ckpt-setting "$CKPT_SETTING" \
+                --out-dir "$diag_out" \
+                --num-batches "$MODEL_ONLY_NUM_BATCHES" \
+                --batch-size 1 \
+                --num-workers 0 \
+                --device cuda \
+                --inference-mode "$MODEL_ONLY_INFERENCE_MODE" \
+                2>&1 | tee "${diag_out}/diagnostic.log"
+            done
+            if find /workspace/eval_outputs -path "*/video_pred/*.mp4" -print -quit | grep -q .; then
+              python /workspace/code/dreamzero/scripts/eval/analyze_video_pred_quality.py \
+                /workspace/eval_outputs \
+                --output-json /workspace/eval_outputs/model_only_video_pred_quality.json \
+                --output-txt /workspace/eval_outputs/model_only_video_pred_quality.txt \
+                --contact-sheet /workspace/eval_outputs/model_only_video_pred_quality_contact.jpg \
+                2>&1 | tee /workspace/eval_outputs/model_only_video_pred_quality.log || true
+            fi
+            echo "GB200 model-only diagnostics complete"
+            exit 0
+          fi
 
           echo "Preparing RoboFactory assets cache"
           mkdir -p "$ROBOFACTORY_ASSET_CACHE"
