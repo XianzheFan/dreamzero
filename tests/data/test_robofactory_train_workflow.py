@@ -53,6 +53,7 @@ def test_liftbarrier_train_workflow_defaults_to_cached_code_and_500_episode_data
         "s3://GearHome/users/xianzhef/oci-migration/data/robofactory_lerobot_v2/LiftBarrier-rf-500"
     )
     assert defaults["max_steps"] == "50000"
+    assert defaults["save_steps"] == "2000"
 
     resources = workflow["workflow"]["resources"]["default"]
     assert resources["gpu"] == 8

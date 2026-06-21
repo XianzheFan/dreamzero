@@ -40,9 +40,9 @@ side.
 
 ## 2k Checkpoint Eval Grid
 
-The droidwidth teacher training workflow saves checkpoints every 2000 optimizer
-steps. Keep closed-loop evals on the same 2k cadence by generating one H100 eval
-workflow per checkpoint instead of running all checkpoints inside one long
+The gamma training workflows save checkpoints every 2000 optimizer steps by
+default. Keep closed-loop evals on the same 2k cadence by generating one H100
+eval workflow per checkpoint instead of running all checkpoints inside one long
 workflow.
 
 Dry-run the full `checkpoint-2000` through `checkpoint-50000` grid:
