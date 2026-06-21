@@ -38,6 +38,12 @@ The standalone droidwidth teacher workflow also defaults
 dense-teacher side of this curriculum rather than the sparse read-only student
 side.
 
+The standalone droidwidth teacher default is a 50k-from-zero run:
+`run_name=dz-rf-sg-gamma-dwteacher-lb500-50k-from0-xz-20260621`, with the
+actual training stage saved under the `-teacher` suffix. The H100 slim eval
+templates and 2k checkpoint grid point at that stage run, so the default train
+workflow must produce checkpoints through `checkpoint-50000`.
+
 ## 2k Checkpoint Eval Grid
 
 The gamma training workflows save checkpoints every 2000 optimizer steps by

@@ -432,11 +432,11 @@ def test_liftbarrier_gamma_droidwidth_teacher_workflow_preserves_droid_base_head
         workflow = yaml.safe_load(f)
 
     defaults = workflow["default-values"]
-    assert defaults["workflow_name"] == "dz-rf-sg-gamma-droidwidth-teacher-lb500-xianzhef-20260621"
-    assert defaults["run_name"] == "dz-rf-sg-gamma-droidwidth-teacher-lb500-xianzhef-20260621"
+    assert defaults["workflow_name"] == "dz-rf-sg-gamma-dwteacher-lb500-50k-from0-xz-20260621"
+    assert defaults["run_name"] == "dz-rf-sg-gamma-dwteacher-lb500-50k-from0-xz-20260621"
     assert defaults["code_s3_uri"] == ""
     assert defaults["expected_code_commit"] == ""
-    assert defaults["stage1_max_steps"] == "10000"
+    assert defaults["stage1_max_steps"] == "50000"
     assert defaults["save_steps"] == "2000"
     assert defaults["action_jerk_loss_weight"] == "0.0"
     assert defaults["strict_resume_run_name"] == ""
@@ -444,6 +444,8 @@ def test_liftbarrier_gamma_droidwidth_teacher_workflow_preserves_droid_base_head
     train_task = _task_by_name(workflow, "train")
     assert train_task["args"] == ["/tmp/train_liftbarrier_gamma_droidwidth_teacher.sh"]
     script = train_task["files"][0]["contents"]
+    assert "STAGE2_RUN_NAME" not in script
+    assert "STAGE2_MAX_STEPS" not in script
 
     for marker in (
         'exec > >(tee /tmp/train_liftbarrier_gamma_droidwidth_teacher.log) 2>&1',

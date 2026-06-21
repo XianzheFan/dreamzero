@@ -41,9 +41,7 @@ workflow:
             BASE_RUN_NAME="${RUN_NAME:-{{run_name}}}"
             RUN_NAME="$BASE_RUN_NAME"
             STAGE1_RUN_NAME="${STAGE1_RUN_NAME:-${BASE_RUN_NAME}-teacher}"
-            STAGE2_RUN_NAME="${STAGE2_RUN_NAME:-${BASE_RUN_NAME}-sparse-student}"
             STAGE1_MAX_STEPS="${STAGE1_MAX_STEPS:-{{stage1_max_steps}}}"
-            STAGE2_MAX_STEPS="${STAGE2_MAX_STEPS:-{{stage2_max_steps}}}"
             RESTORE_RUN_NAME="${RESTORE_RUN_NAME:-{{restore_run_name}}}"
             STRICT_RESUME_RUN_NAME="${STRICT_RESUME_RUN_NAME:-{{strict_resume_run_name}}}"
             CODE_S3_URI="${CODE_S3_URI:-{{code_s3_uri}}}"
@@ -1161,8 +1159,8 @@ workflow:
             echo "Droidwidth Gamma teacher training complete."
 
 default-values:
-  workflow_name: dz-rf-sg-gamma-droidwidth-teacher-lb500-xianzhef-20260621
-  run_name: dz-rf-sg-gamma-droidwidth-teacher-lb500-xianzhef-20260621
+  workflow_name: dz-rf-sg-gamma-dwteacher-lb500-50k-from0-xz-20260621
+  run_name: dz-rf-sg-gamma-dwteacher-lb500-50k-from0-xz-20260621
   restore_run_name: ""
   strict_resume_run_name: ""
   code_s3_uri: ""
@@ -1170,8 +1168,7 @@ default-values:
   data_variant: LiftBarrier-rf-500
   expected_data_episodes: "500"
   data_s3_uri: s3://GearHome/users/xianzhef/oci-migration/data/robofactory_lerobot_v2/LiftBarrier-rf-500
-  stage1_max_steps: "10000"
-  stage2_max_steps: "40000"
+  stage1_max_steps: "50000"
   save_steps: "2000"
   save_total_limit: "4"
   learning_rate: "1e-5"
