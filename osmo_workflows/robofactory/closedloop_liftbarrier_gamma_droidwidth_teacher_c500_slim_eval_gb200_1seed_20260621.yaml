@@ -261,7 +261,7 @@ workflow:
             echo "AMLFS Wan cache unavailable; restoring from xianzhef S3 model cache"
             WAN_IMPORT="/workspace/model_import/Wan2.1-I2V-14B-480P"
             mkdir -p "$WAN_IMPORT"
-            osmo data download --resume "${MODEL_CACHE_S3_URI}/Wan2.1-I2V-14B-480P/" "$WAN_IMPORT"
+            osmo data download --resume --processes 1 --threads 4 "${MODEL_CACHE_S3_URI}/Wan2.1-I2V-14B-480P/" "$WAN_IMPORT"
             if [ -f "${WAN_IMPORT}/.cache_complete" ]; then
               ln -sfn "$WAN_IMPORT" "$WAN_EXPECTED"
             elif [ -f "${WAN_IMPORT}/Wan2.1-I2V-14B-480P/.cache_complete" ]; then

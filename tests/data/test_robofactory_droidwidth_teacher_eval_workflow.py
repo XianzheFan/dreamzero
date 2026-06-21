@@ -75,6 +75,21 @@ def test_droidwidth_teacher_gb200_model_only_uses_pyav_video_reader_fallback():
     assert "offline_video_action_diagnostic" in script
 
 
+def test_droidwidth_teacher_gb200_s3_model_cache_downloads_are_throttled():
+    _, _, script = _workflow_and_script()
+
+    assert (
+        'osmo data download --resume --processes 1 --threads 4 '
+        '"${MODEL_CACHE_S3_URI}/Wan2.1-I2V-14B-480P/" "$WAN_IMPORT"'
+        in script
+    )
+    assert (
+        'osmo data download --resume --processes 1 --threads 4 '
+        '"${MODEL_CACHE_S3_URI}/DreamZero-DROID/" "$DROID_IMPORT"'
+        in script
+    )
+
+
 def test_droidwidth_teacher_eval_embedded_script_is_valid_bash():
     _, _, script = _workflow_and_script()
 
