@@ -447,7 +447,7 @@ def test_liftbarrier_gamma_droidwidth_teacher_workflow_preserves_droid_base_head
     assert defaults["train_warmup_ratio"] == "0.0"
     assert defaults["train_weight_decay"] == "1e-5"
     assert defaults["train_max_chunk_size"] == "4"
-    assert defaults["train_max_grad_norm"] == ""
+    assert defaults["train_max_grad_norm"] == "0.1"
 
     train_task = _task_by_name(workflow, "train")
     assert train_task["args"] == ["/tmp/train_liftbarrier_gamma_droidwidth_teacher.sh"]

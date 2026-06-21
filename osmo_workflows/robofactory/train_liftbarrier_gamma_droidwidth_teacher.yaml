@@ -1203,5 +1203,5 @@ default-values:
   train_warmup_ratio: "0.0"
   train_weight_decay: "1e-5"
   train_max_chunk_size: "4"
-  train_max_grad_norm: ""
+  train_max_grad_norm: "0.1"
   action_jerk_loss_weight: "0.0"
