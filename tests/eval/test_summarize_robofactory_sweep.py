@@ -45,6 +45,15 @@ def test_summarize_sweep_extracts_trace_metrics(tmp_path):
                 "mean_joint_delta_sign_flip_frac": 0.4,
                 "joint_delta_sign_flip_count": 6,
                 "joint_delta_active_pair_count": 12,
+                "mean_pred_chunk_joint_step_delta": 0.05,
+                "max_pred_chunk_joint_step_delta": 0.21,
+                "mean_pred_chunk_joint_step_accel": 0.04,
+                "max_pred_chunk_joint_step_accel": 0.16,
+                "mean_pred_chunk_joint_accel_to_delta_ratio": 0.8,
+                "max_pred_chunk_joint_accel_to_delta_ratio": 0.76,
+                "pred_chunk_joint_delta_sign_flip_frac": 0.45,
+                "mean_model_replan_boundary_joint_jump": 0.035,
+                "max_model_replan_boundary_joint_jump": 0.11,
                 "mean_replan_boundary_joint_jump": 0.025,
                 "max_replan_boundary_joint_jump": 0.09,
                 "env_trace": {
@@ -139,6 +148,15 @@ def test_summarize_sweep_extracts_trace_metrics(tmp_path):
                 "mean_joint_delta_sign_flip_frac": 0.2,
                 "joint_delta_sign_flip_count": 2,
                 "joint_delta_active_pair_count": 8,
+                "mean_pred_chunk_joint_step_delta": 0.025,
+                "max_pred_chunk_joint_step_delta": 0.11,
+                "mean_pred_chunk_joint_step_accel": 0.012,
+                "max_pred_chunk_joint_step_accel": 0.045,
+                "mean_pred_chunk_joint_accel_to_delta_ratio": 0.48,
+                "max_pred_chunk_joint_accel_to_delta_ratio": 0.41,
+                "pred_chunk_joint_delta_sign_flip_frac": 0.15,
+                "mean_model_replan_boundary_joint_jump": 0.018,
+                "max_model_replan_boundary_joint_jump": 0.055,
                 "mean_replan_boundary_joint_jump": 0.015,
                 "max_replan_boundary_joint_jump": 0.05,
                 "env_trace": {
@@ -229,6 +247,11 @@ def test_summarize_sweep_extracts_trace_metrics(tmp_path):
     assert rows[0]["mean_joint_delta_sign_flip_frac"] == 0.2
     assert rows[0]["joint_delta_sign_flip_count"] == 2
     assert rows[0]["joint_delta_active_pair_count"] == 8
+    assert rows[0]["mean_pred_chunk_joint_step_delta"] == 0.025
+    assert rows[0]["max_pred_chunk_joint_step_accel"] == 0.045
+    assert rows[0]["mean_pred_chunk_joint_accel_to_delta_ratio"] == 0.48
+    assert rows[0]["pred_chunk_joint_delta_sign_flip_frac"] == 0.15
+    assert rows[0]["max_model_replan_boundary_joint_jump"] == 0.055
     assert rows[0]["max_pre_blend_replan_boundary_joint_jump"] == 0.05
     assert rows[0]["max_pre_ensemble_replan_boundary_joint_jump"] == 0.05
     assert rows[0]["mean_temporal_ensemble_correction_joint"] == 0.0
@@ -251,6 +274,11 @@ def test_summarize_sweep_extracts_trace_metrics(tmp_path):
     assert rows[1]["mean_joint_delta_sign_flip_frac"] == 0.4
     assert rows[1]["joint_delta_sign_flip_count"] == 6
     assert rows[1]["joint_delta_active_pair_count"] == 12
+    assert rows[1]["mean_pred_chunk_joint_step_delta"] == 0.05
+    assert rows[1]["max_pred_chunk_joint_step_accel"] == 0.16
+    assert rows[1]["mean_pred_chunk_joint_accel_to_delta_ratio"] == 0.8
+    assert rows[1]["pred_chunk_joint_delta_sign_flip_frac"] == 0.45
+    assert rows[1]["max_model_replan_boundary_joint_jump"] == 0.11
     assert rows[1]["max_replan_boundary_joint_jump"] == 0.09
     assert rows[1]["mean_pre_blend_replan_boundary_joint_jump"] == 0.08
     assert rows[1]["max_pre_blend_replan_boundary_joint_jump"] == 0.22

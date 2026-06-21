@@ -98,7 +98,11 @@ The H100 droidwidth eval template also sweeps `--joint-target-accel-limit`
 over `0` and `0.08` by default. This is eval-only second-order smoothing for
 testing whether action amplification is causing high-frequency target reversals;
 the action dump summary reports both acceleration/delta ratios and the
-acceleration-limiter correction magnitude.
+acceleration-limiter correction magnitude. The analyzer also separates raw
+model-output jitter from execution smoothing: `pred_accel_ratio` and
+`pred_flip` are computed inside predicted chunks, while `model_boundary`
+compares each new chunk's first joint target to the last command from the
+previous chunk.
 
 New gamma training checkpoints include `experiment_cfg/runtime_provenance.json`,
 and the droidwidth closed-loop eval manifests surface checkpoint code commit,

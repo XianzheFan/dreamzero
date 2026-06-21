@@ -232,6 +232,33 @@ def summarize_setting(setting_dir: str) -> dict[str, Any]:
                 "joint_delta_active_pair_count": summary.get(
                     "joint_delta_active_pair_count"
                 ),
+                "mean_pred_chunk_joint_step_delta": _float_or_none(
+                    summary.get("mean_pred_chunk_joint_step_delta")
+                ),
+                "max_pred_chunk_joint_step_delta": _float_or_none(
+                    summary.get("max_pred_chunk_joint_step_delta")
+                ),
+                "mean_pred_chunk_joint_step_accel": _float_or_none(
+                    summary.get("mean_pred_chunk_joint_step_accel")
+                ),
+                "max_pred_chunk_joint_step_accel": _float_or_none(
+                    summary.get("max_pred_chunk_joint_step_accel")
+                ),
+                "mean_pred_chunk_joint_accel_to_delta_ratio": _float_or_none(
+                    summary.get("mean_pred_chunk_joint_accel_to_delta_ratio")
+                ),
+                "max_pred_chunk_joint_accel_to_delta_ratio": _float_or_none(
+                    summary.get("max_pred_chunk_joint_accel_to_delta_ratio")
+                ),
+                "pred_chunk_joint_delta_sign_flip_frac": _float_or_none(
+                    summary.get("pred_chunk_joint_delta_sign_flip_frac")
+                ),
+                "mean_model_replan_boundary_joint_jump": _float_or_none(
+                    summary.get("mean_model_replan_boundary_joint_jump")
+                ),
+                "max_model_replan_boundary_joint_jump": _float_or_none(
+                    summary.get("max_model_replan_boundary_joint_jump")
+                ),
                 "mean_replan_boundary_joint_jump": _float_or_none(
                     summary.get("mean_replan_boundary_joint_jump")
                 ),
@@ -437,10 +464,14 @@ def print_table(rows: list[dict[str, Any]]) -> None:
         ("R_grasp", "right_grasp_episodes"),
         ("joint_mean", "mean_joint_step_delta"),
         ("joint_max", "max_joint_step_delta"),
+        ("pred_joint", "mean_pred_chunk_joint_step_delta"),
         ("accel_mean", "mean_joint_step_accel"),
         ("accel_ratio", "mean_joint_accel_to_delta_ratio"),
+        ("pred_accel_ratio", "mean_pred_chunk_joint_accel_to_delta_ratio"),
         ("flip_frac", "joint_delta_sign_flip_frac"),
+        ("pred_flip", "pred_chunk_joint_delta_sign_flip_frac"),
         ("boundary_max", "max_replan_boundary_joint_jump"),
+        ("model_boundary", "max_model_replan_boundary_joint_jump"),
         ("accel_lim", "target_accel_limit"),
         ("accel_corr", "mean_accel_limiter_correction_joint"),
         ("preblend_max", "max_pre_blend_replan_boundary_joint_jump"),

@@ -207,6 +207,21 @@ def summarize_eval_root(root: Path) -> dict[str, Any]:
         "mean_joint_delta_sign_flip_frac": best.get(
             "mean_joint_delta_sign_flip_frac"
         ),
+        "mean_pred_chunk_joint_step_delta": best.get(
+            "mean_pred_chunk_joint_step_delta"
+        ),
+        "mean_pred_chunk_joint_step_accel": best.get(
+            "mean_pred_chunk_joint_step_accel"
+        ),
+        "mean_pred_chunk_joint_accel_to_delta_ratio": best.get(
+            "mean_pred_chunk_joint_accel_to_delta_ratio"
+        ),
+        "pred_chunk_joint_delta_sign_flip_frac": best.get(
+            "pred_chunk_joint_delta_sign_flip_frac"
+        ),
+        "max_model_replan_boundary_joint_jump": best.get(
+            "max_model_replan_boundary_joint_jump"
+        ),
         "mean_accel_limiter_correction_joint": best.get(
             "mean_accel_limiter_correction_joint"
         ),
@@ -293,9 +308,12 @@ TABLE_COLUMNS = [
     ("joint_mean", "mean_joint_step_delta"),
     ("joint_max", "max_joint_step_delta"),
     ("accel_ratio", "mean_joint_accel_to_delta_ratio"),
+    ("pred_accel", "mean_pred_chunk_joint_accel_to_delta_ratio"),
     ("flip_frac", "joint_delta_sign_flip_frac"),
+    ("pred_flip", "pred_chunk_joint_delta_sign_flip_frac"),
     ("accel_corr", "mean_accel_limiter_correction_joint"),
     ("boundary", "max_replan_boundary_joint_jump"),
+    ("model_boundary", "max_model_replan_boundary_joint_jump"),
     ("raw_sat", "raw_joint_saturation_frac"),
     ("raw_sat_L", "raw_joint_saturation_frac_left"),
     ("raw_sat_R", "raw_joint_saturation_frac_right"),

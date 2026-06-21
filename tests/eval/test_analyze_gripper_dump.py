@@ -30,6 +30,10 @@ def test_analyze_episode_reports_joint_jitter_metrics(tmp_path):
     exec_action_pre_slew[3, :7] = 1.0
     exec_action_pre_slew[3, 8:15] = 1.0
     pred_chunk = np.zeros((2, 3, 16), dtype=np.float32)
+    pred_chunk[0, :, :7] = np.asarray([0.0, 0.2, 0.0], dtype=np.float32)[:, None]
+    pred_chunk[0, :, 8:15] = pred_chunk[0, :, :7]
+    pred_chunk[1, :, :7] = np.asarray([0.4, 0.1, 0.5], dtype=np.float32)[:, None]
+    pred_chunk[1, :, 8:15] = pred_chunk[1, :, :7]
     obs_qpos = np.zeros((2, 16), dtype=np.float32)
     action_norm_raw = np.zeros((2, 3, 16), dtype=np.float32)
     action_norm_raw[:, :, 0] = 1.5
@@ -71,8 +75,18 @@ def test_analyze_episode_reports_joint_jitter_metrics(tmp_path):
     assert episode["joint_delta_sign_flip_count"] == 0
     assert episode["joint_delta_active_pair_count"] > 0
     assert np.isclose(episode["max_replan_boundary_joint_jump"], 0.6)
+    assert np.isclose(episode["max_model_replan_boundary_joint_jump"], 0.2)
+    assert episode["mean_pred_chunk_joint_step_delta"] > 0.0
+    assert episode["max_pred_chunk_joint_step_accel"] > 0.0
+    assert episode["mean_pred_chunk_joint_accel_to_delta_ratio"] > 0.0
+    assert episode["pred_chunk_joint_delta_sign_flip_frac"] == 1.0
+    assert episode["pred_chunk_joint_delta_sign_flip_count"] == 28
+    assert episode["pred_chunk_joint_delta_active_pair_count"] == 28
     assert "exec_joint_step_accel" in episode["joint_debug"]
     assert "replan_boundary_joint_jump" in episode["joint_debug"]
+    assert "model_replan_boundary_joint_jump" in episode["joint_debug"]
+    assert "pred_chunk_joint_step_delta" in episode["joint_debug"]
+    assert "pred_chunk_joint_step_accel" in episode["joint_debug"]
     assert "pre_blend_replan_boundary_joint_jump" in episode["joint_debug"]
     assert "pre_ensemble_replan_boundary_joint_jump" in episode["joint_debug"]
     assert "temporal_ensemble_correction_joint" in episode["joint_debug"]
