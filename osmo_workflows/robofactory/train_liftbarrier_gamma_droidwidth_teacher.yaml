@@ -948,6 +948,14 @@ workflow:
               export WANDB_RUN_ID="$RUN_NAME"
               mkdir -p "$OUTPUT_DIR"
 
+              if [ "$USE_SPARSE_HUB_ATTENTION" = "false" ] && \
+                 [ "$GLOBAL_VIDEO_ATTENTION_MODE" != "bidirectional" ] && \
+                 ! is_truthy "${ALLOW_NONBIDIRECTIONAL_TEACHER:-false}"; then
+                echo "ERROR: droidwidth teacher requires GLOBAL_VIDEO_ATTENTION_MODE=bidirectional; got ${GLOBAL_VIDEO_ATTENTION_MODE}." >&2
+                echo "Set ALLOW_NONBIDIRECTIONAL_TEACHER=true only for explicit ablations." >&2
+                exit 66
+              fi
+
               echo "Launching DreamZero RoboFactory LiftBarrier staged Gamma training: ${stage_label}"
               echo "BASE_RUN_NAME=$BASE_RUN_NAME"
               echo "STAGE_LABEL=$stage_label"
