@@ -29,16 +29,21 @@ workflow:
         NO_NUCLEUS: "Y"
       exitActions:
         RESCHEDULE: 3001
-      args: ["/tmp/train_liftbarrier_shared_global.sh"]
+      args: ["/tmp/train_liftbarrier_gamma_staged.sh"]
       files:
-        - path: /tmp/train_liftbarrier_shared_global.sh
+        - path: /tmp/train_liftbarrier_gamma_staged.sh
           contents: |
             #!/usr/bin/env bash
             set -euo pipefail
 
-            exec > >(tee /tmp/train_liftbarrier_shared_global.log) 2>&1
+            exec > >(tee /tmp/train_liftbarrier_gamma_staged.log) 2>&1
 
-            RUN_NAME="${RUN_NAME:-{{run_name}}}"
+            BASE_RUN_NAME="${RUN_NAME:-{{run_name}}}"
+            RUN_NAME="$BASE_RUN_NAME"
+            STAGE1_RUN_NAME="${STAGE1_RUN_NAME:-${BASE_RUN_NAME}-dense-teacher}"
+            STAGE2_RUN_NAME="${STAGE2_RUN_NAME:-${BASE_RUN_NAME}-sparse-student}"
+            STAGE1_MAX_STEPS="${STAGE1_MAX_STEPS:-{{stage1_max_steps}}}"
+            STAGE2_MAX_STEPS="${STAGE2_MAX_STEPS:-{{stage2_max_steps}}}"
             RESTORE_RUN_NAME="${RESTORE_RUN_NAME:-{{restore_run_name}}}"
             CODE_S3_URI="${CODE_S3_URI:-{{code_s3_uri}}}"
             EXPECTED_CODE_COMMIT="${EXPECTED_CODE_COMMIT:-{{expected_code_commit}}}"
@@ -46,7 +51,9 @@ workflow:
             EXPECTED_DATA_EPISODES="${EXPECTED_DATA_EPISODES:-{{expected_data_episodes}}}"
             DATA_S3_URI="${DATA_S3_URI:-{{data_s3_uri}}}"
             MODEL_CACHE_S3_URI="s3://GearHome/users/xianzhef/oci-migration/checkpoints"
-            RUN_S3_ROOT="s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/${RUN_NAME}"
+            BASE_RUN_S3_ROOT="s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/${BASE_RUN_NAME}"
+            BASE_LOG_S3_URI="${BASE_RUN_S3_ROOT}/logs"
+            RUN_S3_ROOT="$BASE_RUN_S3_ROOT"
             OUTPUT_S3_URI="${RUN_S3_ROOT}/checkpoints"
             LOG_S3_URI="${RUN_S3_ROOT}/logs"
             CACHE_OUTPUT_S3_URI="${CACHE_OUTPUT_S3_URI:-s3://GearHome/users/xianzhef/oci-migration/dreamzero_s3cache/bootstrap_checkpoints/${RUN_NAME}}"
@@ -80,7 +87,10 @@ workflow:
                 wait "$PERIODIC_UPLOADER_PID" 2>/dev/null || true
               fi
               echo "Training workflow exit status: $status"
-              osmo data upload "${LOG_S3_URI}/" /tmp/train_liftbarrier_shared_global.log
+              osmo data upload "${BASE_LOG_S3_URI}/" /tmp/train_liftbarrier_gamma_staged.log || true
+              if [ -n "${LOG_S3_URI:-}" ]; then
+                osmo data upload "${LOG_S3_URI}/" /tmp/train_liftbarrier_gamma_staged.log || true
+              fi
               if declare -f upload_checkpoints_once >/dev/null 2>&1; then
                 upload_checkpoints_once || true
               fi
@@ -428,7 +438,6 @@ workflow:
             export NUM_ARMS=2
             export SHARED_GLOBAL=1
             export DATASET_SHARD_SAMPLING_RATE="${DATASET_SHARD_SAMPLING_RATE:-1.0}"
-            export MAX_STEPS="${MAX_STEPS:-{{max_steps}}}"
             export BATCH_SIZE=1
             export SAVE_STEPS="${SAVE_STEPS:-{{save_steps}}}"
             export SAVE_TOTAL_LIMIT="${SAVE_TOTAL_LIMIT:-{{save_total_limit}}}"
@@ -459,18 +468,18 @@ workflow:
             export GLOBAL_VIDEO_DROPOUT_PROB="${GLOBAL_VIDEO_DROPOUT_PROB:-0.1}"
             export GLOBAL_VIDEO_TIMESTEP_MODE="${GLOBAL_VIDEO_TIMESTEP_MODE:-clean}"
             export GLOBAL_VIDEO_ATTENTION_MODE="${GLOBAL_VIDEO_ATTENTION_MODE:-read_only}"
-            export USE_SPARSE_HUB_ATTENTION="${USE_SPARSE_HUB_ATTENTION:-true}"
             export REPORT_TO=wandb
             export WANDB_PROJECT=dreamzero_robofactory
-            export WANDB_RUN_NAME="$RUN_NAME"
-            export WANDB_RUN_ID="$RUN_NAME"
             export DATALOADER_NUM_WORKERS=4
             export ROBOFACTORY_DATA_ROOT="$DATA_ROOT"
-            export OUTPUT_DIR="/workspace/outputs/robofactory_liftbarrier_shared_global_binary"
+            export BASE_OUTPUT_DIR="${BASE_OUTPUT_DIR:-/workspace/outputs/robofactory_liftbarrier_gamma_staged}"
+            export STAGE1_OUTPUT_DIR="${STAGE1_OUTPUT_DIR:-${BASE_OUTPUT_DIR}/dense_teacher}"
+            export STAGE2_OUTPUT_DIR="${STAGE2_OUTPUT_DIR:-${BASE_OUTPUT_DIR}/sparse_student}"
+            export OUTPUT_DIR="${BASE_OUTPUT_DIR}/bootstrap"
             export WAN_CKPT_DIR
             export TOKENIZER_DIR
             export PRETRAINED_DIR
-            mkdir -p "$OUTPUT_DIR"
+            mkdir -p "$BASE_OUTPUT_DIR" "$OUTPUT_DIR"
 
             stage_checkpoints_for_upload() {
               stage_root="/workspace/rf_checkpoint_upload"
@@ -521,7 +530,8 @@ workflow:
               while true; do
                 sleep "$CHECKPOINT_UPLOAD_INTERVAL_SECONDS" || break
                 echo "Periodic checkpoint upload tick: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-                osmo data upload "${LOG_S3_URI}/" /tmp/train_liftbarrier_shared_global.log || true
+                osmo data upload "${BASE_LOG_S3_URI}/" /tmp/train_liftbarrier_gamma_staged.log || true
+                osmo data upload "${LOG_S3_URI}/" /tmp/train_liftbarrier_gamma_staged.log || true
                 upload_checkpoints_once || true
               done
             }
@@ -570,15 +580,86 @@ workflow:
               return 0
             }
 
-            if [ -n "$RESTORE_CACHE_S3_URI" ] || [ -n "$RESTORE_S3_URI" ]; then
-              restore_checkpoints_from_s3 "$RESTORE_CACHE_S3_URI" "restore_cache" || \
-                restore_checkpoints_from_s3 "$RESTORE_S3_URI" "restore_primary" || \
-                echo "No previous checkpoints restored; training will start fresh."
-            else
-              echo "No restore run configured; training will start fresh."
+            latest_complete_checkpoint() {
+              search_root="$1"
+              latest=""
+              while IFS= read -r ckpt_dir; do
+                [ -n "$ckpt_dir" ] || continue
+                if is_complete_resume_checkpoint "$ckpt_dir"; then
+                  latest="$ckpt_dir"
+                fi
+              done < <(find "$search_root" -maxdepth 1 -type d -name 'checkpoint-*' | sort -V)
+              if [ -n "$latest" ]; then
+                printf '%s\n' "$latest"
+                return 0
+              fi
+              return 1
+            }
+
+            configure_stage_paths() {
+              stage_run_name="$1"
+              RUN_NAME="$stage_run_name"
+              RUN_S3_ROOT="s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/${RUN_NAME}"
+              OUTPUT_S3_URI="${RUN_S3_ROOT}/checkpoints"
+              LOG_S3_URI="${RUN_S3_ROOT}/logs"
+              CACHE_OUTPUT_S3_URI="s3://GearHome/users/xianzhef/oci-migration/dreamzero_s3cache/bootstrap_checkpoints/${RUN_NAME}"
+            }
+
+            run_training_stage() {
+              stage_label="$1"
+              stage_run_name="$2"
+              stage_max_steps="$3"
+              sparse_hub="$4"
+              stage_pretrained_dir="$5"
+              stage_output_dir="$6"
+
+              configure_stage_paths "$stage_run_name"
+              export MAX_STEPS="$stage_max_steps"
+              export USE_SPARSE_HUB_ATTENTION="$sparse_hub"
+              export PRETRAINED_DIR="$stage_pretrained_dir"
+              export OUTPUT_DIR="$stage_output_dir"
+              export WANDB_RUN_NAME="$RUN_NAME"
+              export WANDB_RUN_ID="$RUN_NAME"
+              mkdir -p "$OUTPUT_DIR"
+
+              echo "Launching DreamZero RoboFactory LiftBarrier staged Gamma training: ${stage_label}"
+              echo "BASE_RUN_NAME=$BASE_RUN_NAME"
+              echo "STAGE_LABEL=$stage_label"
+              echo "RUN_NAME=$RUN_NAME"
+              echo "DATA_VARIANT=$DATA_VARIANT"
+              echo "DATA_ROOT=$DATA_ROOT"
+              echo "DATASET_SHARD_SAMPLING_RATE=$DATASET_SHARD_SAMPLING_RATE"
+              echo "OUTPUT_DIR=$OUTPUT_DIR"
+              echo "OUTPUT_S3_URI=$OUTPUT_S3_URI"
+              echo "CACHE_OUTPUT_S3_URI=$CACHE_OUTPUT_S3_URI"
+              echo "PRETRAINED_DIR=$PRETRAINED_DIR"
+              echo "MAX_STEPS=$MAX_STEPS"
+              echo "GRIPPER_ACTION_DIMS=$GRIPPER_ACTION_DIMS"
+              echo "GRIPPER_BINARY_ACTION_LOSS_WEIGHT=$GRIPPER_BINARY_ACTION_LOSS_WEIGHT"
+              echo "GRIPPER_BINARY_CLOSE_ACTION_LOSS_WEIGHT=$GRIPPER_BINARY_CLOSE_ACTION_LOSS_WEIGHT"
+              echo "GRIPPER_BINARY_LOGIT_SCALE=$GRIPPER_BINARY_LOGIT_SCALE"
+              echo "GRIPPER_BINARY_MAX_SIGMA=$GRIPPER_BINARY_MAX_SIGMA"
+              echo "FIRST_CLOSE_JOINT_LOSS_WEIGHT=$FIRST_CLOSE_JOINT_LOSS_WEIGHT"
+              echo "FIRST_CLOSE_JOINT_LOSS_WINDOW_BEFORE=$FIRST_CLOSE_JOINT_LOSS_WINDOW_BEFORE"
+              echo "FIRST_CLOSE_JOINT_LOSS_WINDOW_AFTER=$FIRST_CLOSE_JOINT_LOSS_WINDOW_AFTER"
+              echo "ROPE_AGENT_DIM=$ROPE_AGENT_DIM"
+              echo "MULTI_AGENT_SHUFFLE_AGENTS=$MULTI_AGENT_SHUFFLE_AGENTS"
+              echo "MULTI_AGENT_SAMPLE_AGENT_POOL=$MULTI_AGENT_SAMPLE_AGENT_POOL"
+              echo "GLOBAL_VIDEO_DROPOUT_PROB=$GLOBAL_VIDEO_DROPOUT_PROB"
+              echo "GLOBAL_VIDEO_TIMESTEP_MODE=$GLOBAL_VIDEO_TIMESTEP_MODE"
+              echo "GLOBAL_VIDEO_ATTENTION_MODE=$GLOBAL_VIDEO_ATTENTION_MODE"
+              echo "USE_SPARSE_HUB_ATTENTION=$USE_SPARSE_HUB_ATTENTION"
+              echo "Checkpoints available before ${stage_label}:"
+              find "$OUTPUT_DIR" -maxdepth 1 -type d -name 'checkpoint-*' -print | sort -V || true
+
+              bash scripts/train/robofactory_bimanual_training.sh
+              osmo data upload "${LOG_S3_URI}/" /tmp/train_liftbarrier_gamma_staged.log || true
+              upload_checkpoints_once
+            }
+
+            if [ -n "$RESTORE_RUN_NAME" ]; then
+              echo "RESTORE_RUN_NAME is ignored by the staged workflow; stage1 starts from DreamZero-DROID and stage2 starts from stage1."
             fi
-            echo "Checkpoints available before training:"
-            find "$OUTPUT_DIR" -maxdepth 1 -type d -name 'checkpoint-*' -print | sort || true
 
             periodic_checkpoint_upload &
             PERIODIC_UPLOADER_PID=$!
@@ -586,41 +667,43 @@ workflow:
 
             require_wandb
 
-            echo "Launching DreamZero RoboFactory LiftBarrier shared-global binary-gripper training"
-            echo "DATA_VARIANT=$DATA_VARIANT"
-            echo "DATA_ROOT=$DATA_ROOT"
-            echo "DATASET_SHARD_SAMPLING_RATE=$DATASET_SHARD_SAMPLING_RATE"
-            echo "OUTPUT_DIR=$OUTPUT_DIR"
-            echo "OUTPUT_S3_URI=$OUTPUT_S3_URI"
-            echo "CACHE_OUTPUT_S3_URI=$CACHE_OUTPUT_S3_URI"
-            echo "RESTORE_RUN_NAME=$RESTORE_RUN_NAME"
-            echo "GRIPPER_ACTION_DIMS=$GRIPPER_ACTION_DIMS"
-            echo "GRIPPER_BINARY_ACTION_LOSS_WEIGHT=$GRIPPER_BINARY_ACTION_LOSS_WEIGHT"
-            echo "GRIPPER_BINARY_CLOSE_ACTION_LOSS_WEIGHT=$GRIPPER_BINARY_CLOSE_ACTION_LOSS_WEIGHT"
-            echo "GRIPPER_BINARY_LOGIT_SCALE=$GRIPPER_BINARY_LOGIT_SCALE"
-            echo "GRIPPER_BINARY_MAX_SIGMA=$GRIPPER_BINARY_MAX_SIGMA"
-            echo "FIRST_CLOSE_JOINT_LOSS_WEIGHT=$FIRST_CLOSE_JOINT_LOSS_WEIGHT"
-            echo "FIRST_CLOSE_JOINT_LOSS_WINDOW_BEFORE=$FIRST_CLOSE_JOINT_LOSS_WINDOW_BEFORE"
-            echo "FIRST_CLOSE_JOINT_LOSS_WINDOW_AFTER=$FIRST_CLOSE_JOINT_LOSS_WINDOW_AFTER"
-            echo "ROPE_AGENT_DIM=$ROPE_AGENT_DIM"
-            echo "MULTI_AGENT_SHUFFLE_AGENTS=$MULTI_AGENT_SHUFFLE_AGENTS"
-            echo "MULTI_AGENT_SAMPLE_AGENT_POOL=$MULTI_AGENT_SAMPLE_AGENT_POOL"
-            echo "GLOBAL_VIDEO_DROPOUT_PROB=$GLOBAL_VIDEO_DROPOUT_PROB"
-            echo "GLOBAL_VIDEO_TIMESTEP_MODE=$GLOBAL_VIDEO_TIMESTEP_MODE"
-            echo "GLOBAL_VIDEO_ATTENTION_MODE=$GLOBAL_VIDEO_ATTENTION_MODE"
-            echo "USE_SPARSE_HUB_ATTENTION=$USE_SPARSE_HUB_ATTENTION"
-            bash scripts/train/robofactory_bimanual_training.sh
+            DREAMZERO_DROID_PRETRAINED_DIR="$PRETRAINED_DIR"
+            run_training_stage \
+              "dense-teacher-style" \
+              "$STAGE1_RUN_NAME" \
+              "$STAGE1_MAX_STEPS" \
+              "false" \
+              "$DREAMZERO_DROID_PRETRAINED_DIR" \
+              "$STAGE1_OUTPUT_DIR"
+
+            STAGE1_CKPT="$(latest_complete_checkpoint "$STAGE1_OUTPUT_DIR" || true)"
+            if [ -z "$STAGE1_CKPT" ]; then
+              echo "ERROR: stage1 did not produce a complete checkpoint." >&2
+              exit 9
+            fi
+            echo "Stage1 complete checkpoint selected for stage2 warm-start: $STAGE1_CKPT"
+
+            run_training_stage \
+              "sparse-causal-student-style" \
+              "$STAGE2_RUN_NAME" \
+              "$STAGE2_MAX_STEPS" \
+              "true" \
+              "$STAGE1_CKPT" \
+              "$STAGE2_OUTPUT_DIR"
+
+            echo "Staged Gamma training complete."
 
 default-values:
-  workflow_name: dz-rf-sg-gammactx-lb500-50k-scratch-xianzhef-20260621
-  run_name: dz-rf-sg-gammactx-lb500-50k-scratch-xianzhef-20260621
+  workflow_name: dz-rf-sg-gamma-staged-lb500-xianzhef-20260621
+  run_name: dz-rf-sg-gamma-staged-lb500-xianzhef-20260621
   restore_run_name: ""
   code_s3_uri: swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_gamma_dense_teacher_20260621
   expected_code_commit: "69508a3588c10be56d66c9ba7c2d308413001194"
   data_variant: LiftBarrier-rf-500
   expected_data_episodes: "500"
   data_s3_uri: s3://GearHome/users/xianzhef/oci-migration/data/robofactory_lerobot_v2/LiftBarrier-rf-500
-  max_steps: "50000"
+  stage1_max_steps: "10000"
+  stage2_max_steps: "50000"
   save_steps: "500"
   save_total_limit: "4"
   learning_rate: "1e-5"

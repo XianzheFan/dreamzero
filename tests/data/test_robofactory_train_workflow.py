@@ -5,7 +5,9 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW_PATH = REPO_ROOT / "osmo_workflows/robofactory/train_liftbarrier_shared_global.yaml"
-CODE_CACHE_URI = "swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_gamma_conditioning_20260621"
+STAGED_WORKFLOW_PATH = REPO_ROOT / "osmo_workflows/robofactory/train_liftbarrier_gamma_staged.yaml"
+CODE_CACHE_URI = "swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_gamma_dense_teacher_20260621"
+EXPECTED_CODE_COMMIT = "69508a3588c10be56d66c9ba7c2d308413001194"
 
 
 def _task_by_name(workflow, name):
@@ -38,7 +40,7 @@ def test_liftbarrier_train_workflow_defaults_to_cached_code_and_500_episode_data
     assert defaults["run_name"] == "dz-rf-sg-gammactx-lb500-50k-scratch-xianzhef-20260621"
     assert defaults["restore_run_name"] == ""
     assert defaults["code_s3_uri"] == CODE_CACHE_URI
-    assert defaults["expected_code_commit"] == "217502da24fd614210e201f421e46a8151880caa"
+    assert defaults["expected_code_commit"] == EXPECTED_CODE_COMMIT
     assert defaults["data_variant"] == "LiftBarrier-rf-500"
     assert defaults["expected_data_episodes"] == "500"
     assert defaults["data_s3_uri"] == (
@@ -191,3 +193,52 @@ def test_liftbarrier_train_workflow_embedded_python_blocks_compile():
     assert len(heredocs) == 3
     for block in heredocs:
         compile(block, f"{WORKFLOW_PATH}:embedded-python", "exec")
+
+
+def test_liftbarrier_gamma_staged_workflow_runs_dense_teacher_then_sparse_student():
+    with STAGED_WORKFLOW_PATH.open() as f:
+        workflow = yaml.safe_load(f)
+
+    defaults = workflow["default-values"]
+    assert defaults["workflow_name"] == "dz-rf-sg-gamma-staged-lb500-xianzhef-20260621"
+    assert defaults["run_name"] == "dz-rf-sg-gamma-staged-lb500-xianzhef-20260621"
+    assert defaults["restore_run_name"] == ""
+    assert defaults["code_s3_uri"] == CODE_CACHE_URI
+    assert defaults["expected_code_commit"] == EXPECTED_CODE_COMMIT
+    assert defaults["stage1_max_steps"] == "10000"
+    assert defaults["stage2_max_steps"] == "50000"
+
+    script = _task_by_name(workflow, "train")["files"][0]["contents"]
+    for marker in (
+        'BASE_RUN_NAME="${RUN_NAME:-{{run_name}}}"',
+        'STAGE1_RUN_NAME="${STAGE1_RUN_NAME:-${BASE_RUN_NAME}-dense-teacher}"',
+        'STAGE2_RUN_NAME="${STAGE2_RUN_NAME:-${BASE_RUN_NAME}-sparse-student}"',
+        'STAGE1_MAX_STEPS="${STAGE1_MAX_STEPS:-{{stage1_max_steps}}}"',
+        'STAGE2_MAX_STEPS="${STAGE2_MAX_STEPS:-{{stage2_max_steps}}}"',
+        'export STAGE1_OUTPUT_DIR="${STAGE1_OUTPUT_DIR:-${BASE_OUTPUT_DIR}/dense_teacher}"',
+        'export STAGE2_OUTPUT_DIR="${STAGE2_OUTPUT_DIR:-${BASE_OUTPUT_DIR}/sparse_student}"',
+        "latest_complete_checkpoint()",
+        'sort -V',
+        'export PRETRAINED_DIR="$stage_pretrained_dir"',
+        '"dense-teacher-style"',
+        '"false"',
+        '"sparse-causal-student-style"',
+        '"true"',
+        'STAGE1_CKPT="$(latest_complete_checkpoint "$STAGE1_OUTPUT_DIR" || true)"',
+        'Stage1 complete checkpoint selected for stage2 warm-start',
+        'RESTORE_RUN_NAME is ignored by the staged workflow',
+        'osmo data upload "${BASE_LOG_S3_URI}/" /tmp/train_liftbarrier_gamma_staged.log',
+        "Staged Gamma training complete.",
+    ):
+        assert marker in script
+
+
+def test_liftbarrier_gamma_staged_workflow_embedded_python_blocks_compile():
+    with STAGED_WORKFLOW_PATH.open() as f:
+        workflow = yaml.safe_load(f)
+
+    script = _task_by_name(workflow, "train")["files"][0]["contents"]
+    heredocs = _python_heredocs(script)
+    assert len(heredocs) == 3
+    for block in heredocs:
+        compile(block, f"{STAGED_WORKFLOW_PATH}:embedded-python", "exec")
