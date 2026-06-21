@@ -747,6 +747,14 @@ class BaseExperiment(ABC):
 
     def create_model(self, cfg, training_args):
         model = instantiate(cfg.model)
+        pretrained_lora_path = getattr(cfg, "pretrained_lora_path", None)
+        if isinstance(pretrained_lora_path, str) and pretrained_lora_path.lower() in ("", "none", "null"):
+            pretrained_lora_path = None
+        if pretrained_lora_path is not None and cfg.pretrained_model_path is None:
+            raise ValueError(
+                "pretrained_lora_path requires pretrained_model_path so LoRA weights "
+                "are applied on top of a real pretrained backbone, not a random model."
+            )
 
         if cfg.pretrained_model_path is not None:
             mprint(f"Loading pretrained weights from: {cfg.pretrained_model_path}")
@@ -877,6 +885,14 @@ class BaseExperiment(ABC):
                     mprint(f"  ... and {len(dropped_mismatched) - 10} more")
 
             mprint("Successfully loaded pretrained weights")
+
+        if pretrained_lora_path is not None:
+            if not hasattr(model, "load_lora_weight"):
+                raise AttributeError(
+                    f"{type(model).__name__} does not support loading pretrained_lora_path."
+                )
+            mprint(f"Loading pretrained LoRA overlay from: {pretrained_lora_path}")
+            model.load_lora_weight(pretrained_lora_path)
 
         model.config.resume_path = model.config._name_or_path = training_args.output_dir
         mprint(f"{model}\n")

@@ -760,14 +760,16 @@ workflow:
               stage_max_steps="$3"
               sparse_hub="$4"
               stage_pretrained_dir="$5"
-              stage_output_dir="$6"
-              stage_loss_prefix="$7"
+              stage_lora_dir="$6"
+              stage_output_dir="$7"
+              stage_loss_prefix="$8"
 
               configure_stage_paths "$stage_run_name"
               configure_stage_loss_weights "$stage_loss_prefix"
               export MAX_STEPS="$stage_max_steps"
               export USE_SPARSE_HUB_ATTENTION="$sparse_hub"
               export PRETRAINED_DIR="$stage_pretrained_dir"
+              export PRETRAINED_LORA_DIR="$stage_lora_dir"
               export OUTPUT_DIR="$stage_output_dir"
               export WANDB_RUN_NAME="$RUN_NAME"
               export WANDB_RUN_ID="$RUN_NAME"
@@ -784,6 +786,7 @@ workflow:
               echo "OUTPUT_S3_URI=$OUTPUT_S3_URI"
               echo "CACHE_OUTPUT_S3_URI=$CACHE_OUTPUT_S3_URI"
               echo "PRETRAINED_DIR=$PRETRAINED_DIR"
+              echo "PRETRAINED_LORA_DIR=$PRETRAINED_LORA_DIR"
               echo "MAX_STEPS=$MAX_STEPS"
               echo "GRIPPER_ACTION_DIMS=$GRIPPER_ACTION_DIMS"
               echo "DYNAMICS_LOSS_WEIGHT=$DYNAMICS_LOSS_WEIGHT"
@@ -842,6 +845,7 @@ workflow:
               "$STAGE1_MAX_STEPS" \
               "false" \
               "$DREAMZERO_DROID_PRETRAINED_DIR" \
+              "" \
               "$STAGE1_OUTPUT_DIR" \
               "stage1"
 
@@ -857,6 +861,7 @@ workflow:
               "$STAGE2_RUN_NAME" \
               "$STAGE2_MAX_STEPS" \
               "true" \
+              "$DREAMZERO_DROID_PRETRAINED_DIR" \
               "$STAGE1_CKPT" \
               "$STAGE2_OUTPUT_DIR" \
               "stage2"

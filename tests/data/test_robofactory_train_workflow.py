@@ -251,12 +251,14 @@ def test_liftbarrier_gamma_staged_workflow_runs_dense_teacher_then_sparse_studen
         "latest_complete_checkpoint()",
         'sort -V',
         'export PRETRAINED_DIR="$stage_pretrained_dir"',
+        'export PRETRAINED_LORA_DIR="$stage_lora_dir"',
         "configure_stage_loss_weights()",
         'export DYNAMICS_LOSS_WEIGHT="$STAGE1_DYNAMICS_LOSS_WEIGHT"',
         'export DYNAMICS_LOSS_WEIGHT="$STAGE2_DYNAMICS_LOSS_WEIGHT"',
         'echo "DYNAMICS_LOSS_WEIGHT=$DYNAMICS_LOSS_WEIGHT"',
         'echo "ACTION_LOSS_WEIGHT=$ACTION_LOSS_WEIGHT"',
         'echo "ACTION_DELTA_LOSS_WEIGHT=$ACTION_DELTA_LOSS_WEIGHT"',
+        'echo "PRETRAINED_LORA_DIR=$PRETRAINED_LORA_DIR"',
         'echo "ATTENTION_BACKEND=$ATTENTION_BACKEND"',
         "start_periodic_checkpoint_upload()",
         "stop_periodic_checkpoint_upload()",
@@ -294,6 +296,13 @@ def test_liftbarrier_gamma_staged_workflow_runs_dense_teacher_then_sparse_studen
     assert 'cp -a "${ckpt_dir}/." "${stage_dir}/${ckpt_name}/"' not in script
     assert 'cp -an "${resolved}/." "$dest/"' in script
     assert "mv -n -t" not in script
+
+    stage2_idx = script.index('"sparse-causal-student-style"')
+    stage2_end = script.index('"stage2"', stage2_idx)
+    stage2_block = script[stage2_idx:stage2_end]
+    assert '"$DREAMZERO_DROID_PRETRAINED_DIR"' in stage2_block
+    assert '"$STAGE1_CKPT"' in stage2_block
+    assert stage2_block.index('"$DREAMZERO_DROID_PRETRAINED_DIR"') < stage2_block.index('"$STAGE1_CKPT"')
 
 
 def test_liftbarrier_gamma_staged_workflow_embedded_python_blocks_compile():

@@ -129,5 +129,12 @@ def test_robofactory_training_script_uses_droid_base_head_width_by_default():
     assert "AGENT_ACTION_PAD_DIM=${AGENT_ACTION_PAD_DIM:-null}" not in script
 
 
+def test_robofactory_training_script_supports_separate_lora_warm_start():
+    script = SCRIPT_PATH.read_text()
+
+    assert "PRETRAINED_LORA_DIR=${PRETRAINED_LORA_DIR:-}" in script
+    assert "pretrained_lora_path=${PRETRAINED_LORA_DIR:-null}" in script
+
+
 def test_robofactory_training_script_is_valid_bash():
     subprocess.run(["bash", "-n", str(SCRIPT_PATH)], check=True)
