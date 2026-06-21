@@ -19,6 +19,14 @@ osmo workflow submit osmo_workflows/robofactory/train_liftbarrier_gamma_droidwid
   expected_code_commit=$(git rev-parse HEAD)
 ```
 
+## Staged Gamma Curriculum
+
+The staged LiftBarrier workflow follows the Gamma-World teacher/student split
+more closely than the standalone teacher workflow: stage1 uses dense attention
+with `GLOBAL_VIDEO_ATTENTION_MODE=bidirectional`, while both sparse student
+stages use `GLOBAL_VIDEO_ATTENTION_MODE=read_only` so global video remains
+causal-safe context during policy training.
+
 ## 2k Checkpoint Eval Grid
 
 The droidwidth teacher training workflow saves checkpoints every 2000 optimizer

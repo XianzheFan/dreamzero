@@ -299,6 +299,10 @@ def test_liftbarrier_gamma_staged_workflow_runs_dense_teacher_then_sparse_studen
         'export STAGE2_WARMUP_OUTPUT_DIR="${STAGE2_WARMUP_OUTPUT_DIR:-${BASE_OUTPUT_DIR}/sparse_warmup}"',
         'export STAGE2_OUTPUT_DIR="${STAGE2_OUTPUT_DIR:-${BASE_OUTPUT_DIR}/sparse_student}"',
         'export ATTENTION_BACKEND="${ATTENTION_BACKEND:-flex}"',
+        'export STAGE1_GLOBAL_VIDEO_ATTENTION_MODE="${STAGE1_GLOBAL_VIDEO_ATTENTION_MODE:-${GLOBAL_VIDEO_ATTENTION_MODE:-bidirectional}}"',
+        'export STAGE2_WARMUP_GLOBAL_VIDEO_ATTENTION_MODE="${STAGE2_WARMUP_GLOBAL_VIDEO_ATTENTION_MODE:-${GLOBAL_VIDEO_ATTENTION_MODE:-read_only}}"',
+        'export STAGE2_GLOBAL_VIDEO_ATTENTION_MODE="${STAGE2_GLOBAL_VIDEO_ATTENTION_MODE:-${GLOBAL_VIDEO_ATTENTION_MODE:-read_only}}"',
+        'export GLOBAL_VIDEO_ATTENTION_MODE="$STAGE1_GLOBAL_VIDEO_ATTENTION_MODE"',
         'export STAGE1_SELF_FORCING_TRAIN="${STAGE1_SELF_FORCING_TRAIN:-false}"',
         'export STAGE1_SELF_FORCING_WARMUP_STEPS="${STAGE1_SELF_FORCING_WARMUP_STEPS:-0}"',
         'export STAGE1_SELF_FORCING_FAST_WRITEBACK="${STAGE1_SELF_FORCING_FAST_WRITEBACK:-false}"',
@@ -327,7 +331,9 @@ def test_liftbarrier_gamma_staged_workflow_runs_dense_teacher_then_sparse_studen
         'echo "DYNAMICS_LOSS_WEIGHT=$DYNAMICS_LOSS_WEIGHT"',
         'echo "ACTION_LOSS_WEIGHT=$ACTION_LOSS_WEIGHT"',
         'echo "ACTION_DELTA_LOSS_WEIGHT=$ACTION_DELTA_LOSS_WEIGHT"',
+        'export GLOBAL_VIDEO_ATTENTION_MODE="$stage_global_video_attention_mode"',
         'echo "PRETRAINED_LORA_DIR=$PRETRAINED_LORA_DIR"',
+        'echo "GLOBAL_VIDEO_ATTENTION_MODE=$GLOBAL_VIDEO_ATTENTION_MODE"',
         'echo "ATTENTION_BACKEND=$ATTENTION_BACKEND"',
         'echo "SELF_FORCING_TRAIN=$SELF_FORCING_TRAIN"',
         'echo "SELF_FORCING_WARMUP_STEPS=$SELF_FORCING_WARMUP_STEPS"',
@@ -379,9 +385,15 @@ def test_liftbarrier_gamma_staged_workflow_runs_dense_teacher_then_sparse_studen
     stage2_warmup_block = script[stage2_warmup_idx:stage2_warmup_end]
     assert '"$DREAMZERO_DROID_PRETRAINED_DIR"' in stage2_warmup_block
     assert '"$STAGE1_CKPT"' in stage2_warmup_block
+    assert '"$STAGE2_WARMUP_GLOBAL_VIDEO_ATTENTION_MODE"' in stage2_warmup_block
     assert stage2_warmup_block.index(
         '"$DREAMZERO_DROID_PRETRAINED_DIR"'
     ) < stage2_warmup_block.index('"$STAGE1_CKPT"')
+
+    stage1_idx = script.index('"dense-teacher-style"')
+    stage1_end = script.index('"stage1"', stage1_idx)
+    stage1_block = script[stage1_idx:stage1_end]
+    assert '"$STAGE1_GLOBAL_VIDEO_ATTENTION_MODE"' in stage1_block
 
     stage2_self_forcing_idx = script.index('"sparse-causal-self-forcing-style"')
     stage2_self_forcing_end = script.index(
@@ -393,6 +405,7 @@ def test_liftbarrier_gamma_staged_workflow_runs_dense_teacher_then_sparse_studen
     ]
     assert '"$DREAMZERO_DROID_PRETRAINED_DIR"' in stage2_self_forcing_block
     assert '"$STAGE2_WARMUP_CKPT"' in stage2_self_forcing_block
+    assert '"$STAGE2_GLOBAL_VIDEO_ATTENTION_MODE"' in stage2_self_forcing_block
     assert stage2_self_forcing_block.index(
         '"$DREAMZERO_DROID_PRETRAINED_DIR"'
     ) < stage2_self_forcing_block.index('"$STAGE2_WARMUP_CKPT"')

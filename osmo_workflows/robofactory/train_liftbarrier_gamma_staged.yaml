@@ -567,7 +567,13 @@ workflow:
             export MULTI_AGENT_SAMPLE_AGENT_POOL="${MULTI_AGENT_SAMPLE_AGENT_POOL:-true}"
             export GLOBAL_VIDEO_DROPOUT_PROB="${GLOBAL_VIDEO_DROPOUT_PROB:-0.1}"
             export GLOBAL_VIDEO_TIMESTEP_MODE="${GLOBAL_VIDEO_TIMESTEP_MODE:-clean}"
-            export GLOBAL_VIDEO_ATTENTION_MODE="${GLOBAL_VIDEO_ATTENTION_MODE:-read_only}"
+            # Match Gamma-World's curriculum: a stronger bidirectional teacher
+            # first, then causal-safe student stages that treat global video as
+            # read-only context.
+            export STAGE1_GLOBAL_VIDEO_ATTENTION_MODE="${STAGE1_GLOBAL_VIDEO_ATTENTION_MODE:-${GLOBAL_VIDEO_ATTENTION_MODE:-bidirectional}}"
+            export STAGE2_WARMUP_GLOBAL_VIDEO_ATTENTION_MODE="${STAGE2_WARMUP_GLOBAL_VIDEO_ATTENTION_MODE:-${GLOBAL_VIDEO_ATTENTION_MODE:-read_only}}"
+            export STAGE2_GLOBAL_VIDEO_ATTENTION_MODE="${STAGE2_GLOBAL_VIDEO_ATTENTION_MODE:-${GLOBAL_VIDEO_ATTENTION_MODE:-read_only}}"
+            export GLOBAL_VIDEO_ATTENTION_MODE="$STAGE1_GLOBAL_VIDEO_ATTENTION_MODE"
             export ATTENTION_BACKEND="${ATTENTION_BACKEND:-flex}"
             export STAGE1_SELF_FORCING_TRAIN="${STAGE1_SELF_FORCING_TRAIN:-false}"
             export STAGE1_SELF_FORCING_WARMUP_STEPS="${STAGE1_SELF_FORCING_WARMUP_STEPS:-0}"
@@ -862,15 +868,17 @@ workflow:
               stage_run_name="$2"
               stage_max_steps="$3"
               sparse_hub="$4"
-              stage_pretrained_dir="$5"
-              stage_lora_dir="$6"
-              stage_output_dir="$7"
-              stage_loss_prefix="$8"
+              stage_global_video_attention_mode="$5"
+              stage_pretrained_dir="$6"
+              stage_lora_dir="$7"
+              stage_output_dir="$8"
+              stage_loss_prefix="$9"
 
               configure_stage_paths "$stage_run_name"
               configure_stage_loss_weights "$stage_loss_prefix"
               export MAX_STEPS="$stage_max_steps"
               export USE_SPARSE_HUB_ATTENTION="$sparse_hub"
+              export GLOBAL_VIDEO_ATTENTION_MODE="$stage_global_video_attention_mode"
               export PRETRAINED_DIR="$stage_pretrained_dir"
               export PRETRAINED_LORA_DIR="$stage_lora_dir"
               export OUTPUT_DIR="$stage_output_dir"
@@ -951,6 +959,7 @@ workflow:
               "$STAGE1_RUN_NAME" \
               "$STAGE1_MAX_STEPS" \
               "false" \
+              "$STAGE1_GLOBAL_VIDEO_ATTENTION_MODE" \
               "$DREAMZERO_DROID_PRETRAINED_DIR" \
               "" \
               "$STAGE1_OUTPUT_DIR" \
@@ -968,6 +977,7 @@ workflow:
               "$STAGE2_WARMUP_RUN_NAME" \
               "$STAGE2_WARMUP_MAX_STEPS" \
               "true" \
+              "$STAGE2_WARMUP_GLOBAL_VIDEO_ATTENTION_MODE" \
               "$DREAMZERO_DROID_PRETRAINED_DIR" \
               "$STAGE1_CKPT" \
               "$STAGE2_WARMUP_OUTPUT_DIR" \
@@ -985,6 +995,7 @@ workflow:
               "$STAGE2_RUN_NAME" \
               "$STAGE2_MAX_STEPS" \
               "true" \
+              "$STAGE2_GLOBAL_VIDEO_ATTENTION_MODE" \
               "$DREAMZERO_DROID_PRETRAINED_DIR" \
               "$STAGE2_WARMUP_CKPT" \
               "$STAGE2_OUTPUT_DIR" \
