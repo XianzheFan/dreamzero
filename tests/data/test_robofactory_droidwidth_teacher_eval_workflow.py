@@ -28,13 +28,13 @@ def test_droidwidth_teacher_eval_points_to_teacher_checkpoint_prefix():
     defaults = workflow["default-values"]
     assert workflow["workflow"]["name"] == "{{workflow_name}}"
     assert defaults["workflow_name"] == (
-        "dz-rf-sg-gamma-dwteacher-c500-slim-eval-gb200-1seed1000-xz-20260621"
+        "dz-rf-sg-gamma-dwteacher-c2000-slim-eval-gb200-1seed1000-xz-20260621"
     )
     assert defaults["run_name"] == (
-        "dz-rf-sg-gamma-dwteacher-c500-slim-eval-gb200-1seed1000-xz-20260621"
+        "dz-rf-sg-gamma-dwteacher-c2000-slim-eval-gb200-1seed1000-xz-20260621"
     )
-    assert defaults["ckpt_setting"] == "checkpoint-500"
-    assert defaults["local_eval_ckpt_root"] == "gamma_droidwidth_teacher_c500_slim_eval_1seed1000"
+    assert defaults["ckpt_setting"] == "checkpoint-2000"
+    assert defaults["local_eval_ckpt_root"] == "gamma_droidwidth_teacher_c2000_slim_eval_1seed1000"
     assert task["image"] == "nvcr.io/nvidian/gr00t_isaac:v1.5"
     assert 'RUN_NAME="{{run_name}}"' in script
     assert (

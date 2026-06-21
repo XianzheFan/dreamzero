@@ -1028,7 +1028,7 @@ workflow:
     exec_timeout: 5h
     queue_timeout: 2h
 default-values:
-  workflow_name: dz-rf-sg-gamma-dwteacher-c500-slim-eval-gb200-1seed1000-xz-20260621
-  run_name: dz-rf-sg-gamma-dwteacher-c500-slim-eval-gb200-1seed1000-xz-20260621
-  ckpt_setting: checkpoint-500
-  local_eval_ckpt_root: gamma_droidwidth_teacher_c500_slim_eval_1seed1000
+  workflow_name: dz-rf-sg-gamma-dwteacher-c2000-slim-eval-gb200-1seed1000-xz-20260621
+  run_name: dz-rf-sg-gamma-dwteacher-c2000-slim-eval-gb200-1seed1000-xz-20260621
+  ckpt_setting: checkpoint-2000
+  local_eval_ckpt_root: gamma_droidwidth_teacher_c2000_slim_eval_1seed1000
