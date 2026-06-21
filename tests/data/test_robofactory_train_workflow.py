@@ -273,14 +273,17 @@ def test_liftbarrier_gamma_staged_workflow_runs_dense_teacher_then_sparse_studen
     assert defaults["code_s3_uri"] == CODE_CACHE_URI
     assert defaults["expected_code_commit"] == EXPECTED_CODE_COMMIT
     assert defaults["stage1_max_steps"] == "10000"
-    assert defaults["stage2_max_steps"] == "40000"
+    assert defaults["stage2_warmup_max_steps"] == "3000"
+    assert defaults["stage2_max_steps"] == "37000"
 
     script = _task_by_name(workflow, "train")["files"][0]["contents"]
     for marker in (
         'BASE_RUN_NAME="${RUN_NAME:-{{run_name}}}"',
         'STAGE1_RUN_NAME="${STAGE1_RUN_NAME:-${BASE_RUN_NAME}-dense-teacher}"',
-        'STAGE2_RUN_NAME="${STAGE2_RUN_NAME:-${BASE_RUN_NAME}-sparse-student}"',
+        'STAGE2_WARMUP_RUN_NAME="${STAGE2_WARMUP_RUN_NAME:-${BASE_RUN_NAME}-sparse-warmup}"',
+        'STAGE2_RUN_NAME="${STAGE2_RUN_NAME:-${BASE_RUN_NAME}-sparse-self-forcing}"',
         'STAGE1_MAX_STEPS="${STAGE1_MAX_STEPS:-{{stage1_max_steps}}}"',
+        'STAGE2_WARMUP_MAX_STEPS="${STAGE2_WARMUP_MAX_STEPS:-{{stage2_warmup_max_steps}}}"',
         'STAGE2_MAX_STEPS="${STAGE2_MAX_STEPS:-{{stage2_max_steps}}}"',
         'export STAGE1_DYNAMICS_LOSS_WEIGHT="${STAGE1_DYNAMICS_LOSS_WEIGHT:-2.0}"',
         'export STAGE1_ACTION_LOSS_WEIGHT="${STAGE1_ACTION_LOSS_WEIGHT:-1.0}"',
@@ -289,8 +292,18 @@ def test_liftbarrier_gamma_staged_workflow_runs_dense_teacher_then_sparse_studen
         'export STAGE2_ACTION_LOSS_WEIGHT="${STAGE2_ACTION_LOSS_WEIGHT:-$BASE_ACTION_LOSS_WEIGHT}"',
         'export STAGE2_ACTION_DELTA_LOSS_WEIGHT="${STAGE2_ACTION_DELTA_LOSS_WEIGHT:-$BASE_ACTION_DELTA_LOSS_WEIGHT}"',
         'export STAGE1_OUTPUT_DIR="${STAGE1_OUTPUT_DIR:-${BASE_OUTPUT_DIR}/dense_teacher}"',
+        'export STAGE2_WARMUP_OUTPUT_DIR="${STAGE2_WARMUP_OUTPUT_DIR:-${BASE_OUTPUT_DIR}/sparse_warmup}"',
         'export STAGE2_OUTPUT_DIR="${STAGE2_OUTPUT_DIR:-${BASE_OUTPUT_DIR}/sparse_student}"',
         'export ATTENTION_BACKEND="${ATTENTION_BACKEND:-flex}"',
+        'export STAGE1_SELF_FORCING_TRAIN="${STAGE1_SELF_FORCING_TRAIN:-false}"',
+        'export STAGE1_SELF_FORCING_WARMUP_STEPS="${STAGE1_SELF_FORCING_WARMUP_STEPS:-0}"',
+        'export STAGE1_SELF_FORCING_FAST_WRITEBACK="${STAGE1_SELF_FORCING_FAST_WRITEBACK:-false}"',
+        'export STAGE2_WARMUP_SELF_FORCING_TRAIN="${STAGE2_WARMUP_SELF_FORCING_TRAIN:-false}"',
+        'export STAGE2_WARMUP_SELF_FORCING_WARMUP_STEPS="${STAGE2_WARMUP_SELF_FORCING_WARMUP_STEPS:-0}"',
+        'export STAGE2_WARMUP_SELF_FORCING_FAST_WRITEBACK="${STAGE2_WARMUP_SELF_FORCING_FAST_WRITEBACK:-false}"',
+        'export STAGE2_SELF_FORCING_TRAIN="${STAGE2_SELF_FORCING_TRAIN:-true}"',
+        'export STAGE2_SELF_FORCING_WARMUP_STEPS="${STAGE2_SELF_FORCING_WARMUP_STEPS:-0}"',
+        'export STAGE2_SELF_FORCING_FAST_WRITEBACK="${STAGE2_SELF_FORCING_FAST_WRITEBACK:-false}"',
         "latest_complete_checkpoint()",
         'sort -V',
         'export PRETRAINED_DIR="$stage_pretrained_dir"',
@@ -298,11 +311,23 @@ def test_liftbarrier_gamma_staged_workflow_runs_dense_teacher_then_sparse_studen
         "configure_stage_loss_weights()",
         'export DYNAMICS_LOSS_WEIGHT="$STAGE1_DYNAMICS_LOSS_WEIGHT"',
         'export DYNAMICS_LOSS_WEIGHT="$STAGE2_DYNAMICS_LOSS_WEIGHT"',
+        'export SELF_FORCING_TRAIN="$STAGE1_SELF_FORCING_TRAIN"',
+        'export SELF_FORCING_TRAIN="$STAGE2_WARMUP_SELF_FORCING_TRAIN"',
+        'export SELF_FORCING_TRAIN="$STAGE2_SELF_FORCING_TRAIN"',
+        'export SELF_FORCING_WARMUP_STEPS="$STAGE1_SELF_FORCING_WARMUP_STEPS"',
+        'export SELF_FORCING_WARMUP_STEPS="$STAGE2_WARMUP_SELF_FORCING_WARMUP_STEPS"',
+        'export SELF_FORCING_WARMUP_STEPS="$STAGE2_SELF_FORCING_WARMUP_STEPS"',
+        'export SELF_FORCING_FAST_WRITEBACK="$STAGE1_SELF_FORCING_FAST_WRITEBACK"',
+        'export SELF_FORCING_FAST_WRITEBACK="$STAGE2_WARMUP_SELF_FORCING_FAST_WRITEBACK"',
+        'export SELF_FORCING_FAST_WRITEBACK="$STAGE2_SELF_FORCING_FAST_WRITEBACK"',
         'echo "DYNAMICS_LOSS_WEIGHT=$DYNAMICS_LOSS_WEIGHT"',
         'echo "ACTION_LOSS_WEIGHT=$ACTION_LOSS_WEIGHT"',
         'echo "ACTION_DELTA_LOSS_WEIGHT=$ACTION_DELTA_LOSS_WEIGHT"',
         'echo "PRETRAINED_LORA_DIR=$PRETRAINED_LORA_DIR"',
         'echo "ATTENTION_BACKEND=$ATTENTION_BACKEND"',
+        'echo "SELF_FORCING_TRAIN=$SELF_FORCING_TRAIN"',
+        'echo "SELF_FORCING_WARMUP_STEPS=$SELF_FORCING_WARMUP_STEPS"',
+        'echo "SELF_FORCING_FAST_WRITEBACK=$SELF_FORCING_FAST_WRITEBACK"',
         "start_periodic_checkpoint_upload()",
         "stop_periodic_checkpoint_upload()",
         "start_checkpoint_slimmer()",
@@ -315,10 +340,13 @@ def test_liftbarrier_gamma_staged_workflow_runs_dense_teacher_then_sparse_studen
         "train_status=$?",
         '"dense-teacher-style"',
         '"false"',
-        '"sparse-causal-student-style"',
+        '"sparse-causal-warmup-style"',
+        '"sparse-causal-self-forcing-style"',
         '"true"',
         'STAGE1_CKPT="$(latest_complete_checkpoint "$STAGE1_OUTPUT_DIR" || true)"',
         'Stage1 complete checkpoint selected for stage2 warm-start',
+        'STAGE2_WARMUP_CKPT="$(latest_complete_checkpoint "$STAGE2_WARMUP_OUTPUT_DIR" || true)"',
+        'Stage2 warmup checkpoint selected for self-forcing warm-start',
         'RESTORE_RUN_NAME is ignored by the staged workflow',
         'osmo data upload "${BASE_LOG_S3_URI}/" /tmp/train_liftbarrier_gamma_staged.log',
         "Staged Gamma training complete.",
@@ -340,12 +368,28 @@ def test_liftbarrier_gamma_staged_workflow_runs_dense_teacher_then_sparse_studen
     assert 'cp -an "${resolved}/." "$dest/"' in script
     assert "mv -n -t" not in script
 
-    stage2_idx = script.index('"sparse-causal-student-style"')
-    stage2_end = script.index('"stage2"', stage2_idx)
-    stage2_block = script[stage2_idx:stage2_end]
-    assert '"$DREAMZERO_DROID_PRETRAINED_DIR"' in stage2_block
-    assert '"$STAGE1_CKPT"' in stage2_block
-    assert stage2_block.index('"$DREAMZERO_DROID_PRETRAINED_DIR"') < stage2_block.index('"$STAGE1_CKPT"')
+    stage2_warmup_idx = script.index('"sparse-causal-warmup-style"')
+    stage2_warmup_end = script.index('"stage2_warmup"', stage2_warmup_idx)
+    stage2_warmup_block = script[stage2_warmup_idx:stage2_warmup_end]
+    assert '"$DREAMZERO_DROID_PRETRAINED_DIR"' in stage2_warmup_block
+    assert '"$STAGE1_CKPT"' in stage2_warmup_block
+    assert stage2_warmup_block.index(
+        '"$DREAMZERO_DROID_PRETRAINED_DIR"'
+    ) < stage2_warmup_block.index('"$STAGE1_CKPT"')
+
+    stage2_self_forcing_idx = script.index('"sparse-causal-self-forcing-style"')
+    stage2_self_forcing_end = script.index(
+        '"stage2_self_forcing"',
+        stage2_self_forcing_idx,
+    )
+    stage2_self_forcing_block = script[
+        stage2_self_forcing_idx:stage2_self_forcing_end
+    ]
+    assert '"$DREAMZERO_DROID_PRETRAINED_DIR"' in stage2_self_forcing_block
+    assert '"$STAGE2_WARMUP_CKPT"' in stage2_self_forcing_block
+    assert stage2_self_forcing_block.index(
+        '"$DREAMZERO_DROID_PRETRAINED_DIR"'
+    ) < stage2_self_forcing_block.index('"$STAGE2_WARMUP_CKPT"')
 
 
 def test_liftbarrier_gamma_staged_workflow_embedded_python_blocks_compile():

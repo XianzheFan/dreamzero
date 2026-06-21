@@ -151,6 +151,9 @@ GLOBAL_VIDEO_DROPOUT_PROB=${GLOBAL_VIDEO_DROPOUT_PROB:-0.0}
 GLOBAL_VIDEO_TIMESTEP_MODE=${GLOBAL_VIDEO_TIMESTEP_MODE:-video}
 GLOBAL_VIDEO_ATTENTION_MODE=${GLOBAL_VIDEO_ATTENTION_MODE:-bidirectional}
 USE_SPARSE_HUB_ATTENTION=${USE_SPARSE_HUB_ATTENTION:-true}
+SELF_FORCING_TRAIN=${SELF_FORCING_TRAIN:-false}
+SELF_FORCING_WARMUP_STEPS=${SELF_FORCING_WARMUP_STEPS:-0}
+SELF_FORCING_FAST_WRITEBACK=${SELF_FORCING_FAST_WRITEBACK:-false}
 
 echo "save_steps=$SAVE_STEPS  save_total_limit=$SAVE_TOTAL_LIMIT"
 echo "dataset_shard_sampling_rate=$DATASET_SHARD_SAMPLING_RATE"
@@ -160,6 +163,7 @@ echo "first_close_joint_loss_weight=$FIRST_CLOSE_JOINT_LOSS_WEIGHT  first_close_
 echo "joint_prefix_loss_weight=$JOINT_PREFIX_LOSS_WEIGHT  joint_prefix_loss_len=$JOINT_PREFIX_LOSS_LEN  pre_close_joint_loss_weight=$PRE_CLOSE_JOINT_LOSS_WEIGHT  pre_close_joint_loss_window_before=$PRE_CLOSE_JOINT_LOSS_WINDOW_BEFORE  open_phase_joint_loss_weight=$OPEN_PHASE_JOINT_LOSS_WEIGHT"
 echo "model_max_state_dim=$MODEL_MAX_STATE_DIM  model_action_dim=$MODEL_ACTION_DIM  agent_state_pad_dim=$AGENT_STATE_PAD_DIM  agent_action_pad_dim=$AGENT_ACTION_PAD_DIM"
 echo "rope_agent_dim=$ROPE_AGENT_DIM  multi_agent_shuffle_agents=$MULTI_AGENT_SHUFFLE_AGENTS  multi_agent_sample_agent_pool=$MULTI_AGENT_SAMPLE_AGENT_POOL  global_video_dropout_prob=$GLOBAL_VIDEO_DROPOUT_PROB  global_video_timestep_mode=$GLOBAL_VIDEO_TIMESTEP_MODE  global_video_attention_mode=$GLOBAL_VIDEO_ATTENTION_MODE  use_sparse_hub_attention=$USE_SPARSE_HUB_ATTENTION"
+echo "self_forcing_train=$SELF_FORCING_TRAIN  self_forcing_warmup_steps=$SELF_FORCING_WARMUP_STEPS  self_forcing_fast_writeback=$SELF_FORCING_FAST_WRITEBACK"
 
 WAN_CKPT_DIR=${WAN_CKPT_DIR:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/Wan2.1-I2V-14B-480P"}
 TOKENIZER_DIR=${TOKENIZER_DIR:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/umt5-xxl"}
@@ -261,6 +265,9 @@ torchrun --nproc_per_node $NUM_GPUS --standalone groot/vla/experiment/experiment
     ++action_head_cfg.config.multi_agent_shuffle_agents=$MULTI_AGENT_SHUFFLE_AGENTS \
     ++action_head_cfg.config.multi_agent_sample_agent_pool=$MULTI_AGENT_SAMPLE_AGENT_POOL \
     ++action_head_cfg.config.global_video_dropout_prob=$GLOBAL_VIDEO_DROPOUT_PROB \
+    ++action_head_cfg.config.self_forcing_train=$SELF_FORCING_TRAIN \
+    ++action_head_cfg.config.self_forcing_warmup_steps=$SELF_FORCING_WARMUP_STEPS \
+    ++action_head_cfg.config.self_forcing_fast_writeback=$SELF_FORCING_FAST_WRITEBACK \
     ++action_head_cfg.config.max_state_dim=$MODEL_MAX_STATE_DIM \
     ++action_head_cfg.config.action_dim=$MODEL_ACTION_DIM \
     ++action_head_cfg.config.diffusion_model_cfg.num_agents=$NUM_ARMS \

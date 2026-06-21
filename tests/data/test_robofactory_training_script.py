@@ -132,6 +132,23 @@ def test_robofactory_training_script_uses_droid_base_head_width_by_default():
     assert "AGENT_ACTION_PAD_DIM=${AGENT_ACTION_PAD_DIM:-null}" not in script
 
 
+def test_robofactory_training_script_passes_self_forcing_knobs_default_off():
+    script = SCRIPT_PATH.read_text()
+
+    for marker in (
+        "SELF_FORCING_TRAIN=${SELF_FORCING_TRAIN:-false}",
+        "SELF_FORCING_WARMUP_STEPS=${SELF_FORCING_WARMUP_STEPS:-0}",
+        "SELF_FORCING_FAST_WRITEBACK=${SELF_FORCING_FAST_WRITEBACK:-false}",
+        "self_forcing_train=$SELF_FORCING_TRAIN",
+        "self_forcing_warmup_steps=$SELF_FORCING_WARMUP_STEPS",
+        "self_forcing_fast_writeback=$SELF_FORCING_FAST_WRITEBACK",
+        "++action_head_cfg.config.self_forcing_train=$SELF_FORCING_TRAIN",
+        "++action_head_cfg.config.self_forcing_warmup_steps=$SELF_FORCING_WARMUP_STEPS",
+        "++action_head_cfg.config.self_forcing_fast_writeback=$SELF_FORCING_FAST_WRITEBACK",
+    ):
+        assert marker in script
+
+
 def test_robofactory_training_script_supports_separate_lora_warm_start():
     script = SCRIPT_PATH.read_text()
 

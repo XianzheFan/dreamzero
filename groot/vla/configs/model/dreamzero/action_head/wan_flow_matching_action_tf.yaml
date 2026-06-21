@@ -120,6 +120,9 @@ action_head_cfg:
     multi_agent_sample_agent_pool: false
     global_video_dropout_prob: 0.0
     num_inference_timesteps: 4  # not used during training
+    self_forcing_train: false
+    self_forcing_warmup_steps: 0
+    self_forcing_fast_writeback: false
     noise_beta_alpha: 1.5
     noise_beta_beta: 1.0
     noise_s: 0.999

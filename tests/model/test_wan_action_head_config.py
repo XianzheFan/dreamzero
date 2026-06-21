@@ -44,6 +44,9 @@ def test_wan_action_head_yaml_parses_and_contains_gripper_clean_defaults():
     assert head_cfg["multi_agent_shuffle_agents"] is False
     assert head_cfg["multi_agent_sample_agent_pool"] is False
     assert head_cfg["global_video_dropout_prob"] == 0.0
+    assert head_cfg["self_forcing_train"] is False
+    assert head_cfg["self_forcing_warmup_steps"] == 0
+    assert head_cfg["self_forcing_fast_writeback"] is False
     assert "gripper_clean_action_loss_weight" not in cfg
     assert "gripper_binary_action_loss_weight" not in cfg
 
@@ -81,3 +84,6 @@ def test_wan_action_head_config_imports_with_gripper_defaults():
     assert cfg.multi_agent_shuffle_agents is False
     assert cfg.multi_agent_sample_agent_pool is False
     assert cfg.global_video_dropout_prob == 0.0
+    assert cfg.self_forcing_train is False
+    assert cfg.self_forcing_warmup_steps == 0
+    assert cfg.self_forcing_fast_writeback is False

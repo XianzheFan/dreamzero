@@ -41,8 +41,10 @@ workflow:
             BASE_RUN_NAME="${RUN_NAME:-{{run_name}}}"
             RUN_NAME="$BASE_RUN_NAME"
             STAGE1_RUN_NAME="${STAGE1_RUN_NAME:-${BASE_RUN_NAME}-dense-teacher}"
-            STAGE2_RUN_NAME="${STAGE2_RUN_NAME:-${BASE_RUN_NAME}-sparse-student}"
+            STAGE2_WARMUP_RUN_NAME="${STAGE2_WARMUP_RUN_NAME:-${BASE_RUN_NAME}-sparse-warmup}"
+            STAGE2_RUN_NAME="${STAGE2_RUN_NAME:-${BASE_RUN_NAME}-sparse-self-forcing}"
             STAGE1_MAX_STEPS="${STAGE1_MAX_STEPS:-{{stage1_max_steps}}}"
+            STAGE2_WARMUP_MAX_STEPS="${STAGE2_WARMUP_MAX_STEPS:-{{stage2_warmup_max_steps}}}"
             STAGE2_MAX_STEPS="${STAGE2_MAX_STEPS:-{{stage2_max_steps}}}"
             RESTORE_RUN_NAME="${RESTORE_RUN_NAME:-{{restore_run_name}}}"
             CODE_S3_URI="${CODE_S3_URI:-{{code_s3_uri}}}"
@@ -434,15 +436,18 @@ workflow:
               "GLOBAL_VIDEO_TIMESTEP_MODE" \
               "GLOBAL_VIDEO_ATTENTION_MODE" \
               "ATTENTION_BACKEND" \
-              "USE_SPARSE_HUB_ATTENTION"
+              "USE_SPARSE_HUB_ATTENTION" \
+              "SELF_FORCING_TRAIN"
             require_code_marker \
               groot/vla/model/dreamzero/action_head/wan_flow_matching_action_tf.py \
               "gripper_binary_action_loss_weight" \
               "_compute_gripper_binary_action_loss" \
               "_compute_action_delta_loss" \
               "_compute_action_jerk_loss" \
+              "_compute_multi_agent_losses" \
               "multi_agent_shuffle_agents" \
-              "global_video_dropout_prob"
+              "global_video_dropout_prob" \
+              "self_forcing_train"
             require_code_marker \
               groot/vla/configs/data/dreamzero/robofactory_bimanual_shared_global.yaml \
               "agent_action_dims: [[0, 8], [8, 16]]"
@@ -520,7 +525,7 @@ workflow:
             export BASE_ACTION_PREFIX_LOSS_WEIGHT="${ACTION_PREFIX_LOSS_WEIGHT:-2.0}"
             export ACTION_PREFIX_LOSS_LEN="${ACTION_PREFIX_LOSS_LEN:-8}"
             export BASE_ACTION_DELTA_LOSS_WEIGHT="${ACTION_DELTA_LOSS_WEIGHT:-0.2}"
-            export BASE_ACTION_JERK_LOSS_WEIGHT="${ACTION_JERK_LOSS_WEIGHT:-0.1}"
+            export BASE_ACTION_JERK_LOSS_WEIGHT="${ACTION_JERK_LOSS_WEIGHT:-0.0}"
             export ACTION_DELTA_MAX_SIGMA="${ACTION_DELTA_MAX_SIGMA:-0.75}"
             export ACTION_DELTA_EXCLUDE_GRIPPER="${ACTION_DELTA_EXCLUDE_GRIPPER:-true}"
             export STAGE1_DYNAMICS_LOSS_WEIGHT="${STAGE1_DYNAMICS_LOSS_WEIGHT:-2.0}"
@@ -558,6 +563,15 @@ workflow:
             export GLOBAL_VIDEO_TIMESTEP_MODE="${GLOBAL_VIDEO_TIMESTEP_MODE:-clean}"
             export GLOBAL_VIDEO_ATTENTION_MODE="${GLOBAL_VIDEO_ATTENTION_MODE:-read_only}"
             export ATTENTION_BACKEND="${ATTENTION_BACKEND:-flex}"
+            export STAGE1_SELF_FORCING_TRAIN="${STAGE1_SELF_FORCING_TRAIN:-false}"
+            export STAGE1_SELF_FORCING_WARMUP_STEPS="${STAGE1_SELF_FORCING_WARMUP_STEPS:-0}"
+            export STAGE1_SELF_FORCING_FAST_WRITEBACK="${STAGE1_SELF_FORCING_FAST_WRITEBACK:-false}"
+            export STAGE2_WARMUP_SELF_FORCING_TRAIN="${STAGE2_WARMUP_SELF_FORCING_TRAIN:-false}"
+            export STAGE2_WARMUP_SELF_FORCING_WARMUP_STEPS="${STAGE2_WARMUP_SELF_FORCING_WARMUP_STEPS:-0}"
+            export STAGE2_WARMUP_SELF_FORCING_FAST_WRITEBACK="${STAGE2_WARMUP_SELF_FORCING_FAST_WRITEBACK:-false}"
+            export STAGE2_SELF_FORCING_TRAIN="${STAGE2_SELF_FORCING_TRAIN:-true}"
+            export STAGE2_SELF_FORCING_WARMUP_STEPS="${STAGE2_SELF_FORCING_WARMUP_STEPS:-0}"
+            export STAGE2_SELF_FORCING_FAST_WRITEBACK="${STAGE2_SELF_FORCING_FAST_WRITEBACK:-false}"
             export CHECKPOINT_SLIM_INTERVAL_SECONDS="${CHECKPOINT_SLIM_INTERVAL_SECONDS:-30}"
             export REPORT_TO=wandb
             export WANDB_PROJECT=dreamzero_robofactory
@@ -565,6 +579,7 @@ workflow:
             export ROBOFACTORY_DATA_ROOT="$DATA_ROOT"
             export BASE_OUTPUT_DIR="${BASE_OUTPUT_DIR:-/workspace/outputs/robofactory_liftbarrier_gamma_staged}"
             export STAGE1_OUTPUT_DIR="${STAGE1_OUTPUT_DIR:-${BASE_OUTPUT_DIR}/dense_teacher}"
+            export STAGE2_WARMUP_OUTPUT_DIR="${STAGE2_WARMUP_OUTPUT_DIR:-${BASE_OUTPUT_DIR}/sparse_warmup}"
             export STAGE2_OUTPUT_DIR="${STAGE2_OUTPUT_DIR:-${BASE_OUTPUT_DIR}/sparse_student}"
             export OUTPUT_DIR="${BASE_OUTPUT_DIR}/bootstrap"
             export WAN_CKPT_DIR
@@ -803,8 +818,11 @@ workflow:
                   export ACTION_PREFIX_LOSS_WEIGHT="$STAGE1_ACTION_PREFIX_LOSS_WEIGHT"
                   export ACTION_DELTA_LOSS_WEIGHT="$STAGE1_ACTION_DELTA_LOSS_WEIGHT"
                   export ACTION_JERK_LOSS_WEIGHT="$STAGE1_ACTION_JERK_LOSS_WEIGHT"
+                  export SELF_FORCING_TRAIN="$STAGE1_SELF_FORCING_TRAIN"
+                  export SELF_FORCING_WARMUP_STEPS="$STAGE1_SELF_FORCING_WARMUP_STEPS"
+                  export SELF_FORCING_FAST_WRITEBACK="$STAGE1_SELF_FORCING_FAST_WRITEBACK"
                   ;;
-                stage2)
+                stage2_warmup|stage2_self_forcing)
                   export DYNAMICS_LOSS_WEIGHT="$STAGE2_DYNAMICS_LOSS_WEIGHT"
                   export ACTION_LOSS_WEIGHT="$STAGE2_ACTION_LOSS_WEIGHT"
                   export GRIPPER_ACTION_LOSS_WEIGHT="$STAGE2_GRIPPER_ACTION_LOSS_WEIGHT"
@@ -816,6 +834,15 @@ workflow:
                   export ACTION_PREFIX_LOSS_WEIGHT="$STAGE2_ACTION_PREFIX_LOSS_WEIGHT"
                   export ACTION_DELTA_LOSS_WEIGHT="$STAGE2_ACTION_DELTA_LOSS_WEIGHT"
                   export ACTION_JERK_LOSS_WEIGHT="$STAGE2_ACTION_JERK_LOSS_WEIGHT"
+                  if [ "$stage_prefix" = "stage2_warmup" ]; then
+                    export SELF_FORCING_TRAIN="$STAGE2_WARMUP_SELF_FORCING_TRAIN"
+                    export SELF_FORCING_WARMUP_STEPS="$STAGE2_WARMUP_SELF_FORCING_WARMUP_STEPS"
+                    export SELF_FORCING_FAST_WRITEBACK="$STAGE2_WARMUP_SELF_FORCING_FAST_WRITEBACK"
+                  else
+                    export SELF_FORCING_TRAIN="$STAGE2_SELF_FORCING_TRAIN"
+                    export SELF_FORCING_WARMUP_STEPS="$STAGE2_SELF_FORCING_WARMUP_STEPS"
+                    export SELF_FORCING_FAST_WRITEBACK="$STAGE2_SELF_FORCING_FAST_WRITEBACK"
+                  fi
                   ;;
                 *)
                   echo "ERROR: unknown stage loss prefix ${stage_prefix}" >&2
@@ -884,6 +911,9 @@ workflow:
               echo "GLOBAL_VIDEO_ATTENTION_MODE=$GLOBAL_VIDEO_ATTENTION_MODE"
               echo "ATTENTION_BACKEND=$ATTENTION_BACKEND"
               echo "USE_SPARSE_HUB_ATTENTION=$USE_SPARSE_HUB_ATTENTION"
+              echo "SELF_FORCING_TRAIN=$SELF_FORCING_TRAIN"
+              echo "SELF_FORCING_WARMUP_STEPS=$SELF_FORCING_WARMUP_STEPS"
+              echo "SELF_FORCING_FAST_WRITEBACK=$SELF_FORCING_FAST_WRITEBACK"
               echo "Checkpoints available before ${stage_label}:"
               find "$OUTPUT_DIR" -maxdepth 1 -type d -name 'checkpoint-*' -print | sort -V || true
 
@@ -928,14 +958,31 @@ workflow:
             echo "Stage1 complete checkpoint selected for stage2 warm-start: $STAGE1_CKPT"
 
             run_training_stage \
-              "sparse-causal-student-style" \
+              "sparse-causal-warmup-style" \
+              "$STAGE2_WARMUP_RUN_NAME" \
+              "$STAGE2_WARMUP_MAX_STEPS" \
+              "true" \
+              "$DREAMZERO_DROID_PRETRAINED_DIR" \
+              "$STAGE1_CKPT" \
+              "$STAGE2_WARMUP_OUTPUT_DIR" \
+              "stage2_warmup"
+
+            STAGE2_WARMUP_CKPT="$(latest_complete_checkpoint "$STAGE2_WARMUP_OUTPUT_DIR" || true)"
+            if [ -z "$STAGE2_WARMUP_CKPT" ]; then
+              echo "ERROR: stage2 warmup did not produce a complete checkpoint." >&2
+              exit 11
+            fi
+            echo "Stage2 warmup checkpoint selected for self-forcing warm-start: $STAGE2_WARMUP_CKPT"
+
+            run_training_stage \
+              "sparse-causal-self-forcing-style" \
               "$STAGE2_RUN_NAME" \
               "$STAGE2_MAX_STEPS" \
               "true" \
               "$DREAMZERO_DROID_PRETRAINED_DIR" \
-              "$STAGE1_CKPT" \
+              "$STAGE2_WARMUP_CKPT" \
               "$STAGE2_OUTPUT_DIR" \
-              "stage2"
+              "stage2_self_forcing"
 
             echo "Staged Gamma training complete."
 
@@ -949,7 +996,8 @@ default-values:
   expected_data_episodes: "500"
   data_s3_uri: s3://GearHome/users/xianzhef/oci-migration/data/robofactory_lerobot_v2/LiftBarrier-rf-500
   stage1_max_steps: "10000"
-  stage2_max_steps: "40000"
+  stage2_warmup_max_steps: "3000"
+  stage2_max_steps: "37000"
   save_steps: "500"
   save_total_limit: "4"
   learning_rate: "1e-5"

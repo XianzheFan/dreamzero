@@ -128,6 +128,24 @@ class WANPolicyHeadConfig(PretrainedConfig):
         default=None,
         metadata={"help": "Number of inference steps for noise diffusion."},
     )
+    self_forcing_train: bool = field(
+        default=False,
+        metadata={
+            "help": "Enable stage2 multi-agent self-forcing training rollout."
+        },
+    )
+    self_forcing_warmup_steps: int = field(
+        default=0,
+        metadata={
+            "help": "Number of initial training steps to keep teacher-forced before self-forcing."
+        },
+    )
+    self_forcing_fast_writeback: bool = field(
+        default=False,
+        metadata={
+            "help": "Experimental: reuse noisy-timestep writeback for self-forcing instead of t=0 cache parity."
+        },
+    )
     dynamics_loss_weight: float = field(
         default=1.0,
         metadata={"help": "Global multiplier for video dynamics diffusion loss."},
@@ -949,6 +967,20 @@ class WANPolicyHead(ActionHead):
             value = default
         return int(value)
 
+    def _config_bool(self, name: str, default: bool) -> bool:
+        value = getattr(self.config, name, default)
+        if value is None:
+            value = default
+        if isinstance(value, str):
+            return value.lower() in ("1", "true", "yes", "on")
+        return bool(value)
+
+    def _self_forcing_train_enabled(self) -> bool:
+        env_value = os.environ.get("MAI_SELF_FORCING_TRAIN")
+        if env_value is not None:
+            return env_value.lower() in ("1", "true", "yes", "on")
+        return self._config_bool("self_forcing_train", False)
+
     def _sigma_for_timestep(
         self,
         timestep: torch.Tensor,
@@ -1238,6 +1270,161 @@ class WANPolicyHead(ActionHead):
         sigma_f = sigma.float()
         return ((1.0 - sigma_f) > 1e-4) & (sigma_f <= max_sigma)
 
+    def _compute_multi_agent_losses(
+        self,
+        *,
+        video_noise_pred: torch.Tensor,
+        action_noise_pred: torch.Tensor | None,
+        training_target: torch.Tensor,
+        training_target_action: torch.Tensor | None,
+        timestep: torch.Tensor,
+        timestep_action: torch.Tensor | None,
+        timestep_action_bpt: torch.Tensor | None,
+        noisy_actions: torch.Tensor | None,
+        actions: torch.Tensor,
+        action_mask: torch.Tensor,
+        has_real_action: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        """Compute multi-agent video/action losses for full clips or chunks."""
+        B, F_lat = timestep.shape
+
+        # Crop target to model output spatial size if patch_embedding stride 2
+        # truncates an odd dim.
+        if training_target.shape != video_noise_pred.shape:
+            training_target = training_target[
+                ..., : video_noise_pred.shape[4], : video_noise_pred.shape[5]
+            ]
+        dynamics_loss_per_sample = torch.nn.functional.mse_loss(
+            video_noise_pred.float(), training_target.float(), reduction="none"
+        ).mean(dim=(2, 4, 5))
+        train_w = (
+            self.scheduler.training_weight(timestep.flatten(0, 1))
+            .unflatten(0, (B, F_lat))
+            .to(self._device)
+        )
+        weight_dynamics = dynamics_loss_per_sample * train_w.unsqueeze(1)
+        dynamics_loss_weight = self._config_float("dynamics_loss_weight", 1.0)
+        unscaled_dynamics_loss = weight_dynamics.mean()
+        weighted_dynamics_loss = unscaled_dynamics_loss * dynamics_loss_weight
+
+        if actions.numel() > 0:
+            if (
+                action_noise_pred is None
+                or training_target_action is None
+                or timestep_action is None
+                or timestep_action_bpt is None
+                or noisy_actions is None
+            ):
+                raise ValueError("action loss requested but action diffusion inputs are missing")
+
+            T_a = actions.shape[2]
+            action_loss_per_sample = torch.nn.functional.mse_loss(
+                action_noise_pred.float(),
+                training_target_action.float(),
+                reduction="none",
+            ) * action_mask
+            action_loss_per_sample = (
+                has_real_action[:, None, None, None].float()
+                * action_loss_per_sample
+            )
+            action_loss_per_sample = self._apply_action_loss_weights(
+                action_loss_per_sample,
+                actions=actions,
+            )
+            train_w_action = (
+                self.scheduler.training_weight(timestep_action.flatten(0, 1))
+                .unflatten(0, (B, T_a))
+                .to(self._device)
+            )
+            weight_action = action_loss_per_sample.mean(dim=3) * train_w_action.unsqueeze(1)
+            weighted_action_loss = weight_action.mean()
+            gripper_clean_action_loss = torch.tensor(0.0, device=self._device)
+            gripper_binary_action_loss = torch.tensor(0.0, device=self._device)
+            action_delta_loss = torch.tensor(0.0, device=self._device)
+            action_jerk_loss = torch.tensor(0.0, device=self._device)
+            needs_clean_action_pred = (
+                self._config_float("gripper_clean_action_loss_weight", 0.0) != 0.0
+                or self._config_float("gripper_binary_action_loss_weight", 0.0) != 0.0
+                or self._config_float("action_delta_loss_weight", 0.0) != 0.0
+                or self._config_float("action_jerk_loss_weight", 0.0) != 0.0
+            )
+            if needs_clean_action_pred:
+                sigma_action = self._sigma_for_timestep(
+                    timestep_action_bpt,
+                    noisy_actions,
+                )
+                clean_action_pred = self._reconstruct_clean_sample_from_flow_target(
+                    noisy_sample=noisy_actions,
+                    model_output=action_noise_pred,
+                    sigma=sigma_action,
+                )
+            if self._config_float("gripper_clean_action_loss_weight", 0.0) != 0.0:
+                clean_action_mask = action_mask.bool() & self._gripper_clean_sigma_mask(
+                    sigma_action
+                )
+                gripper_clean_action_loss = self._compute_gripper_clean_action_loss(
+                    clean_action_pred=clean_action_pred,
+                    actions=actions,
+                    action_mask=clean_action_mask,
+                    has_real_action=has_real_action,
+                )
+            if self._config_float("gripper_binary_action_loss_weight", 0.0) != 0.0:
+                binary_action_mask = action_mask.bool() & self._gripper_binary_sigma_mask(
+                    sigma_action
+                )
+                gripper_binary_action_loss = self._compute_gripper_binary_action_loss(
+                    clean_action_pred=clean_action_pred,
+                    actions=actions,
+                    action_mask=binary_action_mask,
+                    has_real_action=has_real_action,
+                )
+            if self._config_float("action_delta_loss_weight", 0.0) != 0.0:
+                delta_action_mask = action_mask.bool() & self._action_delta_sigma_mask(
+                    sigma_action
+                )
+                action_delta_loss = self._compute_action_delta_loss(
+                    clean_action_pred=clean_action_pred,
+                    actions=actions,
+                    action_mask=delta_action_mask,
+                    has_real_action=has_real_action,
+                )
+            if self._config_float("action_jerk_loss_weight", 0.0) != 0.0:
+                jerk_action_mask = action_mask.bool() & self._action_delta_sigma_mask(
+                    sigma_action
+                )
+                action_jerk_loss = self._compute_action_jerk_loss(
+                    clean_action_pred=clean_action_pred,
+                    actions=actions,
+                    action_mask=jerk_action_mask,
+                    has_real_action=has_real_action,
+                )
+            loss = (
+                weighted_dynamics_loss
+                + weighted_action_loss
+                + gripper_clean_action_loss
+                + gripper_binary_action_loss
+                + action_delta_loss
+                + action_jerk_loss
+            )
+        else:
+            weighted_action_loss = torch.tensor(0.0, device=self._device)
+            gripper_clean_action_loss = torch.tensor(0.0, device=self._device)
+            gripper_binary_action_loss = torch.tensor(0.0, device=self._device)
+            action_delta_loss = torch.tensor(0.0, device=self._device)
+            action_jerk_loss = torch.tensor(0.0, device=self._device)
+            loss = weighted_dynamics_loss
+
+        return {
+            "loss": loss,
+            "dynamics_loss": weighted_dynamics_loss,
+            "unscaled_dynamics_loss": unscaled_dynamics_loss,
+            "action_loss": weighted_action_loss,
+            "gripper_clean_action_loss": gripper_clean_action_loss,
+            "gripper_binary_action_loss": gripper_binary_action_loss,
+            "action_delta_loss": action_delta_loss,
+            "action_jerk_loss": action_jerk_loss,
+        }
+
     def _reconstruct_clean_sample_from_flow_target(
         self,
         noisy_sample: torch.Tensor,
@@ -1444,6 +1631,7 @@ class WANPolicyHead(ActionHead):
         current_start_frame: int,
         clean_latents: torch.Tensor | None,
         global_latents: torch.Tensor | None,
+        agent_perm: torch.Tensor | None = None,
     ) -> bool:
         write_denoised_context_cache = (
             os.environ.get("MAI_WRITE_DENOISED_CONTEXT_CACHE", "1").lower()
@@ -1488,6 +1676,7 @@ class WANPolicyHead(ActionHead):
             global_video=self._slice_latent_frames(
                 global_latents, current_start_frame, block
             ),
+            agent_perm=agent_perm,
         )
         self._ma_cached_until_frame = current_start_frame + block
         return True
@@ -1735,6 +1924,256 @@ class WANPolicyHead(ActionHead):
         if prob >= 1.0:
             return True
         return bool(torch.rand((), device=device) < prob)
+
+    def _forward_multi_agent_self_forcing_from_prepared(
+        self,
+        *,
+        B: int,
+        P: int,
+        F_lat: int,
+        h_lat: int,
+        w_lat: int,
+        latents: torch.Tensor,
+        noisy_latents: torch.Tensor,
+        training_target: torch.Tensor,
+        timestep: torch.Tensor,
+        timestep_BPF: torch.Tensor,
+        actions: torch.Tensor,
+        noisy_actions: torch.Tensor | None,
+        training_target_action: torch.Tensor | None,
+        timestep_action: torch.Tensor | None,
+        timestep_action_BPT: torch.Tensor | None,
+        action_mask: torch.Tensor,
+        has_real_action: torch.Tensor,
+        state_features: torch.Tensor,
+        embodiment_id: torch.Tensor,
+        prompt_embs: torch.Tensor,
+        clip_features: torch.Tensor | None,
+        ys: torch.Tensor | None,
+        clean_latents: torch.Tensor | None,
+        global_latents: torch.Tensor | None,
+        agent_perm: torch.Tensor | None,
+    ) -> dict[str, torch.Tensor]:
+        """Run causal self-forcing training over future latent chunks."""
+        if self.ip_size != 1:
+            raise NotImplementedError(
+                "multi-agent self-forcing training currently supports ip_size=1 only"
+            )
+        if self._config_bool("self_forcing_fast_writeback", False):
+            raise NotImplementedError(
+                "self_forcing_fast_writeback is reserved for a future approximation; "
+                "v1 uses t=0 denoised cache writeback for train/infer parity"
+            )
+
+        block = int(self.num_frame_per_block)
+        if block < 1:
+            raise ValueError(f"num_frame_per_block must be >= 1, got {block}")
+        if F_lat <= 1:
+            raise ValueError("self-forcing needs at least one future latent frame")
+        if (F_lat - 1) % block != 0:
+            raise ValueError(
+                f"self-forcing requires (F_lat - 1) divisible by block; "
+                f"got F_lat={F_lat}, block={block}"
+            )
+
+        action_steps_per_latent = 0
+        if actions.numel() > 0:
+            if noisy_actions is None or training_target_action is None:
+                raise ValueError("self-forcing action tensors are incomplete")
+            if timestep_action is None or timestep_action_BPT is None:
+                raise ValueError("self-forcing action timesteps are incomplete")
+            T_a = actions.shape[2]
+            if T_a % (F_lat - 1) != 0:
+                raise ValueError(
+                    f"action horizon must divide future latent frames: T_a={T_a}, F_lat={F_lat}"
+                )
+            action_steps_per_latent = T_a // (F_lat - 1)
+
+        H_g = h_lat // 2
+        W_g = w_lat // 2
+        frame_seqlen = P * H_g * W_g
+        chunk_seq_len = P * block * H_g * W_g
+        prompt_list = [prompt_embs]
+
+        self.reset_causal_state()
+        try:
+            self.kv_cache1, _ = self._create_kv_caches(
+                batch_size=B,
+                dtype=latents.dtype,
+                device=latents.device,
+                frame_seqlen=frame_seqlen,
+            )
+            self.crossattn_cache, _ = self._create_crossattn_caches(
+                batch_size=B,
+                dtype=latents.dtype,
+                device=latents.device,
+            )
+            kv_caches = [self.kv_cache1]
+            crossattn_caches = [self.crossattn_cache]
+            self._ma_cached_token_agent_id = None
+            self._ma_cached_token_agent_id_neg = None
+            self._ma_cached_until_frame = 0
+
+            latent_video = latents.transpose(2, 3)  # [B, P, C, F, H, W]
+            current_image = (
+                clean_latents[:, :, :, :1]
+                if clean_latents is not None
+                else latent_video[:, :, :, :1]
+            ).to(dtype=latents.dtype)
+            zero_step = torch.zeros([B, 1], device=latents.device, dtype=torch.int64)
+            with torch.no_grad():
+                self._run_multi_agent_diffusion_steps(
+                    noisy_input=current_image.detach(),
+                    timestep=zero_step,
+                    action=None,
+                    timestep_action=None,
+                    state=None,
+                    embodiment_id=None,
+                    context=prompt_list,
+                    seq_len=P * H_g * W_g,
+                    y=self._slice_latent_frames(ys, 0, 1),
+                    clip_feature=clip_features,
+                    kv_caches=kv_caches,
+                    crossattn_caches=crossattn_caches,
+                    kv_cache_metadata=dict(start_frame=0, update_kv_cache=True),
+                    clean_x=self._slice_latent_frames(clean_latents, 0, 1),
+                    global_video=self._slice_latent_frames(global_latents, 0, 1),
+                    agent_perm=agent_perm,
+                )
+            self.current_start_frame = 1
+            self._ma_cached_until_frame = max(self._ma_cached_until_frame, 1)
+
+            accum: dict[str, torch.Tensor] | None = None
+            num_chunks = 0
+            for current_start_frame in range(1, F_lat, block):
+                frame_end = current_start_frame + block
+                self.current_start_frame = current_start_frame
+                noisy_video_chunk_bpf = noisy_latents[
+                    :, :, current_start_frame:frame_end
+                ]
+                noisy_video_chunk = noisy_video_chunk_bpf.transpose(2, 3)
+                target_video_chunk = training_target[
+                    :, :, :, current_start_frame:frame_end
+                ]
+                timestep_chunk = timestep[:, current_start_frame:frame_end]
+                timestep_bpf_chunk = timestep_BPF[:, :, current_start_frame:frame_end]
+
+                action_chunk = None
+                noisy_action_chunk = None
+                target_action_chunk = None
+                action_mask_chunk = action_mask
+                timestep_action_chunk = None
+                timestep_action_bpt_chunk = None
+                if actions.numel() > 0:
+                    action_start = (current_start_frame - 1) * action_steps_per_latent
+                    action_end = action_start + block * action_steps_per_latent
+                    action_chunk = actions[:, :, action_start:action_end]
+                    noisy_action_chunk = noisy_actions[:, :, action_start:action_end]
+                    target_action_chunk = training_target_action[
+                        :, :, action_start:action_end
+                    ]
+                    action_mask_chunk = action_mask[:, :, action_start:action_end]
+                    timestep_action_chunk = timestep_action[:, action_start:action_end]
+                    timestep_action_bpt_chunk = timestep_action_BPT[
+                        :, :, action_start:action_end
+                    ]
+
+                predictions = self._run_multi_agent_diffusion_steps(
+                    noisy_input=noisy_video_chunk,
+                    timestep=timestep_chunk,
+                    action=noisy_action_chunk,
+                    timestep_action=timestep_action_chunk,
+                    state=state_features,
+                    embodiment_id=embodiment_id,
+                    context=prompt_list,
+                    seq_len=chunk_seq_len,
+                    y=self._slice_latent_frames(ys, current_start_frame, block),
+                    clip_feature=clip_features,
+                    kv_caches=kv_caches,
+                    crossattn_caches=crossattn_caches,
+                    kv_cache_metadata=dict(
+                        start_frame=current_start_frame,
+                        update_kv_cache=False,
+                    ),
+                    clean_x=self._slice_latent_frames(
+                        clean_latents, current_start_frame, block
+                    ),
+                    global_video=self._slice_latent_frames(
+                        global_latents, current_start_frame, block
+                    ),
+                    agent_perm=agent_perm,
+                )
+                video_noise_pred, action_noise_pred = predictions[0]
+                chunk_losses = self._compute_multi_agent_losses(
+                    video_noise_pred=video_noise_pred,
+                    action_noise_pred=action_noise_pred,
+                    training_target=target_video_chunk,
+                    training_target_action=target_action_chunk,
+                    timestep=timestep_chunk,
+                    timestep_action=timestep_action_chunk,
+                    timestep_action_bpt=timestep_action_bpt_chunk,
+                    noisy_actions=noisy_action_chunk,
+                    actions=action_chunk if action_chunk is not None else actions,
+                    action_mask=action_mask_chunk,
+                    has_real_action=has_real_action,
+                )
+                if accum is None:
+                    accum = {key: value for key, value in chunk_losses.items()}
+                else:
+                    for key, value in chunk_losses.items():
+                        accum[key] = accum[key] + value
+                num_chunks += 1
+
+                sigma_video = self._sigma_for_timestep(
+                    timestep_bpf_chunk,
+                    noisy_video_chunk_bpf,
+                )
+                clean_video_pred = self._reconstruct_clean_sample_from_flow_target(
+                    noisy_sample=noisy_video_chunk_bpf,
+                    model_output=video_noise_pred.transpose(2, 3),
+                    sigma=sigma_video,
+                ).to(dtype=noisy_video_chunk_bpf.dtype).transpose(2, 3)
+                clean_action_pred = None
+                if noisy_action_chunk is not None and action_noise_pred is not None:
+                    sigma_action = self._sigma_for_timestep(
+                        timestep_action_bpt_chunk,
+                        noisy_action_chunk,
+                    )
+                    clean_action_pred = self._reconstruct_clean_sample_from_flow_target(
+                        noisy_sample=noisy_action_chunk,
+                        model_output=action_noise_pred,
+                        sigma=sigma_action,
+                    ).to(dtype=noisy_action_chunk.dtype)
+
+                with torch.no_grad():
+                    self._write_multi_agent_denoised_context_cache(
+                        noisy_video=clean_video_pred.detach(),
+                        B=B,
+                        block=block,
+                        latents=latent_video,
+                        prompt_embs=prompt_list,
+                        seq_len=chunk_seq_len,
+                        noisy_action=(
+                            clean_action_pred.detach()
+                            if clean_action_pred is not None
+                            else None
+                        ),
+                        state_features=state_features,
+                        embodiment_id=embodiment_id,
+                        y_source=ys,
+                        clip_feature=clip_features,
+                        kv_caches=kv_caches,
+                        crossattn_caches=crossattn_caches,
+                        current_start_frame=current_start_frame,
+                        clean_latents=clean_latents,
+                        global_latents=global_latents,
+                        agent_perm=agent_perm,
+                    )
+
+            assert accum is not None and num_chunks > 0
+            return {key: value / num_chunks for key, value in accum.items()}
+        finally:
+            self.reset_causal_state()
 
     def _forward_multi_agent(
         self, backbone_output: BatchFeature, action_input: BatchFeature, num_agents: int,
@@ -2016,6 +2455,38 @@ class WANPolicyHead(ActionHead):
         W_g = w_lat // 2
         seq_len = P * F_lat * H_g * W_g
 
+        if self.training and self._self_forcing_train_enabled():
+            output_dict = self._forward_multi_agent_self_forcing_from_prepared(
+                B=B,
+                P=P,
+                F_lat=F_lat,
+                h_lat=h_lat,
+                w_lat=w_lat,
+                latents=latents,
+                noisy_latents=noisy_latents,
+                training_target=training_target,
+                timestep=timestep,
+                timestep_BPF=timestep_BPF,
+                actions=actions,
+                noisy_actions=noisy_actions,
+                training_target_action=training_target_action,
+                timestep_action=timestep_action,
+                timestep_action_BPT=(
+                    timestep_action_BPT if actions.numel() > 0 else None
+                ),
+                action_mask=action_mask,
+                has_real_action=has_real_action,
+                state_features=state_features,
+                embodiment_id=embodiment_id,
+                prompt_embs=prompt_embs,
+                clip_features=clip_features,
+                ys=ys,
+                clean_latents=clean_latents,
+                global_latents=global_latents,
+                agent_perm=agent_perm,
+            )
+            return BatchFeature(data=output_dict)
+
         with torch.amp.autocast(
             dtype=torch.bfloat16, device_type=torch.device(self._device).type
         ):
@@ -2051,195 +2522,19 @@ class WANPolicyHead(ActionHead):
                     agent_perm=agent_perm,
                 )
 
-            # Per-sample dynamics loss. Crop target to model output spatial
-            # size if patch_embedding stride 2 truncates an odd dim.
-            if training_target.shape != video_noise_pred.shape:
-                training_target = training_target[
-                    ..., : video_noise_pred.shape[4], : video_noise_pred.shape[5]
-                ]
-            # Mean over (C, H, W) -> [B, P, F]
-            dynamics_loss_per_sample = torch.nn.functional.mse_loss(
-                video_noise_pred.float(), training_target.float(), reduction="none"
-            ).mean(dim=(2, 4, 5))
-            train_w = (
-                self.scheduler.training_weight(timestep.flatten(0, 1))
-                .unflatten(0, (B, F_lat))
-                .to(self._device)
-            )  # [B, F]
-            weight_dynamics = dynamics_loss_per_sample * train_w.unsqueeze(1)
-            dynamics_loss_weight = self._config_float("dynamics_loss_weight", 1.0)
-            unscaled_dynamics_loss = weight_dynamics.mean()
-            weighted_dynamics_loss = unscaled_dynamics_loss * dynamics_loss_weight
-
-            if actions.numel() > 0:
-                # action_noise_pred / target: [B, P, T_a, D_a]; mask same shape.
-                action_loss_per_sample = torch.nn.functional.mse_loss(
-                    action_noise_pred.float(),
-                    training_target_action.float(),
-                    reduction="none",
-                ) * action_mask
-                # has_real_action [B] -> [B, 1, 1, 1] for broadcast.
-                action_loss_per_sample = (
-                    has_real_action[:, None, None, None].float()
-                    * action_loss_per_sample
-                )
-                action_loss_per_sample = self._apply_action_loss_weights(
-                    action_loss_per_sample,
-                    actions=actions,
-                )
-                train_w_action = (
-                    self.scheduler.training_weight(timestep_action.flatten(0, 1))
-                    .unflatten(0, (B, T_a))
-                    .to(self._device)
-                )  # [B, T_a]
-                weight_action = action_loss_per_sample.mean(dim=3) * train_w_action.unsqueeze(1)
-                weighted_action_loss = weight_action.mean()
-                gripper_clean_action_loss = torch.tensor(0.0, device=self._device)
-                gripper_binary_action_loss = torch.tensor(0.0, device=self._device)
-                action_delta_loss = torch.tensor(0.0, device=self._device)
-                action_jerk_loss = torch.tensor(0.0, device=self._device)
-                needs_gripper_clean_pred = (
-                    float(
-                        getattr(
-                            self.config,
-                            "gripper_clean_action_loss_weight",
-                            0.0,
-                        )
-                        or 0.0
-                    )
-                    != 0.0
-                    or float(
-                        getattr(
-                            self.config,
-                            "gripper_binary_action_loss_weight",
-                            0.0,
-                        )
-                        or 0.0
-                    )
-                    != 0.0
-                    or float(
-                        getattr(
-                            self.config,
-                            "action_delta_loss_weight",
-                            0.0,
-                        )
-                        or 0.0
-                    )
-                    != 0.0
-                    or float(
-                        getattr(
-                            self.config,
-                            "action_jerk_loss_weight",
-                            0.0,
-                        )
-                        or 0.0
-                    )
-                    != 0.0
-                )
-                if needs_gripper_clean_pred:
-                    sigma_action = self._sigma_for_timestep(
-                        timestep_action_BPT,
-                        noisy_actions,
-                    )
-                    clean_action_pred = self._reconstruct_clean_sample_from_flow_target(
-                        noisy_sample=noisy_actions,
-                        model_output=action_noise_pred,
-                        sigma=sigma_action,
-                    )
-                if float(
-                    getattr(
-                        self.config,
-                        "gripper_clean_action_loss_weight",
-                        0.0,
-                    )
-                    or 0.0
-                ) != 0.0:
-                    clean_action_mask = action_mask.bool() & self._gripper_clean_sigma_mask(
-                        sigma_action
-                    )
-                    gripper_clean_action_loss = self._compute_gripper_clean_action_loss(
-                        clean_action_pred=clean_action_pred,
-                        actions=actions,
-                        action_mask=clean_action_mask,
-                        has_real_action=has_real_action,
-                    )
-                if float(
-                    getattr(
-                        self.config,
-                        "gripper_binary_action_loss_weight",
-                        0.0,
-                    )
-                    or 0.0
-                ) != 0.0:
-                    binary_action_mask = action_mask.bool() & self._gripper_binary_sigma_mask(
-                        sigma_action
-                    )
-                    gripper_binary_action_loss = self._compute_gripper_binary_action_loss(
-                        clean_action_pred=clean_action_pred,
-                        actions=actions,
-                        action_mask=binary_action_mask,
-                        has_real_action=has_real_action,
-                    )
-                if float(
-                    getattr(
-                        self.config,
-                        "action_delta_loss_weight",
-                        0.0,
-                    )
-                    or 0.0
-                ) != 0.0:
-                    delta_action_mask = action_mask.bool() & self._action_delta_sigma_mask(
-                        sigma_action
-                    )
-                    action_delta_loss = self._compute_action_delta_loss(
-                        clean_action_pred=clean_action_pred,
-                        actions=actions,
-                        action_mask=delta_action_mask,
-                        has_real_action=has_real_action,
-                    )
-                if float(
-                    getattr(
-                        self.config,
-                        "action_jerk_loss_weight",
-                        0.0,
-                    )
-                    or 0.0
-                ) != 0.0:
-                    jerk_action_mask = action_mask.bool() & self._action_delta_sigma_mask(
-                        sigma_action
-                    )
-                    action_jerk_loss = self._compute_action_jerk_loss(
-                        clean_action_pred=clean_action_pred,
-                        actions=actions,
-                        action_mask=jerk_action_mask,
-                        has_real_action=has_real_action,
-                    )
-                loss = (
-                    weighted_dynamics_loss
-                    + weighted_action_loss
-                    + gripper_clean_action_loss
-                    + gripper_binary_action_loss
-                    + action_delta_loss
-                    + action_jerk_loss
-                )
-            else:
-                weighted_action_loss = torch.tensor(0.0, device=self._device)
-                gripper_clean_action_loss = torch.tensor(0.0, device=self._device)
-                gripper_binary_action_loss = torch.tensor(0.0, device=self._device)
-                action_delta_loss = torch.tensor(0.0, device=self._device)
-                action_jerk_loss = torch.tensor(0.0, device=self._device)
-                loss = weighted_dynamics_loss
-
-        output_dict = {
-            "loss": loss,
-            "dynamics_loss": weighted_dynamics_loss,
-            "unscaled_dynamics_loss": unscaled_dynamics_loss,
-            "action_loss": weighted_action_loss,
-            "gripper_clean_action_loss": gripper_clean_action_loss,
-            "gripper_binary_action_loss": gripper_binary_action_loss,
-            "action_delta_loss": action_delta_loss,
-            "action_jerk_loss": action_jerk_loss,
-        }
+            output_dict = self._compute_multi_agent_losses(
+                video_noise_pred=video_noise_pred,
+                action_noise_pred=action_noise_pred,
+                training_target=training_target,
+                training_target_action=training_target_action,
+                timestep=timestep,
+                timestep_action=timestep_action,
+                timestep_action_bpt=timestep_action_BPT if actions.numel() > 0 else None,
+                noisy_actions=noisy_actions,
+                actions=actions,
+                action_mask=action_mask,
+                has_real_action=has_real_action,
+            )
         return BatchFeature(data=output_dict)
 
     def _get_action_multi_agent_causal(
@@ -3472,6 +3767,7 @@ class WANPolicyHead(ActionHead):
         kv_cache_metadata: dict[str, bool | int],
         clean_x: torch.Tensor | None = None,
         global_video: torch.Tensor | None = None,
+        agent_perm: torch.Tensor | None = None,
     ) -> list[tuple[torch.Tensor, torch.Tensor]]:
         """Run multi-agent cached inference without mixing CFG cache metadata.
 
@@ -3521,6 +3817,7 @@ class WANPolicyHead(ActionHead):
                     current_start_frame=start_frame,
                     clean_x=clean_x,
                     global_video=global_video,
+                    agent_perm=agent_perm,
                 )
                 if update_kv_cache:
                     for block_index, updated_kv_cache in enumerate(updated_kv_caches):

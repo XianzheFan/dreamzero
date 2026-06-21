@@ -612,6 +612,195 @@ def test_config_zero_values_are_honored_in_loss_helpers():
     assert clean_loss.item() == 1.0
 
 
+def test_compute_multi_agent_losses_aggregates_video_and_action_terms():
+    Cls = _load_head_cls()
+    head = Cls.__new__(Cls)
+    torch.nn.Module.__init__(head)
+    from groot.vla.model.dreamzero.modules.flow_match_scheduler import (
+        FlowMatchScheduler,
+    )
+
+    head._device = "cpu"
+    head.scheduler = FlowMatchScheduler(shift=5, sigma_min=0.0, extra_one_step=True)
+    head.scheduler.set_timesteps(1000, training=True)
+    head.config = types.SimpleNamespace(
+        dynamics_loss_weight=2.0,
+        action_loss_weight=1.0,
+        gripper_action_loss_weight=1.0,
+        gripper_close_action_loss_weight=1.0,
+        gripper_close_threshold=0.0,
+        action_prefix_loss_weight=1.0,
+        action_prefix_loss_len=0,
+        joint_prefix_loss_weight=1.0,
+        joint_prefix_loss_len=0,
+        first_close_joint_loss_weight=1.0,
+        first_close_joint_loss_window_before=0,
+        first_close_joint_loss_window_after=0,
+        pre_close_joint_loss_weight=1.0,
+        pre_close_joint_loss_window_before=0,
+        open_phase_joint_loss_weight=1.0,
+        gripper_clean_action_loss_weight=0.0,
+        gripper_binary_action_loss_weight=0.0,
+        action_delta_loss_weight=0.0,
+        action_jerk_loss_weight=0.0,
+        gripper_action_dims=[1],
+    )
+
+    timestep = head.scheduler.timesteps[torch.tensor([[1, 2, 3]])]
+    timestep_action = head.scheduler.timesteps[torch.tensor([[1, 2, 3, 4]])]
+    out = head._compute_multi_agent_losses(
+        video_noise_pred=torch.zeros(1, 2, 1, 3, 1, 1),
+        action_noise_pred=torch.zeros(1, 2, 4, 2),
+        training_target=torch.ones(1, 2, 1, 3, 1, 1),
+        training_target_action=torch.ones(1, 2, 4, 2),
+        timestep=timestep,
+        timestep_action=timestep_action,
+        timestep_action_bpt=timestep_action.unsqueeze(1).expand(1, 2, 4),
+        noisy_actions=torch.zeros(1, 2, 4, 2),
+        actions=torch.zeros(1, 2, 4, 2),
+        action_mask=torch.ones(1, 2, 4, 2),
+        has_real_action=torch.ones(1, dtype=torch.bool),
+    )
+
+    expected_dynamics = head.scheduler.training_weight(timestep.flatten()).mean() * 2.0
+    expected_action = head.scheduler.training_weight(timestep_action.flatten()).mean()
+    torch.testing.assert_close(out["dynamics_loss"], expected_dynamics)
+    torch.testing.assert_close(out["action_loss"], expected_action)
+    torch.testing.assert_close(out["loss"], expected_dynamics + expected_action)
+    assert out["gripper_clean_action_loss"].item() == 0.0
+    assert out["gripper_binary_action_loss"].item() == 0.0
+    assert out["action_delta_loss"].item() == 0.0
+    assert out["action_jerk_loss"].item() == 0.0
+
+
+def test_self_forcing_train_gate_prefers_env_override(monkeypatch):
+    Cls = _load_head_cls()
+    head = Cls.__new__(Cls)
+    torch.nn.Module.__init__(head)
+    head.config = types.SimpleNamespace(self_forcing_train=False)
+
+    assert head._self_forcing_train_enabled() is False
+    monkeypatch.setenv("MAI_SELF_FORCING_TRAIN", "true")
+    assert head._self_forcing_train_enabled() is True
+    monkeypatch.setenv("MAI_SELF_FORCING_TRAIN", "0")
+    assert head._self_forcing_train_enabled() is False
+
+
+def test_self_forcing_rollout_chunks_and_detaches_cache_writeback(monkeypatch):
+    Cls = _load_head_cls()
+    head = Cls.__new__(Cls)
+    torch.nn.Module.__init__(head)
+    from groot.vla.model.dreamzero.modules.flow_match_scheduler import (
+        FlowMatchScheduler,
+    )
+
+    head._device = "cpu"
+    head.ip_size = 1
+    head.num_frame_per_block = 2
+    head.model = types.SimpleNamespace(num_heads=1, dim=4, num_layers=1)
+    head.scheduler = FlowMatchScheduler(shift=5, sigma_min=0.0, extra_one_step=True)
+    head.scheduler.set_timesteps(1000, training=True)
+    head.config = types.SimpleNamespace(
+        self_forcing_fast_writeback=False,
+        dynamics_loss_weight=1.0,
+        action_loss_weight=1.0,
+        gripper_action_loss_weight=1.0,
+        gripper_close_action_loss_weight=1.0,
+        gripper_close_threshold=0.0,
+        action_prefix_loss_weight=1.0,
+        action_prefix_loss_len=0,
+        joint_prefix_loss_weight=1.0,
+        joint_prefix_loss_len=0,
+        first_close_joint_loss_weight=1.0,
+        first_close_joint_loss_window_before=0,
+        first_close_joint_loss_window_after=0,
+        pre_close_joint_loss_weight=1.0,
+        pre_close_joint_loss_window_before=0,
+        open_phase_joint_loss_weight=1.0,
+        gripper_clean_action_loss_weight=0.0,
+        gripper_binary_action_loss_weight=0.0,
+        action_delta_loss_weight=0.0,
+        action_jerk_loss_weight=0.0,
+        gripper_action_dims=[1],
+    )
+    head.dummy = torch.nn.Parameter(torch.tensor(0.0))
+
+    calls = []
+    writes = []
+
+    def fake_run(self, *, noisy_input, action, kv_cache_metadata, **kwargs):
+        calls.append(dict(kv_cache_metadata))
+        video_pred = noisy_input * 0.0 + self.dummy.view(1, 1, 1, 1, 1, 1)
+        if action is None:
+            action_pred = None
+        else:
+            action_pred = action * 0.0 + self.dummy
+        return [(video_pred, action_pred)]
+
+    def fake_write(self, *, noisy_video, noisy_action, current_start_frame, **kwargs):
+        writes.append(
+            (
+                current_start_frame,
+                noisy_video.requires_grad,
+                None if noisy_action is None else noisy_action.requires_grad,
+            )
+        )
+        self._ma_cached_until_frame = current_start_frame + self.num_frame_per_block
+        return True
+
+    monkeypatch.setattr(
+        head,
+        "_run_multi_agent_diffusion_steps",
+        types.MethodType(fake_run, head),
+    )
+    monkeypatch.setattr(
+        head,
+        "_write_multi_agent_denoised_context_cache",
+        types.MethodType(fake_write, head),
+    )
+
+    B, P, F_lat, C, H, W, D = 1, 2, 5, 1, 2, 2, 2
+    T_a = F_lat - 1
+    timestep = head.scheduler.timesteps[torch.tensor([[1, 2, 3, 4, 5]])]
+    timestep_BPF = timestep.unsqueeze(1).expand(B, P, F_lat).contiguous()
+    timestep_action = head.scheduler.timesteps[torch.tensor([[1, 2, 3, 4]])]
+    timestep_action_BPT = timestep_action.unsqueeze(1).expand(B, P, T_a).contiguous()
+    out = head._forward_multi_agent_self_forcing_from_prepared(
+        B=B,
+        P=P,
+        F_lat=F_lat,
+        h_lat=H,
+        w_lat=W,
+        latents=torch.zeros(B, P, F_lat, C, H, W),
+        noisy_latents=torch.zeros(B, P, F_lat, C, H, W),
+        training_target=torch.ones(B, P, C, F_lat, H, W),
+        timestep=timestep,
+        timestep_BPF=timestep_BPF,
+        actions=torch.zeros(B, P, T_a, D),
+        noisy_actions=torch.zeros(B, P, T_a, D),
+        training_target_action=torch.ones(B, P, T_a, D),
+        timestep_action=timestep_action,
+        timestep_action_BPT=timestep_action_BPT,
+        action_mask=torch.ones(B, P, T_a, D),
+        has_real_action=torch.ones(B, dtype=torch.bool),
+        state_features=torch.zeros(B, P, 2, D),
+        embodiment_id=torch.zeros(B, dtype=torch.long),
+        prompt_embs=torch.zeros(B, 2, 4),
+        clip_features=None,
+        ys=None,
+        clean_latents=None,
+        global_latents=None,
+        agent_perm=None,
+    )
+
+    assert [call["start_frame"] for call in calls] == [0, 1, 3]
+    assert [call["update_kv_cache"] for call in calls] == [True, False, False]
+    assert writes == [(1, False, False), (3, False, False)]
+    assert torch.isfinite(out["loss"])
+    out["loss"].backward()
+    assert head.dummy.grad is not None
+
+
 def test_first_close_joint_loss_weights_only_joint_dims_near_first_close():
     Cls = _load_head_cls()
     head = Cls.__new__(Cls)
