@@ -210,7 +210,7 @@ workflow:
           fi
           if [ ! -f "$DEPS_MARKER" ]; then
             if [ "$MODEL_ONLY_DIAG" != "1" ]; then
-              python -m pip install -q "mani_skill==3.0.0b12"
+              python -m pip install -q "mani_skill==3.0.0b12" decord
             fi
             python -m pip install -q \
               "websockets>=12" \
@@ -238,7 +238,6 @@ workflow:
               matplotlib \
               h5py \
               "opencv-python-headless==4.10.0.84" \
-              decord \
               pandas \
               pyarrow \
               "datasets==3.6.0" \
