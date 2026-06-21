@@ -204,14 +204,7 @@ workflow:
                 return 0
               fi
               echo "Promoting nested model cache from ${resolved} into ${dest}."
-              case "$resolved" in
-                "$dest"/*)
-                  find "$resolved" -mindepth 1 -maxdepth 1 -exec mv -n -t "$dest" {} +
-                  ;;
-                *)
-                  cp -an "${resolved}/." "$dest/"
-                  ;;
-              esac
+              cp -an "${resolved}/." "$dest/"
             }
 
             download_or_restore_model() {

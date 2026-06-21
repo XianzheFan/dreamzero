@@ -187,6 +187,16 @@ def test_liftbarrier_train_workflow_restores_and_uploads_run_and_s3cache_checkpo
     assert '[ -f "${ckpt_dir}/trainer_state.json" ]' in script
 
 
+def test_liftbarrier_train_workflow_promotes_nested_model_cache_without_mv_failure():
+    with WORKFLOW_PATH.open() as f:
+        workflow = yaml.safe_load(f)
+
+    script = _task_by_name(workflow, "train")["files"][0]["contents"]
+
+    assert 'cp -an "${resolved}/." "$dest/"' in script
+    assert "mv -n -t" not in script
+
+
 def test_liftbarrier_train_workflow_embedded_python_blocks_compile():
     with WORKFLOW_PATH.open() as f:
         workflow = yaml.safe_load(f)
@@ -243,6 +253,9 @@ def test_liftbarrier_gamma_staged_workflow_runs_dense_teacher_then_sparse_studen
         "Staged Gamma training complete.",
     ):
         assert marker in script
+
+    assert 'cp -an "${resolved}/." "$dest/"' in script
+    assert "mv -n -t" not in script
 
 
 def test_liftbarrier_gamma_staged_workflow_embedded_python_blocks_compile():
