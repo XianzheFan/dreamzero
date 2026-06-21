@@ -74,11 +74,14 @@ python scripts/eval/submit_robofactory_droidwidth_eval_grid.py \
   --tag 20260621 \
   --steps 2000,4000,6000 \
   --only-ready \
+  --skip-existing \
   --submit
 ```
 
 Add `--fail-if-none-ready` when a scheduler or wrapper should treat "nothing to
-submit yet" as a nonzero exit instead of a clean no-op.
+submit yet" as a nonzero exit instead of a clean no-op. Keep a stable `--tag`
+for a polling run so `--skip-existing` can recognize already-submitted eval
+workflows.
 
 Explicit `--steps` values are still checked against the same 2k cadence by
 default, so off-grid checkpoints such as `checkpoint-1000`,

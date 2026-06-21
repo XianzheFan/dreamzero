@@ -231,3 +231,61 @@ def test_main_only_ready_can_fail_when_none_ready(monkeypatch, capsys):
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "No ready checkpoints matched the requested eval grid." in captured.err
+
+
+def test_main_skip_existing_filters_existing_workflow(monkeypatch, capsys):
+    module = _load_module()
+
+    def fake_check_workflow_exists(*, osmo_binary, workflow_name):
+        return module.ExistingWorkflowCheck(
+            name=workflow_name,
+            exists="c2000" in workflow_name,
+            reason="exists" if "c2000" in workflow_name else "not found",
+        )
+
+    monkeypatch.setattr(module, "check_workflow_exists", fake_check_workflow_exists)
+
+    status = module.main(
+        [
+            "--workflow",
+            "eval.yaml",
+            "--tag",
+            "20260621",
+            "--steps",
+            "2000,4000",
+            "--skip-existing",
+        ]
+    )
+
+    assert status == 0
+    captured = capsys.readouterr()
+    assert "ckpt_setting=checkpoint-4000" in captured.out
+    assert "ckpt_setting=checkpoint-2000" not in captured.out
+    assert "SKIP checkpoint-2000: workflow already exists" in captured.err
+    assert "NEW checkpoint-4000" in captured.err
+
+
+def test_main_skip_existing_noops_when_all_exist(monkeypatch, capsys):
+    module = _load_module()
+
+    def fake_check_workflow_exists(*, osmo_binary, workflow_name):
+        return module.ExistingWorkflowCheck(name=workflow_name, exists=True, reason="exists")
+
+    monkeypatch.setattr(module, "check_workflow_exists", fake_check_workflow_exists)
+
+    status = module.main(
+        [
+            "--workflow",
+            "eval.yaml",
+            "--tag",
+            "20260621",
+            "--steps",
+            "2000,4000",
+            "--skip-existing",
+        ]
+    )
+
+    assert status == 0
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "No new checkpoint eval workflows matched the requested grid." in captured.err

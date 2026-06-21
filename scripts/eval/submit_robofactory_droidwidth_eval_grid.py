@@ -37,6 +37,12 @@ class ReadyCheck(NamedTuple):
     reason: str
 
 
+class ExistingWorkflowCheck(NamedTuple):
+    name: str
+    exists: bool
+    reason: str
+
+
 def checkpoint_s3_base(ckpt_run_name: str, *, runs_prefix: str = DEFAULT_CKPT_S3_RUNS_PREFIX) -> str:
     prefix = runs_prefix.rstrip("/")
     return f"{prefix}/{ckpt_run_name}/checkpoints/{ckpt_run_name}"
@@ -122,6 +128,23 @@ def check_checkpoint_ready(*, osmo_binary: str, ckpt_s3_base_value: str, step: i
         ready=False,
         reason="missing model/trainer_state/experiment_cfg ready markers",
     )
+
+
+def workflow_name_for_step(*, name_template: str, step: int, tag: str) -> str:
+    return name_template.format(step=step, tag=tag)
+
+
+def check_workflow_exists(*, osmo_binary: str, workflow_name: str) -> ExistingWorkflowCheck:
+    result = subprocess.run(
+        [osmo_binary, "workflow", "query", workflow_name, "--format-type", "json"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        return ExistingWorkflowCheck(name=workflow_name, exists=True, reason="exists")
+    reason = result.stderr.strip() or result.stdout.strip() or f"query status {result.returncode}"
+    return ExistingWorkflowCheck(name=workflow_name, exists=False, reason=reason)
 
 
 def build_submit_command(
@@ -239,6 +262,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="With --only-ready, return exit code 2 when no requested checkpoint is ready.",
     )
     parser.add_argument(
+        "--skip-existing",
+        action="store_true",
+        help="Skip steps whose generated OSMO workflow name already exists.",
+    )
+    parser.add_argument(
         "--submit",
         action="store_true",
         help="Actually submit the generated workflows. Without this flag, commands are printed only.",
@@ -288,6 +316,31 @@ def main(argv: Sequence[str] | None = None) -> int:
             print("No ready checkpoints matched the requested eval grid.", file=sys.stderr, flush=True)
             if args.fail_if_none_ready:
                 return 2
+    if args.skip_existing and steps:
+        new_steps: list[int] = []
+        for step in steps:
+            workflow_name = workflow_name_for_step(
+                name_template=args.name_template,
+                step=step,
+                tag=args.tag,
+            )
+            check = check_workflow_exists(osmo_binary=args.osmo_binary, workflow_name=workflow_name)
+            if check.exists:
+                print(
+                    f"SKIP checkpoint-{step}: workflow already exists: {workflow_name}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            else:
+                print(
+                    f"NEW checkpoint-{step}: no existing workflow named {workflow_name}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                new_steps.append(step)
+        steps = new_steps
+        if not steps:
+            print("No new checkpoint eval workflows matched the requested grid.", file=sys.stderr, flush=True)
     commands = [
         build_submit_command(
             workflow=args.workflow,
