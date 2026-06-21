@@ -151,7 +151,16 @@ def test_droidwidth_teacher_h100_eval_targets_h100_pool_resources():
         in script
     )
     assert 'VIDEO_PRED_WRIST_WINDOW_MODE="${VIDEO_PRED_WRIST_WINDOW_MODE:-action}"' in script
-    assert 'VIDEO_PRED_ROLLOUT_MODE="${VIDEO_PRED_ROLLOUT_MODE:-action}"' in script
+    assert 'VIDEO_PRED_ROLLOUT_MODES="${VIDEO_PRED_ROLLOUT_MODES:-action noncausal}"' in script
+    assert 'VIDEO_PRED_ROLLOUT_MODES="${VIDEO_PRED_ROLLOUT_MODE}"' in script
+    assert "for VIDEO_PRED_ROLLOUT_MODE in ${VIDEO_PRED_ROLLOUT_MODES}; do" in script
+    assert "Unknown VIDEO_PRED_ROLLOUT_MODE=${VIDEO_PRED_ROLLOUT_MODE}" in script
+    assert (
+        '--video-pred-dir "/workspace/eval_outputs/video_pred/'
+        '${INFERENCE_MODE}_${RESET_TAG}_${VIDEO_PRED_ROLLOUT_MODE}"'
+        in script
+    )
+    assert "_vpred_${rollout_tag}_rp${REPLAN_EVERY}" in script
     assert 'REPLAN_EVERYS="${REPLAN_EVERYS:-24 12}"' in script
     assert 'CKPT_SETTING="{{ckpt_setting}}"' in script
     assert 'LOCAL_EVAL_CKPT_ROOT="/workspace/eval_ckpts/{{local_eval_ckpt_root}}"' in script
@@ -167,7 +176,7 @@ def test_droidwidth_teacher_h100_eval_targets_h100_pool_resources():
     assert 'if [ "${SERVE_HTTP_ARTIFACTS}" = "1" ]; then' in script
     assert "HTTP artifact serving disabled; uploaded artifacts and exiting to release H100 resources." in script
     assert 'osmo data upload "${RUN_S3_ROOT}/eval_outputs_http/" /workspace/eval_outputs_http || true' in script
-    assert "action-path pred-video eval complete" in script
+    assert "action/noncausal pred-video eval complete" in script
     assert (
         'TEMPORAL_ACTION_ENSEMBLE_DECAYS="${TEMPORAL_ACTION_ENSEMBLE_DECAYS:-{{temporal_action_ensemble_decays}}}"'
         in script

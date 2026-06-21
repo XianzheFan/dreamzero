@@ -79,6 +79,12 @@ eval already runs model load, action diagnostics, video prediction diagnostics,
 and a small physical sweep; separate OSMO workflows make retries and queueing
 cleaner.
 
+The H100 droidwidth eval template saves both action-path and noncausal
+diagnostic predicted videos by default (`VIDEO_PRED_ROLLOUT_MODES="action
+noncausal"`). Override `VIDEO_PRED_ROLLOUT_MODE=action` or
+`VIDEO_PRED_ROLLOUT_MODES=action` when you only want the control-path video
+diagnostic and need to cut runtime.
+
 After downloading eval artifacts, summarize the checkpoint grid:
 
 ```bash
