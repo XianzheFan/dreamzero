@@ -304,6 +304,30 @@ def test_shared_global_read_only_mask_keeps_context_from_becoming_hub():
     assert legacy[shared, hub]
 
 
+def test_dense_global_read_only_mask_allows_cross_agent_attention():
+    pytest.importorskip("einops")
+    from groot.vla.model.dreamzero.modules.wan_video_dit_action_casual_chunk import (
+        CausalWanModel,
+    )
+
+    # Query ids: agent0, agent1, shared-global. Key ids include cached/new
+    # agent tokens plus shared-global. In dense no-hub mode, regular agent
+    # queries should see all keys directly, while shared-global queries stay
+    # clean/read-only and only attend shared-global keys.
+    query_agent = torch.tensor([0, 1, 2], dtype=torch.long)
+    key_agent = torch.tensor([0, 1, 0, 1, 2], dtype=torch.long)
+
+    mask = CausalWanModel._dense_global_read_only_token_mask(
+        query_agent,
+        key_agent,
+        shared_id=2,
+    )
+
+    assert mask[0].tolist() == [True, True, True, True, True]
+    assert mask[1].tolist() == [True, True, True, True, True]
+    assert mask[2].tolist() == [False, False, False, False, True]
+
+
 def test_multi_agent_register_block_ids_align_with_future_video_blocks():
     """Video chunk i must be able to read action/state register chunk i.
 

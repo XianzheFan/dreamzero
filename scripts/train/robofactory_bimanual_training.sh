@@ -145,6 +145,7 @@ MULTI_AGENT_SAMPLE_AGENT_POOL=${MULTI_AGENT_SAMPLE_AGENT_POOL:-false}
 GLOBAL_VIDEO_DROPOUT_PROB=${GLOBAL_VIDEO_DROPOUT_PROB:-0.0}
 GLOBAL_VIDEO_TIMESTEP_MODE=${GLOBAL_VIDEO_TIMESTEP_MODE:-video}
 GLOBAL_VIDEO_ATTENTION_MODE=${GLOBAL_VIDEO_ATTENTION_MODE:-bidirectional}
+USE_SPARSE_HUB_ATTENTION=${USE_SPARSE_HUB_ATTENTION:-true}
 
 echo "save_steps=$SAVE_STEPS  save_total_limit=$SAVE_TOTAL_LIMIT"
 echo "dataset_shard_sampling_rate=$DATASET_SHARD_SAMPLING_RATE"
@@ -153,7 +154,7 @@ echo "gripper_binary_action_loss_weight=$GRIPPER_BINARY_ACTION_LOSS_WEIGHT  grip
 echo "first_close_joint_loss_weight=$FIRST_CLOSE_JOINT_LOSS_WEIGHT  first_close_joint_loss_window_before=$FIRST_CLOSE_JOINT_LOSS_WINDOW_BEFORE  first_close_joint_loss_window_after=$FIRST_CLOSE_JOINT_LOSS_WINDOW_AFTER"
 echo "joint_prefix_loss_weight=$JOINT_PREFIX_LOSS_WEIGHT  joint_prefix_loss_len=$JOINT_PREFIX_LOSS_LEN  pre_close_joint_loss_weight=$PRE_CLOSE_JOINT_LOSS_WEIGHT  pre_close_joint_loss_window_before=$PRE_CLOSE_JOINT_LOSS_WINDOW_BEFORE  open_phase_joint_loss_weight=$OPEN_PHASE_JOINT_LOSS_WEIGHT"
 echo "model_max_state_dim=$MODEL_MAX_STATE_DIM  model_action_dim=$MODEL_ACTION_DIM  agent_state_pad_dim=$AGENT_STATE_PAD_DIM  agent_action_pad_dim=$AGENT_ACTION_PAD_DIM"
-echo "rope_agent_dim=$ROPE_AGENT_DIM  multi_agent_shuffle_agents=$MULTI_AGENT_SHUFFLE_AGENTS  multi_agent_sample_agent_pool=$MULTI_AGENT_SAMPLE_AGENT_POOL  global_video_dropout_prob=$GLOBAL_VIDEO_DROPOUT_PROB  global_video_timestep_mode=$GLOBAL_VIDEO_TIMESTEP_MODE  global_video_attention_mode=$GLOBAL_VIDEO_ATTENTION_MODE"
+echo "rope_agent_dim=$ROPE_AGENT_DIM  multi_agent_shuffle_agents=$MULTI_AGENT_SHUFFLE_AGENTS  multi_agent_sample_agent_pool=$MULTI_AGENT_SAMPLE_AGENT_POOL  global_video_dropout_prob=$GLOBAL_VIDEO_DROPOUT_PROB  global_video_timestep_mode=$GLOBAL_VIDEO_TIMESTEP_MODE  global_video_attention_mode=$GLOBAL_VIDEO_ATTENTION_MODE  use_sparse_hub_attention=$USE_SPARSE_HUB_ATTENTION"
 
 WAN_CKPT_DIR=${WAN_CKPT_DIR:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/Wan2.1-I2V-14B-480P"}
 TOKENIZER_DIR=${TOKENIZER_DIR:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/umt5-xxl"}
@@ -257,4 +258,5 @@ torchrun --nproc_per_node $NUM_GPUS --standalone groot/vla/experiment/experiment
     ++action_head_cfg.config.diffusion_model_cfg.in_dim=$DIFFUSION_IN_DIM \
     ++action_head_cfg.config.diffusion_model_cfg.agent_dim=$ROPE_AGENT_DIM \
     ++action_head_cfg.config.diffusion_model_cfg.global_video_timestep_mode=$GLOBAL_VIDEO_TIMESTEP_MODE \
-    ++action_head_cfg.config.diffusion_model_cfg.global_video_attention_mode=$GLOBAL_VIDEO_ATTENTION_MODE
+    ++action_head_cfg.config.diffusion_model_cfg.global_video_attention_mode=$GLOBAL_VIDEO_ATTENTION_MODE \
+    ++action_head_cfg.config.diffusion_model_cfg.use_sparse_hub_attention=$USE_SPARSE_HUB_ATTENTION

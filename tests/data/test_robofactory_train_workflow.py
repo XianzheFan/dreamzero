@@ -77,6 +77,7 @@ def test_liftbarrier_train_workflow_verifies_code_cache_and_robofactory_dataset(
         "ROPE_AGENT_DIM",
         "GLOBAL_VIDEO_DROPOUT_PROB",
         "GLOBAL_VIDEO_TIMESTEP_MODE",
+        "USE_SPARSE_HUB_ATTENTION",
         "multi_agent_shuffle_agents",
         "global_video_dropout_prob",
         "_compute_gripper_binary_action_loss",
@@ -131,6 +132,8 @@ def test_liftbarrier_train_workflow_passes_shared_global_binary_gripper_training
         'export MULTI_AGENT_SAMPLE_AGENT_POOL="${MULTI_AGENT_SAMPLE_AGENT_POOL:-true}"',
         'export GLOBAL_VIDEO_DROPOUT_PROB="${GLOBAL_VIDEO_DROPOUT_PROB:-0.1}"',
         'export GLOBAL_VIDEO_TIMESTEP_MODE="${GLOBAL_VIDEO_TIMESTEP_MODE:-clean}"',
+        'export GLOBAL_VIDEO_ATTENTION_MODE="${GLOBAL_VIDEO_ATTENTION_MODE:-read_only}"',
+        'export USE_SPARSE_HUB_ATTENTION="${USE_SPARSE_HUB_ATTENTION:-true}"',
         "bash scripts/train/robofactory_bimanual_training.sh",
     ):
         assert marker in script
@@ -149,6 +152,8 @@ def test_liftbarrier_train_workflow_passes_shared_global_binary_gripper_training
         "MULTI_AGENT_SAMPLE_AGENT_POOL=$MULTI_AGENT_SAMPLE_AGENT_POOL",
         "GLOBAL_VIDEO_DROPOUT_PROB=$GLOBAL_VIDEO_DROPOUT_PROB",
         "GLOBAL_VIDEO_TIMESTEP_MODE=$GLOBAL_VIDEO_TIMESTEP_MODE",
+        "GLOBAL_VIDEO_ATTENTION_MODE=$GLOBAL_VIDEO_ATTENTION_MODE",
+        "USE_SPARSE_HUB_ATTENTION=$USE_SPARSE_HUB_ATTENTION",
     ):
         assert marker in script
 

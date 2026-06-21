@@ -2426,6 +2426,34 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         shared_self_mask = k_is_shared.expand(q.shape[0], k.shape[0])
         return torch.where(q_is_shared, shared_self_mask, read_mask)
 
+    @staticmethod
+    def _dense_global_read_only_token_mask(
+        query_agent_id: torch.Tensor,
+        key_agent_id: torch.Tensor,
+        *,
+        shared_id: int,
+    ) -> torch.Tensor:
+        """Dense multi-agent mask with read-only shared-global queries.
+
+        This is the no-hub / teacher-style fallback: agent video/register
+        tokens can directly attend across agents, but shared-global tokens
+        remain clean context and therefore only query other shared-global
+        tokens. Without this special case, disabling sparse hubs still fell
+        through the sparse-hub mask whenever register or global tokens were
+        present, which was not a real dense baseline.
+        """
+        q = query_agent_id
+        k = key_agent_id
+        dense = torch.ones(
+            (q.shape[0], k.shape[0]),
+            device=q.device,
+            dtype=torch.bool,
+        )
+        q_is_shared = (q == shared_id).unsqueeze(1)
+        k_is_shared = (k == shared_id).unsqueeze(0)
+        shared_self_mask = k_is_shared.expand(q.shape[0], k.shape[0])
+        return torch.where(q_is_shared, shared_self_mask, dense)
+
     def _forward_train_multi_agent(
         self,
         x,
@@ -3096,7 +3124,19 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             [clean_ids, video_ids, global_ids, register_ids, hub_ids], dim=0
         )
 
-        if use_hub or register_token_count > 0 or global_token_count > 0 or clean_token_count > 0 or cached_token_agent_id is not None:
+        use_sparse_hub_mask = self.use_sparse_hub_attention and (
+            use_hub
+            or register_token_count > 0
+            or global_token_count > 0
+            or clean_token_count > 0
+            or cached_token_agent_id is not None
+        )
+        use_dense_global_read_only_mask = (
+            not self.use_sparse_hub_attention
+            and global_token_count > 0
+            and self.global_video_attention_mode == "read_only"
+        )
+        if use_sparse_hub_mask or use_dense_global_read_only_mask:
             if cached_token_agent_id is not None:
                 key_agent = torch.cat(
                     [cached_token_agent_id.to(x.device), new_token_agent_id], dim=0
@@ -3125,6 +3165,13 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                 def _mask_mod(b, h, q_idx, kv_idx):
                     qa = _agent_q[q_idx]
                     ka = _agent_k[kv_idx]
+                    if use_dense_global_read_only_mask:
+                        dense = torch.ones_like(qa, dtype=torch.bool)
+                        return torch.where(
+                            qa == shared_id_local,
+                            ka == shared_id_local,
+                            dense,
+                        )
                     # Per-agent tokens see their own stream + hub + the
                     # shared scene. Legacy bidirectional shared-global lets
                     # shared tokens see everyone; read_only treats shared
@@ -3162,13 +3209,20 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                     _compile=False,
                 )
             else:
-                mask_2d = self._sparse_hub_dense_token_mask(
-                    new_token_agent_id,
-                    key_agent,
-                    hub_id=hub_id,
-                    shared_id=shared_id,
-                    shared_global_attention_mode=self.global_video_attention_mode,
-                )
+                if use_dense_global_read_only_mask:
+                    mask_2d = self._dense_global_read_only_token_mask(
+                        new_token_agent_id,
+                        key_agent,
+                        shared_id=shared_id,
+                    )
+                else:
+                    mask_2d = self._sparse_hub_dense_token_mask(
+                        new_token_agent_id,
+                        key_agent,
+                        hub_id=hub_id,
+                        shared_id=shared_id,
+                        shared_global_attention_mode=self.global_video_attention_mode,
+                    )
                 attn_mask = mask_2d.unsqueeze(0).unsqueeze(0)
         else:
             attn_mask = None
