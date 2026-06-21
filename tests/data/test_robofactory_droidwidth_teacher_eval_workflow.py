@@ -115,18 +115,18 @@ def test_droidwidth_teacher_h100_eval_targets_h100_pool_resources():
     defaults = workflow["default-values"]
     assert workflow["workflow"]["name"] == "{{workflow_name}}"
     assert defaults["workflow_name"] == (
-        "dz-rf-sg-gamma-dwteacher-c500-slim-eval-h100-1seed1000-xz-20260621"
+        "dz-rf-sg-gamma-dwteacher-50kfrom0-c500-slim-eval-h100-1seed1000-xz-20260621"
     )
     assert defaults["run_name"] == (
-        "dz-rf-sg-gamma-dwteacher-c500-slim-eval-h100-1seed1000-xz-20260621"
+        "dz-rf-sg-gamma-dwteacher-50kfrom0-c500-slim-eval-h100-1seed1000-xz-20260621"
     )
     assert defaults["ckpt_setting"] == "checkpoint-500"
-    assert defaults["local_eval_ckpt_root"] == "gamma_droidwidth_teacher_c500_slim_eval_h100_1seed1000"
+    assert defaults["local_eval_ckpt_root"] == "gamma_droidwidth_teacher_50kfrom0_c500_slim_eval_h100_1seed1000"
     assert task["image"].startswith("nvcr.io/nvidian/groot-ci-base-eval:")
     assert 'RUN_NAME="{{run_name}}"' in script
     assert (
-        "dreamzero_runs/dz-rf-sg-gamma-dwteacher-lb500-r4-actiondelta-xianzhef-20260621-teacher/"
-        "checkpoints/dz-rf-sg-gamma-dwteacher-lb500-r4-actiondelta-xianzhef-20260621-teacher"
+        "dreamzero_runs/dz-rf-sg-gamma-dwteacher-lb500-50k-from0-xz-20260621-teacher/"
+        "checkpoints/dz-rf-sg-gamma-dwteacher-lb500-50k-from0-xz-20260621-teacher"
         in script
     )
     assert 'VIDEO_PRED_WRIST_WINDOW_MODE="${VIDEO_PRED_WRIST_WINDOW_MODE:-action}"' in script

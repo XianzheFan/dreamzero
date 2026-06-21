@@ -33,8 +33,8 @@ workflow:
           ROBOFACTORY_GIT_COMMIT="5868242322414a91454e22f1dd9641f613ba1bcf"
           DATA_S3_URI="s3://GearHome/users/xianzhef/oci-migration/data/robofactory_lerobot_v2/LiftBarrier-rf-500"
           MODEL_CACHE_S3_URI="s3://GearHome/users/xianzhef/oci-migration/checkpoints"
-          CKPT_S3_BASE="s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/dz-rf-sg-gamma-dwteacher-lb500-r4-actiondelta-xianzhef-20260621-teacher/checkpoints/dz-rf-sg-gamma-dwteacher-lb500-r4-actiondelta-xianzhef-20260621-teacher"
-          CKPT_AMLFS_BASE="/mnt/amlfs-01/home/xianzhef/osmo_cache/dreamzero/checkpoints/dz-rf-sg-gamma-dwteacher-lb500-r4-actiondelta-xianzhef-20260621-teacher/dz-rf-sg-gamma-dwteacher-lb500-r4-actiondelta-xianzhef-20260621-teacher"
+          CKPT_S3_BASE="s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/dz-rf-sg-gamma-dwteacher-lb500-50k-from0-xz-20260621-teacher/checkpoints/dz-rf-sg-gamma-dwteacher-lb500-50k-from0-xz-20260621-teacher"
+          CKPT_AMLFS_BASE="/mnt/amlfs-01/home/xianzhef/osmo_cache/dreamzero/checkpoints/dz-rf-sg-gamma-dwteacher-lb500-50k-from0-xz-20260621-teacher/dz-rf-sg-gamma-dwteacher-lb500-50k-from0-xz-20260621-teacher"
           CKPT_SETTING="{{ckpt_setting}}"
           CKPT_WAIT_TIMEOUT_SECONDS=5400
           CKPT_WAIT_INTERVAL_SECONDS=120
@@ -997,7 +997,7 @@ workflow:
     exec_timeout: 5h
     queue_timeout: 2h
 default-values:
-  workflow_name: dz-rf-sg-gamma-dwteacher-c500-slim-eval-h100-1seed1000-xz-20260621
-  run_name: dz-rf-sg-gamma-dwteacher-c500-slim-eval-h100-1seed1000-xz-20260621
+  workflow_name: dz-rf-sg-gamma-dwteacher-50kfrom0-c500-slim-eval-h100-1seed1000-xz-20260621
+  run_name: dz-rf-sg-gamma-dwteacher-50kfrom0-c500-slim-eval-h100-1seed1000-xz-20260621
   ckpt_setting: checkpoint-500
-  local_eval_ckpt_root: gamma_droidwidth_teacher_c500_slim_eval_h100_1seed1000
+  local_eval_ckpt_root: gamma_droidwidth_teacher_50kfrom0_c500_slim_eval_h100_1seed1000
