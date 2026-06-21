@@ -694,18 +694,25 @@ class BimanualPolicy:
         from omegaconf import OmegaConf
 
         ckpt_root = self.ckpt_dir / self.ckpt_setting
+        shape_roots: list[tuple[str, Path]] = [("fine-tune", ckpt_root)]
+        pretrained_path = self._cfg.get("pretrained_model_path", None)
+        if pretrained_path:
+            pretrained_root = Path(pretrained_path)
+            if pretrained_root != ckpt_root:
+                shape_roots.append(("pretrained", pretrained_root))
 
         def dim_from_shape(
             candidates: tuple[tuple[str, int], ...],
-        ) -> tuple[int | None, str | None, tuple[int, ...] | None]:
-            for key, axis in candidates:
-                shape = _safetensors_tensor_shape(ckpt_root, key)
-                if shape is None:
-                    continue
-                return int(shape[axis]), key, shape
-            return None, None, None
+        ) -> tuple[int | None, str | None, tuple[int, ...] | None, str | None]:
+            for source_name, model_dir in shape_roots:
+                for key, axis in candidates:
+                    shape = _safetensors_tensor_shape(model_dir, key)
+                    if shape is None:
+                        continue
+                    return int(shape[axis]), key, shape, source_name
+            return None, None, None, None
 
-        action_dim, action_key, action_shape = dim_from_shape(
+        action_dim, action_key, action_shape, action_source = dim_from_shape(
             (
                 ("action_head.model.base_model.model.action_decoder.layer2.b", -1),
                 ("action_head.model.base_model.model.action_decoder.layer2.W", -1),
@@ -715,7 +722,7 @@ class BimanualPolicy:
                 ("action_head.model.action_encoder.W1.W", -2),
             )
         )
-        state_dim, state_key, state_shape = dim_from_shape(
+        state_dim, state_key, state_shape, state_source = dim_from_shape(
             (
                 ("action_head.model.base_model.model.state_encoder.layer1.W", -2),
                 ("action_head.model.state_encoder.layer1.W", -2),
@@ -724,12 +731,18 @@ class BimanualPolicy:
 
         updates: list[tuple[str, object, object]] = []
 
-        def update_existing(path: str, value: int, *, minimum: bool = False) -> None:
-            old = OmegaConf.select(self._cfg, path, default=None)
-            if old is None:
+        def update_config_path(
+            path: str,
+            value: int,
+            *,
+            minimum: bool = False,
+            force_add: bool = False,
+        ) -> None:
+            old = OmegaConf.select(self._cfg, path, default=_MISSING)
+            if old is _MISSING and not force_add:
                 return
             try:
-                old_int = int(old)
+                old_int = int(old) if old is not _MISSING else _MISSING
             except (TypeError, ValueError):
                 old_int = old
             new_value = int(value)
@@ -737,7 +750,13 @@ class BimanualPolicy:
                 new_value = max(old_int, new_value)
             if old_int == new_value:
                 return
-            OmegaConf.update(self._cfg, path, new_value, merge=False, force_add=False)
+            OmegaConf.update(
+                self._cfg,
+                path,
+                new_value,
+                merge=False,
+                force_add=force_add,
+            )
             updates.append((path, old, new_value))
 
         if action_dim is not None:
@@ -745,43 +764,76 @@ class BimanualPolicy:
                 "model.config.action_dim",
                 "model.config.action_head_cfg.config.action_dim",
                 "model.config.action_head_cfg.config.diffusion_model_cfg.action_dim",
+            ):
+                update_config_path(path, action_dim, force_add=True)
+            for path in (
                 "model.action_head_cfg.config.action_dim",
                 "model.action_head_cfg.config.diffusion_model_cfg.action_dim",
                 "action_head_cfg.config.action_dim",
                 "action_head_cfg.config.diffusion_model_cfg.action_dim",
             ):
-                update_existing(path, action_dim)
+                update_config_path(path, action_dim)
+            for path in (
+                "model.config.action_head_cfg.config.max_action_dim",
+            ):
+                update_config_path(path, action_dim, minimum=True, force_add=True)
             for path in (
                 "model.config.action_head_cfg.config.max_action_dim",
                 "model.action_head_cfg.config.max_action_dim",
                 "action_head_cfg.config.max_action_dim",
                 "max_action_dim",
             ):
-                update_existing(path, action_dim, minimum=True)
+                update_config_path(path, action_dim, minimum=True)
 
         if state_dim is not None:
             for path in (
                 "model.config.action_head_cfg.config.max_state_dim",
                 "model.config.action_head_cfg.config.diffusion_model_cfg.max_state_dim",
+            ):
+                update_config_path(path, state_dim, minimum=True, force_add=True)
+            for path in (
                 "model.action_head_cfg.config.max_state_dim",
                 "model.action_head_cfg.config.diffusion_model_cfg.max_state_dim",
                 "action_head_cfg.config.max_state_dim",
                 "action_head_cfg.config.diffusion_model_cfg.max_state_dim",
                 "max_state_dim",
             ):
-                update_existing(path, state_dim, minimum=True)
+                update_config_path(path, state_dim, minimum=True)
 
-        if updates:
+        if action_dim is None or state_dim is None:
             logging.warning(
-                "Patched eval model IO shape from fine-tune checkpoint: "
-                "action_dim=%s from %s%s, state_dim=%s from %s%s; updates=%s",
+                "Could not infer complete eval model IO shape from checkpoint tensors: "
+                "action_dim=%s state_dim=%s searched=%s",
                 action_dim,
+                state_dim,
+                ", ".join(f"{name}:{path}" for name, path in shape_roots),
+            )
+        elif updates:
+            logging.warning(
+                "Patched eval model IO shape from checkpoint tensors: "
+                "action_dim=%s from %s:%s%s, state_dim=%s from %s:%s%s; updates=%s",
+                action_dim,
+                action_source,
                 action_key,
                 "" if action_shape is None else f" shape={action_shape}",
                 state_dim,
+                state_source,
                 state_key,
                 "" if state_shape is None else f" shape={state_shape}",
                 ", ".join(f"{path}:{old}->{new}" for path, old, new in updates),
+            )
+        else:
+            logging.info(
+                "Eval model IO shape already matches checkpoint tensors: "
+                "action_dim=%s from %s:%s%s, state_dim=%s from %s:%s%s",
+                action_dim,
+                action_source,
+                action_key,
+                "" if action_shape is None else f" shape={action_shape}",
+                state_dim,
+                state_source,
+                state_key,
+                "" if state_shape is None else f" shape={state_shape}",
             )
 
     @staticmethod

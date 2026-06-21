@@ -822,6 +822,82 @@ def test_runtime_action_shapes_follow_checkpoint_config(caplog):
     assert "Overriding eval num_frames=9" in caplog.text
 
 
+def test_eval_io_shape_patch_falls_back_to_pretrained_tensor_shapes(
+    monkeypatch, tmp_path, caplog
+):
+    mod = _load_server_module()
+    OmegaConf = pytest.importorskip("omegaconf").OmegaConf
+    policy = mod.BimanualPolicy.__new__(mod.BimanualPolicy)
+    policy.ckpt_dir = tmp_path / "eval_ckpts"
+    policy.ckpt_setting = "checkpoint-8000"
+    pretrained_root = tmp_path / "DreamZero-DROID"
+    policy._cfg = OmegaConf.create(
+        {
+            "pretrained_model_path": str(pretrained_root),
+            "model": {
+                "config": {
+                    "action_dim": 8,
+                    "action_head_cfg": {
+                        "config": {
+                            "action_dim": 8,
+                            "max_action_dim": 8,
+                            "max_state_dim": 8,
+                            "diffusion_model_cfg": {
+                                "action_dim": 8,
+                                "max_state_dim": 8,
+                            },
+                        }
+                    },
+                }
+            },
+            "action_head_cfg": {
+                "config": {
+                    "action_dim": 8,
+                    "max_action_dim": 8,
+                    "max_state_dim": 8,
+                    "diffusion_model_cfg": {
+                        "action_dim": 8,
+                        "max_state_dim": 8,
+                    },
+                }
+            },
+            "max_action_dim": 8,
+            "max_state_dim": 8,
+        }
+    )
+
+    def fake_tensor_shape(model_dir, key):
+        if model_dir != pretrained_root:
+            return None
+        if key == "action_head.model.action_decoder.layer2.b":
+            return (1, 32)
+        if key == "action_head.model.state_encoder.layer1.W":
+            return (1, 64, 1024)
+        return None
+
+    monkeypatch.setattr(mod, "_safetensors_tensor_shape", fake_tensor_shape)
+
+    with caplog.at_level("WARNING"):
+        policy._patch_model_io_shape_from_finetune_checkpoint()
+
+    assert policy._cfg.model.config.action_dim == 32
+    assert policy._cfg.model.config.action_head_cfg.config.action_dim == 32
+    assert (
+        policy._cfg.model.config.action_head_cfg.config.diffusion_model_cfg.action_dim
+        == 32
+    )
+    assert policy._cfg.action_head_cfg.config.action_dim == 32
+    assert policy._cfg.max_action_dim == 32
+    assert policy._cfg.model.config.action_head_cfg.config.max_state_dim == 64
+    assert (
+        policy._cfg.model.config.action_head_cfg.config.diffusion_model_cfg.max_state_dim
+        == 64
+    )
+    assert policy._cfg.max_state_dim == 64
+    assert "from pretrained:action_head.model.action_decoder.layer2.b shape=(1, 32)" in caplog.text
+    assert "from pretrained:action_head.model.state_encoder.layer1.W shape=(1, 64, 1024)" in caplog.text
+
+
 def test_default_eval_resolution_keeps_checkpoint_config():
     OmegaConf = pytest.importorskip("omegaconf").OmegaConf
     policy = _make_policy(_metadata_with_action_stats())
