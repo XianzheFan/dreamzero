@@ -104,6 +104,13 @@ model-output jitter from execution smoothing: `pred_accel_ratio` and
 compares each new chunk's first joint target to the last command from the
 previous chunk.
 
+The RoboFactory client now requires the policy server to declare
+`action_representation` (`absolute_qpos` or `robotwin_delta`) in its handshake.
+This prevents a missing server field from silently falling back to legacy delta
+integration, which would make relative-action checkpoints look over-amplified
+and jittery. The value is copied into `results.json`, action dumps, sweep
+summaries, and checkpoint-grid summaries.
+
 New gamma training checkpoints include `experiment_cfg/runtime_provenance.json`,
 and the droidwidth closed-loop eval manifests surface checkpoint code commit,
 stage label, action dimension, and global-video attention mode. Use those fields

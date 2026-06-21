@@ -84,6 +84,7 @@ def _setting_from_results(results: dict[str, Any], setting_dir: str) -> dict[str
     return {
         "setting_dir": os.path.basename(setting_dir),
         "replan_every": _float_or_none(cfg.get("replan_every")),
+        "action_representation": cfg.get("action_representation"),
         "scale": _float_or_none(scale),
         "scale_reference": reference,
         "scale_clip": _float_or_none(clip),
@@ -200,6 +201,9 @@ def summarize_setting(setting_dir: str) -> dict[str, Any]:
                 "right_grasp_episodes": trace.get("right_grasp_episodes"),
                 "all_grippers_decisive_close": summary.get(
                     "all_grippers_decisive_close"
+                ),
+                "action_representation_counts": summary.get(
+                    "action_representation_counts"
                 ),
                 "any_gripper_never_closes": summary.get("any_gripper_never_closes"),
                 "mean_joint_step_delta": _float_or_none(
@@ -448,6 +452,7 @@ def print_table(rows: list[dict[str, Any]]) -> None:
     columns = [
         ("dir", "setting_dir"),
         ("replan", "replan_every"),
+        ("actrep", "action_representation"),
         ("scale", "scale"),
         ("clip", "scale_clip"),
         ("slew", "target_slew_rate"),

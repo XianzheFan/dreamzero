@@ -19,6 +19,7 @@ def test_summarize_sweep_extracts_trace_metrics(tmp_path):
             "results": [{"seed": 1000, "success": True}],
             "eval_config": {
                 "replan_every": 12,
+                "action_representation": "absolute_qpos",
                 "joint_target_scale": 1.5,
                 "joint_target_scale_reference": "auto",
                 "joint_target_scale_clip": 0.25,
@@ -34,6 +35,7 @@ def test_summarize_sweep_extracts_trace_metrics(tmp_path):
         {
             "summary": {
                 "all_grippers_decisive_close": 1,
+                "action_representation_counts": {"absolute_qpos": 1},
                 "any_gripper_never_closes": 0,
                 "mean_joint_step_delta": 0.04,
                 "max_joint_step_delta": 0.2,
@@ -122,6 +124,7 @@ def test_summarize_sweep_extracts_trace_metrics(tmp_path):
             "results": [{"seed": 1000, "success": False}],
             "eval_config": {
                 "replan_every": 24,
+                "action_representation": "absolute_qpos",
                 "joint_delta_scale": 1.0,
                 "joint_delta_scale_reference": "auto",
                 "joint_delta_scale_clip": 0.25,
@@ -137,6 +140,7 @@ def test_summarize_sweep_extracts_trace_metrics(tmp_path):
         {
             "summary": {
                 "all_grippers_decisive_close": 1,
+                "action_representation_counts": {"absolute_qpos": 1},
                 "any_gripper_never_closes": 0,
                 "mean_joint_step_delta": 0.02,
                 "max_joint_step_delta": 0.1,
@@ -224,6 +228,8 @@ def test_summarize_sweep_extracts_trace_metrics(tmp_path):
     assert [row["scale"] for row in rows] == [1.0, 1.5]
     assert rows[0]["success_count"] == 0
     assert rows[0]["replan_every"] == 24.0
+    assert rows[0]["action_representation"] == "absolute_qpos"
+    assert rows[0]["action_representation_counts"] == {"absolute_qpos": 1}
     assert rows[0]["target_slew_rate"] == 0.35
     assert rows[0]["target_accel_limit"] == 0.0
     assert rows[0]["replan_boundary_blend_steps"] == 0.0
@@ -260,6 +266,7 @@ def test_summarize_sweep_extracts_trace_metrics(tmp_path):
     assert rows[0]["right_grasp_episodes"] == 0
     assert rows[1]["success_count"] == 1
     assert rows[1]["replan_every"] == 12.0
+    assert rows[1]["action_representation"] == "absolute_qpos"
     assert rows[1]["scale_clip"] == 0.25
     assert rows[1]["target_slew_rate"] == 0.35
     assert rows[1]["target_accel_limit"] == 0.08

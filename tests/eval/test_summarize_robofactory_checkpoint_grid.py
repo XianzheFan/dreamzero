@@ -61,6 +61,7 @@ def _make_eval(
                 {
                     "setting_dir": "rp12_best",
                     "replan_every": 12,
+                    "action_representation": "absolute_qpos",
                     "scale": 1.0,
                     "target_slew_rate": 0.35,
                     "target_accel_limit": 0.08,
@@ -149,6 +150,7 @@ def test_summarize_roots_orders_by_checkpoint_and_selects_best_setting(tmp_path)
     assert rows[0]["checkpoint_action_dim"] == 32
     assert rows[0]["checkpoint_global_video_attention_mode"] == "bidirectional"
     assert rows[0]["best_setting_dir"] == "rp12_best"
+    assert rows[0]["best_action_representation"] == "absolute_qpos"
     assert rows[0]["raw_joint_saturation_frac"] == 0.7
     assert rows[0]["mean_joint_accel_to_delta_ratio"] == 0.67
     assert rows[0]["max_joint_accel_to_delta_ratio"] == 0.5

@@ -73,6 +73,33 @@ def test_rgb_trace_dump_is_explicit_opt_in_and_deduped(monkeypatch):
     np.testing.assert_array_equal(dump["right_rgb"][1], right + 1)
 
 
+def test_resolve_action_representation_requires_explicit_server_meta(monkeypatch):
+    mod = _load_eval_module(monkeypatch)
+
+    assert (
+        mod.resolve_action_representation({"action_representation": "absolute_qpos"})
+        == "absolute_qpos"
+    )
+    assert (
+        mod.resolve_action_representation({"action_representation": "robotwin_delta"})
+        == "robotwin_delta"
+    )
+
+    try:
+        mod.resolve_action_representation({})
+    except ValueError as exc:
+        assert "missing action_representation" in str(exc)
+    else:
+        raise AssertionError("missing action_representation should fail")
+
+    try:
+        mod.resolve_action_representation({"action_representation": "delta"})
+    except ValueError as exc:
+        assert "unsupported server action_representation" in str(exc)
+    else:
+        raise AssertionError("unknown action_representation should fail")
+
+
 def test_close_after_step_does_not_force_open_before_threshold(monkeypatch):
     mod = _load_eval_module(monkeypatch)
     action = np.zeros(16, dtype=np.float32)

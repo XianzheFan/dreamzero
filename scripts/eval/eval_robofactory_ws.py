@@ -62,6 +62,7 @@ ENV_TRACE_COLUMNS = np.asarray(
     dtype="<U32",
 )
 JOINT_TARGET_SLICES = ((0, 7), (8, 15))
+VALID_ACTION_REPRESENTATIONS = frozenset(("absolute_qpos", "robotwin_delta"))
 
 # Module-level wildcard import for env registration -- Python rejects
 # ``from x import *`` inside a function. Only ever imported from the
@@ -312,6 +313,23 @@ def integrate_action(
     out[8:15] = qpos16[8:15] + action16[8:15]
     out[15] = action16[15]
     return out
+
+
+def resolve_action_representation(server_meta: dict) -> str:
+    value = server_meta.get("action_representation")
+    if value is None:
+        raise ValueError(
+            "server meta is missing action_representation; refusing to infer "
+            "whether action_chunk is absolute_qpos or robotwin_delta"
+        )
+    value = str(value)
+    if value not in VALID_ACTION_REPRESENTATIONS:
+        allowed = ", ".join(sorted(VALID_ACTION_REPRESENTATIONS))
+        raise ValueError(
+            f"unsupported server action_representation={value!r}; "
+            f"expected one of: {allowed}"
+        )
+    return value
 
 
 def env_action_dict(abs16: np.ndarray) -> dict:
@@ -1269,7 +1287,7 @@ def main():
     meta = msgpack.unpackb(meta_raw, raw=False) if isinstance(meta_raw, (bytes, bytearray)) else json.loads(meta_raw)
     print(f"Server meta: {meta}", flush=True)
     assert meta.get("num_agents") == 2, f"server reports num_agents={meta.get('num_agents')}"
-    action_representation = meta.get("action_representation", "robotwin_delta")
+    action_representation = resolve_action_representation(meta)
     warning = temporal_action_ensemble_overlap_warning(
         args.temporal_action_ensemble_decay,
         args.replan_every,
@@ -1299,6 +1317,7 @@ def main():
                         "num_episodes": args.num_episodes,
                         "max_steps": args.max_steps,
                         "replan_every": args.replan_every,
+                        "action_representation": action_representation,
                         "joint_target_scale": args.joint_target_scale,
                         "joint_delta_scale": args.joint_target_scale,
                         "left_joint_target_scale": args.left_joint_target_scale,
@@ -1344,6 +1363,7 @@ def main():
             "seed": seed,
             "success": bool(success),
             "session_id": np.asarray(dump.get("session_id", ""), dtype="<U64"),
+            "action_representation": np.asarray(action_representation, dtype="<U32"),
             "infer_step": np.asarray(dump["infer_step"], dtype=np.int32),
             "pred_chunk": np.stack(dump["pred_chunk"]),       # denorm [n_infer, chunk_len, 16]
             "obs_qpos": np.stack(dump["obs_qpos"]),           # [n_infer, 16]

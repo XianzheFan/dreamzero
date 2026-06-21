@@ -43,6 +43,7 @@ def test_analyze_episode_reports_joint_jitter_metrics(tmp_path):
         path,
         seed=np.asarray(1000),
         success=np.asarray(False),
+        action_representation=np.asarray("absolute_qpos", dtype="<U32"),
         exec_action=exec_action,
         exec_action_pre_blend=exec_action_pre_blend,
         exec_action_pre_accel=exec_action_pre_accel,
@@ -68,6 +69,7 @@ def test_analyze_episode_reports_joint_jitter_metrics(tmp_path):
     )
 
     assert episode["mean_joint_step_delta"] > 0.0
+    assert episode["action_representation"] == "absolute_qpos"
     assert episode["max_joint_step_accel"] > 0.0
     assert episode["mean_joint_accel_to_delta_ratio"] > 0.0
     assert episode["max_joint_accel_to_delta_ratio"] > 0.0
@@ -131,6 +133,9 @@ def test_analyze_episode_reports_joint_jitter_metrics(tmp_path):
     assert norm_debug["joint_clamp_delta_mean_by_arm"]["right"] > 0.0
     assert norm_debug["raw_joint_top_saturated_dims"][0]["dim"] == 0
     assert norm_debug["raw_joint_top_saturated_dims"][1]["dim"] == 8
+
+    summary = _aggregate([episode])
+    assert summary["action_representation_counts"] == {"absolute_qpos": 1}
 
 
 def test_analyze_episode_reports_joint_delta_sign_flips(tmp_path):

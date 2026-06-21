@@ -75,6 +75,23 @@ def _safe_float(x: Any) -> float | None:
     return float(x)
 
 
+def _npz_string(value: Any) -> str:
+    arr = np.asarray(value)
+    if arr.shape == ():
+        return str(arr.item())
+    if arr.size == 1:
+        return str(arr.reshape(-1)[0])
+    return ""
+
+
+def _count_values(values) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for value in values:
+        label = "missing" if value is None else str(value)
+        counts[label] = counts.get(label, 0) + 1
+    return counts
+
+
 def _parse_int_list(value: str | None) -> tuple[int, ...] | None:
     if value is None:
         return None
@@ -517,6 +534,7 @@ def analyze_episode(
     d = np.load(path)
     seed = int(d["seed"])
     success = bool(d["success"])
+    action_representation = _npz_string(d["action_representation"]) if "action_representation" in d.files else None
     exec_action = np.asarray(d["exec_action"], dtype=np.float32)
     exec_action_pre_blend = (
         np.asarray(d["exec_action_pre_blend"], dtype=np.float32)
@@ -933,6 +951,7 @@ def analyze_episode(
         "file": os.path.basename(path),
         "seed": seed,
         "success": success,
+        "action_representation": action_representation,
         "steps": steps,
         "num_infer": int(pred_chunk.shape[0]),
         "chunk_len": int(pred_chunk.shape[1]),
@@ -1228,6 +1247,9 @@ def _aggregate(episodes: list[dict[str, Any]]) -> dict[str, Any]:
         "episodes": n,
         "success_count": success_count,
         "success_rate": success_count / n if n else 0.0,
+        "action_representation_counts": _count_values(
+            e.get("action_representation") for e in episodes
+        ),
         "num_arms": len(labels),
         "arm_labels": labels,
         "all_grippers_decisive_close": all_decisive,
@@ -1479,6 +1501,10 @@ def main() -> None:
     print(f"  success: {summary['success_count']}/{summary['episodes']} ({summary['success_rate']:.1%})")
     print(
         f"  arms: {summary['num_arms']} ({', '.join(summary['arm_labels'])})"
+    )
+    print(
+        "  action representation: "
+        f"{summary['action_representation_counts']}"
     )
     print(
         "  all grippers decisive close: "
