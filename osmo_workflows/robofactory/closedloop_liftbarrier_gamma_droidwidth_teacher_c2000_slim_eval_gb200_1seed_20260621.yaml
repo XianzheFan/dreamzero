@@ -39,6 +39,8 @@ workflow:
           CKPT_WAIT_TIMEOUT_SECONDS=5400
           CKPT_WAIT_INTERVAL_SECONDS=120
           LOCAL_EVAL_CKPT_ROOT="/workspace/eval_ckpts/{{local_eval_ckpt_root}}"
+          EVAL_NUM_FRAMES="{{eval_num_frames}}"
+          EVAL_ACTION_HORIZON="{{eval_action_horizon}}"
           AMLFS_MODEL_CACHE_DIR="/mnt/amlfs-01/home/xianzhef/osmo_cache/dreamzero/checkpoints"
           DREAMZERO_VENV="/mnt/amlfs-01/home/xianzhef/osmo_cache/dreamzero/venvs/gb200_rf_eval_py312"
           MODEL_ONLY_DIAG="${MODEL_ONLY_DIAG:-1}"
@@ -78,7 +80,7 @@ workflow:
           SUCCESS_MODE="strict-lift"
           STRICT_SUCCESS_MIN_GRASP_COUNT=1
           RUN_OFFLINE=0
-          export CKPT_SETTING LOCAL_EVAL_CKPT_ROOT
+          export CKPT_SETTING LOCAL_EVAL_CKPT_ROOT EVAL_NUM_FRAMES EVAL_ACTION_HORIZON
 
           case "$DREAMZERO_GIT_URL" in
             https://github.com/XianzheFan/dreamzero.git) ;;
@@ -148,6 +150,8 @@ workflow:
               "RUN_NAME",
               "CKPT_SETTING",
               "LOCAL_EVAL_CKPT_ROOT",
+              "EVAL_NUM_FRAMES",
+              "EVAL_ACTION_HORIZON",
               "DREAMZERO_GIT_REF",
               "DREAMZERO_GIT_COMMIT",
               "ROBOFACTORY_GIT_COMMIT",
@@ -687,6 +691,65 @@ workflow:
             echo "FATAL: stale umt5-xxl-tokenizer path remains in checkpoint config" >&2
             exit 26
           fi
+          echo "Validating eval window against checkpoint config"
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          from omegaconf import OmegaConf
+
+          def as_int(name, value):
+              try:
+                  return int(value)
+              except (TypeError, ValueError) as exc:
+                  raise SystemExit(f"FATAL: {name} must be an integer, got {value!r}") from exc
+
+          ckpt = Path(os.environ["LOCAL_EVAL_CKPT_ROOT"]) / os.environ["CKPT_SETTING"]
+          cfg = OmegaConf.load(ckpt / "experiment_cfg/conf.yaml")
+          eval_num_frames = as_int("EVAL_NUM_FRAMES", os.environ.get("EVAL_NUM_FRAMES"))
+          eval_action_horizon = as_int(
+              "EVAL_ACTION_HORIZON", os.environ.get("EVAL_ACTION_HORIZON")
+          )
+          ckpt_action_horizon = OmegaConf.select(
+              cfg, "action_head_cfg.config.action_horizon", default=None
+          )
+          if ckpt_action_horizon in (None, ""):
+              raise SystemExit("FATAL: checkpoint config missing action_head_cfg.config.action_horizon")
+          ckpt_action_horizon = as_int("checkpoint action_horizon", ckpt_action_horizon)
+          if ckpt_action_horizon != eval_action_horizon:
+              raise SystemExit(
+                  "FATAL: eval_action_horizon mismatch: "
+                  f"eval={eval_action_horizon} checkpoint={ckpt_action_horizon}"
+              )
+
+          frame_paths = (
+              "num_frames",
+              "action_head_cfg.config.num_frames",
+              "action_head_cfg.config.diffusion_model_cfg.num_frames",
+          )
+          ckpt_num_frames = None
+          ckpt_num_frames_path = ""
+          for path in frame_paths:
+              value = OmegaConf.select(cfg, path, default=None)
+              if value not in (None, ""):
+                  ckpt_num_frames = as_int(f"checkpoint {path}", value)
+                  ckpt_num_frames_path = path
+                  break
+          if ckpt_num_frames is not None and ckpt_num_frames != eval_num_frames:
+              raise SystemExit(
+                  "FATAL: eval_num_frames mismatch: "
+                  f"eval={eval_num_frames} checkpoint={ckpt_num_frames} ({ckpt_num_frames_path})"
+              )
+          if ckpt_num_frames is None:
+              print("EVAL_WINDOW_CHECKPOINT_NUM_FRAMES_MISSING")
+          print(
+              "EVAL_WINDOW_VALIDATION_OK "
+              f"eval_num_frames={eval_num_frames} "
+              f"eval_action_horizon={eval_action_horizon} "
+              f"checkpoint_action_horizon={ckpt_action_horizon} "
+              f"checkpoint_num_frames={ckpt_num_frames if ckpt_num_frames is not None else ''}"
+          )
+          PY
           du -sh "$candidate_dir"
 
           if [ "$MODEL_ONLY_DIAG" = "1" ]; then
@@ -938,8 +1001,8 @@ workflow:
             --port "$PORT" \
             --image-h 240 \
             --image-w 320 \
-            --num-frames "{{eval_num_frames}}" \
-            --action-horizon "{{eval_action_horizon}}" \
+            --num-frames "$EVAL_NUM_FRAMES" \
+            --action-horizon "$EVAL_ACTION_HORIZON" \
             --return-action-debug \
             --gripper-binarize-threshold "$GRIPPER_BINARIZE_THRESHOLD" \
             --shared-global-wrist-window-mode "$SHARED_GLOBAL_WRIST_WINDOW_MODE" \
