@@ -211,13 +211,34 @@ def test_liftbarrier_train_workflow_promotes_nested_model_cache_without_mv_failu
     assert "mv -n -t" not in script
 
 
+def test_liftbarrier_train_workflows_restore_minimal_wan_components():
+    for path in (WORKFLOW_PATH, STAGED_WORKFLOW_PATH, DROIDWIDTH_TEACHER_WORKFLOW_PATH):
+        with path.open() as f:
+            workflow = yaml.safe_load(f)
+
+        script = _task_by_name(workflow, "train")["files"][0]["contents"]
+
+        assert "download_or_restore_wan_minimal()" in script
+        assert 'download_or_restore_wan_minimal "$WAN_CKPT_DIR"' in script
+        assert (
+            'download_or_restore_model "Wan2.1-I2V-14B-480P" '
+            '"Wan-AI/Wan2.1-I2V-14B-480P" "model" "$WAN_CKPT_DIR"'
+            not in script
+        )
+        assert 'osmo data download --resume --regex "$wan_component_regex"' in script
+        assert "models_t5_umt5-xxl-enc-bf16.pth" in script
+        assert "models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth" in script
+        assert "Wan2.1_VAE.pth" in script
+        assert "hf_hub_download" in script
+
+
 def test_liftbarrier_train_workflow_embedded_python_blocks_compile():
     with WORKFLOW_PATH.open() as f:
         workflow = yaml.safe_load(f)
 
     script = _task_by_name(workflow, "train")["files"][0]["contents"]
     heredocs = _python_heredocs(script)
-    assert len(heredocs) == 3
+    assert len(heredocs) == 5
     for block in heredocs:
         compile(block, f"{WORKFLOW_PATH}:embedded-python", "exec")
 
@@ -314,7 +335,7 @@ def test_liftbarrier_gamma_staged_workflow_embedded_python_blocks_compile():
 
     script = _task_by_name(workflow, "train")["files"][0]["contents"]
     heredocs = _python_heredocs(script)
-    assert len(heredocs) == 3
+    assert len(heredocs) == 5
     for block in heredocs:
         compile(block, f"{STAGED_WORKFLOW_PATH}:embedded-python", "exec")
 
@@ -367,6 +388,6 @@ def test_liftbarrier_gamma_droidwidth_teacher_workflow_embedded_python_blocks_co
 
     script = _task_by_name(workflow, "train")["files"][0]["contents"]
     heredocs = _python_heredocs(script)
-    assert len(heredocs) == 3
+    assert len(heredocs) == 5
     for block in heredocs:
         compile(block, f"{DROIDWIDTH_TEACHER_WORKFLOW_PATH}:embedded-python", "exec")

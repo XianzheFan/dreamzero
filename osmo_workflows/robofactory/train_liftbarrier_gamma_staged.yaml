@@ -246,6 +246,63 @@ workflow:
               fi
             }
 
+            download_or_restore_wan_minimal() {
+              dest="$1"
+              mkdir -p "$dest"
+              if model_dir_is_usable "Wan2.1-I2V-14B-480P" "$dest"; then
+                echo "Minimal Wan2.1 components already present locally: $dest"
+                return 0
+              fi
+
+              echo "Trying filtered xianzhef S3 Wan component cache."
+              wan_component_regex='.*(Wan2\.1_VAE\.pth|models_t5_umt5-xxl-enc-bf16\.pth|models_clip_open-clip-xlm-roberta-large-vit-huge-14\.pth)$'
+              set +e
+              osmo data download --resume --regex "$wan_component_regex" "${MODEL_CACHE_S3_URI}/Wan2.1-I2V-14B-480P/" "$dest"
+              cache_status=$?
+              set -e
+              resolved_cache_root="$(resolve_model_root "Wan2.1-I2V-14B-480P" "$dest" || true)"
+              if [ "$cache_status" -eq 0 ] && [ -n "$resolved_cache_root" ]; then
+                promote_model_root "$resolved_cache_root" "$dest"
+              fi
+              if model_dir_is_usable "Wan2.1-I2V-14B-480P" "$dest"; then
+                echo "Restored minimal Wan2.1 components from filtered S3 cache."
+                return 0
+              fi
+
+              python - <<'PY'
+            import importlib.util
+            import subprocess
+            import sys
+
+            if importlib.util.find_spec("huggingface_hub") is None:
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "huggingface_hub"])
+            PY
+              echo "No usable filtered S3 cache; downloading minimal Wan2.1 components from Hugging Face."
+              python - "$dest" <<'PY'
+            import sys
+            from pathlib import Path
+            from huggingface_hub import hf_hub_download
+
+            dest = Path(sys.argv[1])
+            for filename in (
+                "models_t5_umt5-xxl-enc-bf16.pth",
+                "models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth",
+                "Wan2.1_VAE.pth",
+            ):
+                path = hf_hub_download(
+                    repo_id="Wan-AI/Wan2.1-I2V-14B-480P",
+                    filename=filename,
+                    repo_type="model",
+                    local_dir=str(dest),
+                )
+                print(f"restored {filename}: {path}")
+            PY
+              if ! model_dir_is_usable "Wan2.1-I2V-14B-480P" "$dest"; then
+                echo "ERROR: minimal Wan2.1 components are still missing." >&2
+                exit 8
+              fi
+            }
+
             valid_tokenizer_dir() {
               [ -f "$1/tokenizer_config.json" ] && { [ -f "$1/tokenizer.json" ] || [ -f "$1/spiece.model" ]; }
             }
@@ -428,7 +485,7 @@ workflow:
             TOKENIZER_DIR="/workspace/checkpoints/umt5-xxl-tokenizer"
             PRETRAINED_DIR="/workspace/checkpoints/DreamZero-DROID"
 
-            download_or_restore_model "Wan2.1-I2V-14B-480P" "Wan-AI/Wan2.1-I2V-14B-480P" "model" "$WAN_CKPT_DIR"
+            download_or_restore_wan_minimal "$WAN_CKPT_DIR"
             download_or_restore_tokenizer "umt5-xxl-tokenizer" "google/umt5-xxl" "$TOKENIZER_DIR"
             download_or_restore_model "DreamZero-DROID" "GEAR-Dreams/DreamZero-DROID" "model" "$PRETRAINED_DIR"
 
