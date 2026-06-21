@@ -112,6 +112,11 @@ def test_droidwidth_teacher_eval_writes_checkpoint_manifest():
     assert "checkpoint_eval_manifest.txt" in script
     assert "DREAMZERO_GIT_COMMIT" in script
     assert "CKPT_SETTING" in script
+    assert "runtime_provenance.json" in script
+    assert "checkpoint_code_commit" in script
+    assert "checkpoint_stage_label" in script
+    assert "checkpoint_action_dim" in script
+    assert "checkpoint_global_video_attention_mode" in script
     assert "VIDEO_PRED_ROLLOUT_MODE" in script
     assert "REPLAN_EVERYS" in script
     assert "TEMPORAL_ACTION_ENSEMBLE_DECAY" in script
@@ -172,6 +177,11 @@ def test_droidwidth_teacher_h100_eval_targets_h100_pool_resources():
     assert "write_eval_manifest" in script
     assert "checkpoint_eval_manifest.json" in script
     assert "DREAMZERO_GIT_COMMIT" in script
+    assert "runtime_provenance.json" in script
+    assert "checkpoint_code_commit" in script
+    assert "checkpoint_stage_label" in script
+    assert "checkpoint_action_dim" in script
+    assert "checkpoint_global_video_attention_mode" in script
     assert "TEMPORAL_ACTION_ENSEMBLE_DECAYS" in script
     assert 'write_eval_manifest "$status" || true' in script
     assert "Preflighting RoboFactory renderer before loading policy server" in script

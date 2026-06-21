@@ -155,6 +155,29 @@ def summarize_eval_root(root: Path) -> dict[str, Any]:
         "eval_status": manifest.get("eval_status", ""),
         "run_name": manifest.get("run_name", ""),
         "dreamzero_git_commit": manifest.get("dreamzero_git_commit", ""),
+        "checkpoint_code_commit": manifest.get("checkpoint_code_commit", ""),
+        "checkpoint_expected_code_commit": manifest.get(
+            "checkpoint_expected_code_commit", ""
+        ),
+        "checkpoint_stage_label": manifest.get("checkpoint_stage_label", ""),
+        "checkpoint_action_dim": manifest.get("checkpoint_action_dim", ""),
+        "checkpoint_diffusion_action_dim": manifest.get(
+            "checkpoint_diffusion_action_dim", ""
+        ),
+        "checkpoint_num_agents": manifest.get("checkpoint_num_agents", ""),
+        "checkpoint_agent_dim": manifest.get("checkpoint_agent_dim", ""),
+        "checkpoint_global_video_attention_mode": manifest.get(
+            "checkpoint_global_video_attention_mode", ""
+        ),
+        "checkpoint_global_video_timestep_mode": manifest.get(
+            "checkpoint_global_video_timestep_mode", ""
+        ),
+        "checkpoint_use_sparse_hub_attention": manifest.get(
+            "checkpoint_use_sparse_hub_attention", ""
+        ),
+        "checkpoint_train_architecture": manifest.get(
+            "checkpoint_train_architecture", ""
+        ),
         "video_pred_rollout_mode_counts": video.get("video_pred_rollout_mode_counts"),
         "video_pred_wrist_window_mode_counts": video.get("video_pred_wrist_window_mode_counts"),
         "best_setting_dir": best.get("setting_dir"),
@@ -218,6 +241,10 @@ def summarize_roots(roots: Iterable[Path]) -> list[dict[str, Any]]:
 TABLE_COLUMNS = [
     ("ckpt", "ckpt_setting"),
     ("status", "eval_status"),
+    ("ckpt_commit", "checkpoint_code_commit"),
+    ("stage", "checkpoint_stage_label"),
+    ("attn", "checkpoint_global_video_attention_mode"),
+    ("actdim", "checkpoint_action_dim"),
     ("succ", "success_count"),
     ("rate", "success_rate"),
     ("setting", "best_setting_dir"),

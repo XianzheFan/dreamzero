@@ -79,6 +79,62 @@ LAYERNORM_LAYERS = [
     torch.nn.SyncBatchNorm,
 ]
 
+RUNTIME_PROVENANCE_ENV_KEYS = (
+    "CODE_S3_URI",
+    "EXPECTED_CODE_COMMIT",
+    "BASE_RUN_NAME",
+    "RUN_NAME",
+    "STAGE_LABEL",
+    "WANDB_RUN_NAME",
+    "WANDB_RUN_ID",
+    "NUM_ARMS",
+    "SHARED_GLOBAL",
+    "MODEL_MAX_STATE_DIM",
+    "MODEL_ACTION_DIM",
+    "AGENT_STATE_PAD_DIM",
+    "AGENT_ACTION_PAD_DIM",
+    "ROPE_AGENT_DIM",
+    "MULTI_AGENT_SHUFFLE_AGENTS",
+    "MULTI_AGENT_SAMPLE_AGENT_POOL",
+    "GLOBAL_VIDEO_DROPOUT_PROB",
+    "GLOBAL_VIDEO_TIMESTEP_MODE",
+    "GLOBAL_VIDEO_ATTENTION_MODE",
+    "USE_SPARSE_HUB_ATTENTION",
+    "ATTENTION_BACKEND",
+    "SELF_FORCING_TRAIN",
+    "SELF_FORCING_WARMUP_STEPS",
+    "SELF_FORCING_FAST_WRITEBACK",
+    "DYNAMICS_LOSS_WEIGHT",
+    "ACTION_LOSS_WEIGHT",
+    "ACTION_DELTA_LOSS_WEIGHT",
+    "ACTION_JERK_LOSS_WEIGHT",
+    "GRIPPER_ACTION_DIMS",
+    "GRIPPER_ACTION_LOSS_WEIGHT",
+    "GRIPPER_CLOSE_ACTION_LOSS_WEIGHT",
+    "GRIPPER_BINARY_ACTION_LOSS_WEIGHT",
+    "GRIPPER_BINARY_CLOSE_ACTION_LOSS_WEIGHT",
+)
+
+
+def _read_osmo_code_commit() -> str:
+    """Read the uploaded code-cache commit marker when present."""
+
+    candidates = []
+    code_root = os.environ.get("CODE_ROOT")
+    if code_root:
+        candidates.append(Path(code_root) / "OSMO_CODE_COMMIT")
+    candidates.append(Path.cwd() / "OSMO_CODE_COMMIT")
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate.read_text(encoding="utf-8").strip()
+    return ""
+
+
+def collect_runtime_provenance() -> dict[str, str]:
+    provenance = {key.lower(): os.environ.get(key, "") for key in RUNTIME_PROVENANCE_ENV_KEYS}
+    provenance["osmo_code_commit"] = _read_osmo_code_commit()
+    return provenance
+
 _SLICE_COMPATIBLE_PRETRAINED_KEYS = {
     "action_head.model.action_decoder.layer2.W",
     "action_head.model.action_decoder.layer2.b",
@@ -701,6 +757,11 @@ class BaseExperiment(ABC):
         exp_cfg_dir = output_dir / "experiment_cfg"
         exp_cfg_dir.mkdir(parents=True, exist_ok=True)
         OmegaConf.save(cfg, exp_cfg_dir / "conf.yaml", resolve=True)
+        runtime_provenance_path = exp_cfg_dir / "runtime_provenance.json"
+        runtime_provenance_path.write_text(
+            json.dumps(collect_runtime_provenance(), indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
 
         wandb_config_file = output_dir / "wandb_config.json"
         with open(wandb_config_file, "w") as f:

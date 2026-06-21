@@ -171,6 +171,78 @@ workflow:
               "MAX_STEPS",
           ]
           manifest = {field.lower(): os.environ.get(field, "") for field in fields}
+          ckpt_root = os.environ.get("LOCAL_EVAL_CKPT_ROOT", "")
+          ckpt_setting = os.environ.get("CKPT_SETTING", "")
+          ckpt_dir = Path(ckpt_root) / ckpt_setting if ckpt_root and ckpt_setting else None
+
+          def _jsonable(value):
+              if value is None:
+                  return ""
+              if isinstance(value, (str, int, float, bool)):
+                  return value
+              return str(value)
+
+          if ckpt_dir is not None:
+              runtime_path = ckpt_dir / "experiment_cfg" / "runtime_provenance.json"
+              if runtime_path.is_file():
+                  try:
+                      runtime = json.loads(runtime_path.read_text())
+                      if isinstance(runtime, dict):
+                          manifest["checkpoint_runtime_provenance"] = runtime
+                          manifest["checkpoint_code_commit"] = runtime.get(
+                              "osmo_code_commit", ""
+                          )
+                          manifest["checkpoint_expected_code_commit"] = runtime.get(
+                              "expected_code_commit", ""
+                          )
+                          manifest["checkpoint_stage_label"] = runtime.get(
+                              "stage_label", ""
+                          )
+                  except Exception as exc:
+                      manifest["checkpoint_runtime_provenance_error"] = repr(exc)
+
+              cfg_path = ckpt_dir / "experiment_cfg" / "conf.yaml"
+              if cfg_path.is_file():
+                  try:
+                      from omegaconf import OmegaConf
+
+                      cfg = OmegaConf.load(str(cfg_path))
+                      config_fields = {
+                          "checkpoint_action_dim": "action_head_cfg.config.action_dim",
+                          "checkpoint_action_horizon": "action_head_cfg.config.action_horizon",
+                          "checkpoint_diffusion_action_dim": (
+                              "action_head_cfg.config.diffusion_model_cfg.action_dim"
+                          ),
+                          "checkpoint_num_agents": (
+                              "action_head_cfg.config.diffusion_model_cfg.num_agents"
+                          ),
+                          "checkpoint_agent_dim": (
+                              "action_head_cfg.config.diffusion_model_cfg.agent_dim"
+                          ),
+                          "checkpoint_num_frame_per_block": (
+                              "action_head_cfg.config.diffusion_model_cfg.num_frame_per_block"
+                          ),
+                          "checkpoint_num_action_per_block": (
+                              "action_head_cfg.config.diffusion_model_cfg.num_action_per_block"
+                          ),
+                          "checkpoint_global_video_attention_mode": (
+                              "action_head_cfg.config.diffusion_model_cfg.global_video_attention_mode"
+                          ),
+                          "checkpoint_global_video_timestep_mode": (
+                              "action_head_cfg.config.diffusion_model_cfg.global_video_timestep_mode"
+                          ),
+                          "checkpoint_use_sparse_hub_attention": (
+                              "action_head_cfg.config.diffusion_model_cfg.use_sparse_hub_attention"
+                          ),
+                          "checkpoint_save_lora_only": "save_lora_only",
+                          "checkpoint_train_architecture": "train_architecture",
+                      }
+                      for out_key, cfg_key in config_fields.items():
+                          manifest[out_key] = _jsonable(
+                              OmegaConf.select(cfg, cfg_key, default="")
+                          )
+                  except Exception as exc:
+                      manifest["checkpoint_config_error"] = repr(exc)
           out = Path("/workspace/eval_outputs/checkpoint_eval_manifest.json")
           out.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
           txt = Path("/workspace/eval_outputs/checkpoint_eval_manifest.txt")

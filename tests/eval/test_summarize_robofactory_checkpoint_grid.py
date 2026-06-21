@@ -27,6 +27,17 @@ def _make_eval(
             "eval_status": "0",
             "run_name": f"eval-c{step}",
             "dreamzero_git_commit": "abc123",
+            "checkpoint_code_commit": "trainabc",
+            "checkpoint_expected_code_commit": "trainabc",
+            "checkpoint_stage_label": "droidwidth-teacher-style",
+            "checkpoint_action_dim": 32,
+            "checkpoint_diffusion_action_dim": 32,
+            "checkpoint_num_agents": 2,
+            "checkpoint_agent_dim": "gamma",
+            "checkpoint_global_video_attention_mode": "bidirectional",
+            "checkpoint_global_video_timestep_mode": "clean",
+            "checkpoint_use_sparse_hub_attention": False,
+            "checkpoint_train_architecture": "lora",
         },
     )
     _write_json(
@@ -116,6 +127,10 @@ def test_summarize_roots_orders_by_checkpoint_and_selects_best_setting(tmp_path)
 
     assert [row["checkpoint_step"] for row in rows] == [2000, 4000]
     assert rows[0]["ckpt_setting"] == "checkpoint-2000"
+    assert rows[0]["checkpoint_code_commit"] == "trainabc"
+    assert rows[0]["checkpoint_stage_label"] == "droidwidth-teacher-style"
+    assert rows[0]["checkpoint_action_dim"] == 32
+    assert rows[0]["checkpoint_global_video_attention_mode"] == "bidirectional"
     assert rows[0]["best_setting_dir"] == "rp12_best"
     assert rows[0]["raw_joint_saturation_frac"] == 0.7
     assert rows[0]["pred_vs_future_mae_rgb_first_to_last_delta_mean"] == 8.0

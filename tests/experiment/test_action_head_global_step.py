@@ -37,11 +37,18 @@ def _install_base_import_stubs(monkeypatch):
         monkeypatch.setitem(sys.modules, name, mod)
         return mod
 
+    groot_pkg = module("groot")
+    groot_pkg.__path__ = []
+    vla_pkg = module("groot.vla")
+    vla_pkg.__path__ = []
+    groot_pkg.vla = vla_pkg
+
     common_pkg = module("groot.vla.common")
     common_pkg.__path__ = []
     common_utils = module("groot.vla.common.utils")
     common_utils.json_dump = lambda *args, **kwargs: None
     common_pkg.utils = common_utils
+    vla_pkg.common = common_pkg
 
     data_pkg = module("groot.vla.data")
     data_pkg.__path__ = []
@@ -122,6 +129,27 @@ def test_base_trainer_sets_unwrapped_action_head_global_step_before_forward(monk
 
     assert float(loss) == 0.0
     assert trainer.current_step == 1
+
+
+def test_runtime_provenance_reads_code_marker_and_gamma_knobs(monkeypatch, tmp_path):
+    base_mod = _load_base_module(monkeypatch)
+
+    code_root = tmp_path / "code"
+    code_root.mkdir()
+    (code_root / "OSMO_CODE_COMMIT").write_text("abc123\n", encoding="utf-8")
+    monkeypatch.setenv("CODE_ROOT", str(code_root))
+    monkeypatch.setenv("EXPECTED_CODE_COMMIT", "abc123")
+    monkeypatch.setenv("STAGE_LABEL", "droidwidth-teacher-style")
+    monkeypatch.setenv("MODEL_ACTION_DIM", "32")
+    monkeypatch.setenv("GLOBAL_VIDEO_ATTENTION_MODE", "bidirectional")
+
+    provenance = base_mod.collect_runtime_provenance()
+
+    assert provenance["osmo_code_commit"] == "abc123"
+    assert provenance["expected_code_commit"] == "abc123"
+    assert provenance["stage_label"] == "droidwidth-teacher-style"
+    assert provenance["model_action_dim"] == "32"
+    assert provenance["global_video_attention_mode"] == "bidirectional"
 
 
 def test_vla_trainer_training_step_delegates_step_propagation_to_base_trainer():

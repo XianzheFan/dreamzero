@@ -940,6 +940,7 @@ workflow:
 
               configure_stage_paths "$stage_run_name"
               configure_stage_loss_weights "$stage_loss_prefix"
+              export STAGE_LABEL="$stage_label"
               export MAX_STEPS="$stage_max_steps"
               export USE_SPARSE_HUB_ATTENTION="$sparse_hub"
               export PRETRAINED_DIR="$stage_pretrained_dir"
