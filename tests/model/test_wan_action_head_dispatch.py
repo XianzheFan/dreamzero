@@ -14,6 +14,7 @@ diffusion model + scheduler + VAE-shaped inputs) in
 import importlib.util
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -182,3 +183,84 @@ def test_multi_agent_rolling_noise_preserve_reset_keeps_stream(monkeypatch):
     assert torch.equal(after_full_reset, first)
     assert preserved.language is not None
     assert reset.language is None
+
+
+def test_stage_phase_masks_use_first_close_and_open_gripper_targets():
+    Cls = _maybe_load_head()
+    inst = Cls.__new__(Cls)
+    actions = torch.zeros(1, 1, 6, 4)
+    actions[..., 3] = torch.tensor([1.0, 1.0, 1.0, -1.0, -1.0, 1.0])
+
+    first_close = inst._first_close_phase_mask(
+        actions=actions,
+        gripper_dims=[3],
+        close_threshold=0.0,
+        window_before=1,
+        window_after=1,
+    )
+    pre_close_recent = inst._pre_close_phase_mask(
+        actions=actions,
+        gripper_dims=[3],
+        close_threshold=0.0,
+        window_before=2,
+    )
+    pre_close_all = inst._pre_close_phase_mask(
+        actions=actions,
+        gripper_dims=[3],
+        close_threshold=0.0,
+        window_before=0,
+    )
+    open_phase = inst._open_phase_mask(
+        actions=actions,
+        gripper_dims=[3],
+        close_threshold=0.0,
+    )
+
+    assert torch.equal(
+        first_close,
+        torch.tensor([[[False, False, True, True, True, False]]]),
+    )
+    assert torch.equal(
+        pre_close_recent,
+        torch.tensor([[[False, True, True, False, False, False]]]),
+    )
+    assert torch.equal(
+        pre_close_all,
+        torch.tensor([[[True, True, True, False, False, False]]]),
+    )
+    assert torch.equal(
+        open_phase,
+        torch.tensor([[[True, True, True, False, False, True]]]),
+    )
+
+
+def test_joint_prefix_stage_weight_leaves_gripper_dim_unchanged():
+    Cls = _maybe_load_head()
+    inst = Cls.__new__(Cls)
+    inst.config = SimpleNamespace(
+        action_loss_weight=1.0,
+        gripper_action_loss_weight=1.0,
+        gripper_close_action_loss_weight=1.0,
+        gripper_close_threshold=0.0,
+        gripper_action_dims=[3],
+        action_prefix_loss_weight=1.0,
+        action_prefix_loss_len=0,
+        joint_prefix_loss_weight=2.0,
+        joint_prefix_loss_len=2,
+        first_close_joint_loss_weight=1.0,
+        first_close_joint_loss_window_before=0,
+        first_close_joint_loss_window_after=0,
+        pre_close_joint_loss_weight=1.0,
+        pre_close_joint_loss_window_before=0,
+        open_phase_joint_loss_weight=1.0,
+        joint_motion_action_loss_weight=1.0,
+        joint_motion_action_loss_threshold=0.0,
+    )
+    action_loss = torch.ones(1, 1, 4, 4)
+    actions = torch.zeros_like(action_loss)
+
+    weighted = inst._apply_action_loss_weights(action_loss, actions=actions)
+
+    assert torch.equal(weighted[..., :2, :3], torch.full((1, 1, 2, 3), 2.0))
+    assert torch.equal(weighted[..., :2, 3], torch.ones(1, 1, 2))
+    assert torch.equal(weighted[..., 2:, :], torch.ones(1, 1, 2, 4))

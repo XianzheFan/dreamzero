@@ -130,6 +130,7 @@ class LossLoggerCallback(TrainerCallback):
         for key in (
             "loss",
             "dynamics_loss_avg",
+            "unscaled_dynamics_loss_avg",
             "action_loss_avg",
             "gripper_clean_action_loss_avg",
             "gripper_binary_action_loss_avg",

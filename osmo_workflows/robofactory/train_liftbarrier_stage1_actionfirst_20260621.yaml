@@ -1,0 +1,408 @@
+workflow:
+  timeout:
+    queue_timeout: 2h
+    exec_timeout: 7d
+  name: "{{workflow_name}}"
+  resources:
+    default:
+      cpu: 84
+      gpu: 8
+      memory: 1681Gi
+      storage: 803Gi
+      platform: dgx-h100
+  tasks:
+    - name: train
+      image: nvcr.io/nvidian/gear-h100-train:latest
+      credentials:
+        gear-aws-cred:
+          AWS_ACCESS_KEY_ID: aws_access_key_id
+          AWS_SECRET_ACCESS_KEY: aws_secret_access_key
+          AWS_DEFAULT_REGION: aws_default_region
+          AWS_ENDPOINT_URL: aws_endpoint_url
+        gear-data-credentials:
+          GEAR_DATA_CREDENTIALS: data_credentials
+        wandb-api-key:
+          WANDB_API_KEY: WANDB_API_KEY
+      command: ["bash"]
+      environment:
+        ACCEPT_EULA: "Y"
+        NO_NUCLEUS: "Y"
+      exitActions:
+        RESCHEDULE: 3001
+      args: ["/tmp/train_liftbarrier_stage1_actionfirst.sh"]
+      files:
+        - path: /tmp/train_liftbarrier_stage1_actionfirst.sh
+          contents: |
+            #!/usr/bin/env bash
+            set -euo pipefail
+
+            exec > >(tee /tmp/train_liftbarrier_stage1_actionfirst.log) 2>&1
+
+            RUN_NAME="${RUN_NAME:-{{run_name}}}"
+            CODE_S3_URI="${CODE_S3_URI:-{{code_s3_uri}}}"
+            EXPECTED_CODE_COMMIT="${EXPECTED_CODE_COMMIT:-{{expected_code_commit}}}"
+            DATA_VARIANT="${DATA_VARIANT:-{{data_variant}}}"
+            EXPECTED_DATA_EPISODES="${EXPECTED_DATA_EPISODES:-{{expected_data_episodes}}}"
+            DATA_S3_URI="${DATA_S3_URI:-{{data_s3_uri}}}"
+            RUN_S3_ROOT="s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/${RUN_NAME}"
+            OUTPUT_S3_URI="${RUN_S3_ROOT}/checkpoints"
+            LOG_S3_URI="${RUN_S3_ROOT}/logs"
+            CACHE_OUTPUT_S3_URI="${CACHE_OUTPUT_S3_URI:-s3://GearHome/users/xianzhef/oci-migration/dreamzero_s3cache/bootstrap_checkpoints/${RUN_NAME}}"
+            CHECKPOINT_UPLOAD_INTERVAL_SECONDS="${CHECKPOINT_UPLOAD_INTERVAL_SECONDS:-900}"
+            CHECKPOINT_UPLOAD_MAX_COUNT="${CHECKPOINT_UPLOAD_MAX_COUNT:-2}"
+
+            for uri in "$CODE_S3_URI" "$DATA_S3_URI" "$RUN_S3_ROOT" "$OUTPUT_S3_URI" "$LOG_S3_URI" "$CACHE_OUTPUT_S3_URI"; do
+              case "$uri" in
+                s3://GearHome/users/xianzhef/*) ;;
+                swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/*) ;;
+                *)
+                  echo "Refusing non-xianzhef data URI: $uri" >&2
+                  exit 64
+                  ;;
+              esac
+            done
+
+            upload_artifacts() {
+              status=$?
+              set +e
+              if [ -n "${PERIODIC_UPLOADER_PID:-}" ] && kill -0 "$PERIODIC_UPLOADER_PID" 2>/dev/null; then
+                echo "Stopping periodic checkpoint uploader pid=${PERIODIC_UPLOADER_PID}"
+                kill "$PERIODIC_UPLOADER_PID" 2>/dev/null || true
+                wait "$PERIODIC_UPLOADER_PID" 2>/dev/null || true
+              fi
+              echo "Training workflow exit status: $status"
+              osmo data upload "${LOG_S3_URI}/" /tmp/train_liftbarrier_stage1_actionfirst.log || true
+              if declare -f upload_checkpoints_once >/dev/null 2>&1; then
+                upload_checkpoints_once || true
+              fi
+              exit "$status"
+            }
+            trap upload_artifacts EXIT
+
+            export PYTHONUNBUFFERED=1
+            export HYDRA_FULL_ERROR=1
+            export MUJOCO_GL=egl
+            export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+            export GIT_LFS_SKIP_SMUDGE=1
+            export OSMO_CACHE_ROOT="${OSMO_CACHE_ROOT:-/workspace/osmo_cache}"
+            export HF_HOME="${OSMO_CACHE_ROOT}/hf"
+            export HF_HUB_CACHE="${HF_HOME}/hub"
+            export TRANSFORMERS_CACHE="${HF_HOME}/transformers"
+            export WANDB_DIR="${OSMO_CACHE_ROOT}/wandb"
+            export WANDB_CACHE_DIR="${WANDB_DIR}/cache"
+            export WANDB_RESUME=allow
+
+            mkdir -p \
+              /workspace/code/dreamzero \
+              /workspace/data/robofactory_lerobot_v2 \
+              /workspace/checkpoints \
+              /workspace/outputs \
+              "$OSMO_CACHE_ROOT" \
+              "$HF_HOME" \
+              "$WANDB_CACHE_DIR"
+
+            has_lerobot_meta() {
+              [ -d "$1/meta" ] && [ -f "$1/meta/info.json" ] && [ -f "$1/meta/modality.json" ]
+            }
+
+            resolve_lerobot_root() {
+              root="$1"
+              if has_lerobot_meta "$root"; then
+                printf '%s\n' "$root"
+                return 0
+              fi
+              meta_file="$(find "$root" -maxdepth 4 -path "*/meta/info.json" -print -quit 2>/dev/null || true)"
+              if [ -n "$meta_file" ]; then
+                dirname "$(dirname "$meta_file")"
+                return 0
+              fi
+              return 1
+            }
+
+            require_code_marker() {
+              file="$1"
+              shift
+              if [ ! -f "$file" ]; then
+                echo "ERROR: required file missing from code cache: $file" >&2
+                exit 7
+              fi
+              for marker in "$@"; do
+                if ! grep -Fq "$marker" "$file"; then
+                  echo "ERROR: code cache file $file is missing marker: $marker" >&2
+                  exit 7
+                fi
+              done
+            }
+
+            require_wandb() {
+              if [ -z "${WANDB_API_KEY:-}" ]; then
+                echo "ERROR: REPORT_TO=wandb but WANDB_API_KEY is not set." >&2
+                exit 5
+              fi
+              python - <<'PY'
+            import importlib.util
+            import subprocess
+            import sys
+
+            if importlib.util.find_spec("wandb") is None:
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "wandb"])
+            PY
+              python -c 'import os, wandb; wandb.login(key=os.environ["WANDB_API_KEY"], relogin=True)'
+            }
+
+            echo "Downloading DreamZero code from ${CODE_S3_URI}/"
+            osmo data download --resume "${CODE_S3_URI}/" /workspace/code/dreamzero
+            CODE_ROOT="/workspace/code/dreamzero"
+            if [ ! -f "$CODE_ROOT/pyproject.toml" ]; then
+              found_pyproject="$(find /workspace/code -maxdepth 4 -name pyproject.toml -print | sort | tail -n 1)"
+              if [ -n "$found_pyproject" ]; then
+                CODE_ROOT="$(dirname "$found_pyproject")"
+              fi
+            fi
+            if [ ! -f "$CODE_ROOT/pyproject.toml" ]; then
+              echo "ERROR: did not find DreamZero pyproject.toml after code download." >&2
+              exit 3
+            fi
+            if [ -f "$CODE_ROOT/OSMO_CODE_COMMIT" ]; then
+              actual_code_commit="$(cat "$CODE_ROOT/OSMO_CODE_COMMIT")"
+              echo "DreamZero code cache commit: ${actual_code_commit}"
+              if [ -n "$EXPECTED_CODE_COMMIT" ] && [ "$EXPECTED_CODE_COMMIT" != "$actual_code_commit" ]; then
+                echo "ERROR: expected code commit ${EXPECTED_CODE_COMMIT}, got ${actual_code_commit}" >&2
+                exit 8
+              fi
+            else
+              echo "ERROR: code cache is missing OSMO_CODE_COMMIT marker." >&2
+              exit 8
+            fi
+
+            cd "$CODE_ROOT"
+            require_code_marker \
+              scripts/train/robofactory_bimanual_training.sh \
+              "DYNAMICS_LOSS_WEIGHT" \
+              "FIRST_CLOSE_JOINT_LOSS_WEIGHT" \
+              "PRE_CLOSE_JOINT_LOSS_WEIGHT" \
+              "OPEN_PHASE_JOINT_LOSS_WEIGHT"
+            require_code_marker \
+              groot/vla/model/dreamzero/action_head/wan_flow_matching_action_tf.py \
+              "dynamics_loss_weight" \
+              "unscaled_dynamics_loss" \
+              "_first_close_phase_mask" \
+              "_pre_close_phase_mask" \
+              "_open_phase_mask"
+            require_code_marker \
+              groot/vla/configs/data/dreamzero/robofactory_bimanual_shared_global.yaml \
+              "agent_action_dims: [[0, 8], [8, 16]]"
+            echo "DreamZero code marker self-check passed."
+
+            echo "Downloading RoboFactory ${DATA_VARIANT} data from ${DATA_S3_URI}/"
+            DATA_PARENT="/workspace/data/robofactory_lerobot_v2"
+            DATA_ROOT="${DATA_PARENT}/${DATA_VARIANT}"
+            mkdir -p "$DATA_PARENT"
+            osmo data download --resume "${DATA_S3_URI}/" "$DATA_PARENT"
+            RESOLVED_DATA_ROOT="$(resolve_lerobot_root "$DATA_ROOT" || true)"
+            if [ -z "$RESOLVED_DATA_ROOT" ]; then
+              RESOLVED_DATA_ROOT="$(resolve_lerobot_root "$DATA_PARENT" || true)"
+            fi
+            if [ -z "$RESOLVED_DATA_ROOT" ]; then
+              echo "ERROR: did not find LeRobot metadata after data download." >&2
+              find /workspace/data -maxdepth 4 -type d | head -100
+              exit 4
+            fi
+            DATA_ROOT="$RESOLVED_DATA_ROOT"
+            echo "Using RoboFactory LeRobot dataset root: $DATA_ROOT"
+
+            python -m pip install -q pandas pyarrow numpy
+            echo "Inspecting RoboFactory LeRobot dataset before training"
+            python scripts/data/inspect_robotwin_lerobot.py \
+              --root "$DATA_ROOT" \
+              --expected-episodes "$EXPECTED_DATA_EPISODES" \
+              --expected-action-dim 16 \
+              --expected-state-dim 16 \
+              --gripper-dims 7,15 \
+              --close-threshold 0.0 \
+              --gripper-min -1.0 \
+              --gripper-max 1.0 \
+              --allow-static-gripper \
+              --expected-embodiment-tag robofactory \
+              --legacy-embodiment-tags ""
+
+            echo "Installing DreamZero package from $CODE_ROOT"
+            if command -v uv >/dev/null 2>&1; then
+              uv pip install --system -e . --no-deps || uv pip install -e . --no-deps || python -m pip install -e . --no-deps
+            else
+              python -m pip install -e . --no-deps
+            fi
+
+            export NUM_GPUS=8
+            export NUM_ARMS=2
+            export SHARED_GLOBAL=1
+            export DATASET_SHARD_SAMPLING_RATE="${DATASET_SHARD_SAMPLING_RATE:-{{dataset_shard_sampling_rate}}}"
+            export RELATIVE_ACTION_PER_HORIZON="${RELATIVE_ACTION_PER_HORIZON:-{{relative_action_per_horizon}}}"
+            export MAX_STEPS="${MAX_STEPS:-{{max_steps}}}"
+            export BATCH_SIZE=1
+            export SAVE_STEPS="${SAVE_STEPS:-{{save_steps}}}"
+            export SAVE_TOTAL_LIMIT="${SAVE_TOTAL_LIMIT:-{{save_total_limit}}}"
+            export LEARNING_RATE="${LEARNING_RATE:-{{learning_rate}}}"
+            export DYNAMICS_LOSS_WEIGHT="${DYNAMICS_LOSS_WEIGHT:-{{dynamics_loss_weight}}}"
+            export ACTION_LOSS_WEIGHT="${ACTION_LOSS_WEIGHT:-{{action_loss_weight}}}"
+            export GRIPPER_ACTION_LOSS_WEIGHT="${GRIPPER_ACTION_LOSS_WEIGHT:-{{gripper_action_loss_weight}}}"
+            export GRIPPER_CLOSE_ACTION_LOSS_WEIGHT="${GRIPPER_CLOSE_ACTION_LOSS_WEIGHT:-{{gripper_close_action_loss_weight}}}"
+            export GRIPPER_CLOSE_THRESHOLD="${GRIPPER_CLOSE_THRESHOLD:-0.0}"
+            export GRIPPER_ACTION_DIMS="${GRIPPER_ACTION_DIMS:-7}"
+            export GRIPPER_CLEAN_ACTION_LOSS_WEIGHT="${GRIPPER_CLEAN_ACTION_LOSS_WEIGHT:-{{gripper_clean_action_loss_weight}}}"
+            export GRIPPER_CLEAN_CLOSE_ACTION_LOSS_WEIGHT="${GRIPPER_CLEAN_CLOSE_ACTION_LOSS_WEIGHT:-{{gripper_clean_close_action_loss_weight}}}"
+            export GRIPPER_CLEAN_MAX_SIGMA="${GRIPPER_CLEAN_MAX_SIGMA:-0.75}"
+            export GRIPPER_BINARY_ACTION_LOSS_WEIGHT="${GRIPPER_BINARY_ACTION_LOSS_WEIGHT:-{{gripper_binary_action_loss_weight}}}"
+            export GRIPPER_BINARY_CLOSE_ACTION_LOSS_WEIGHT="${GRIPPER_BINARY_CLOSE_ACTION_LOSS_WEIGHT:-{{gripper_binary_close_action_loss_weight}}}"
+            export GRIPPER_BINARY_LOGIT_SCALE="${GRIPPER_BINARY_LOGIT_SCALE:-4.0}"
+            export GRIPPER_BINARY_MAX_SIGMA="${GRIPPER_BINARY_MAX_SIGMA:-0.75}"
+            export ACTION_PREFIX_LOSS_WEIGHT="${ACTION_PREFIX_LOSS_WEIGHT:-{{action_prefix_loss_weight}}}"
+            export ACTION_PREFIX_LOSS_LEN="${ACTION_PREFIX_LOSS_LEN:-{{action_prefix_loss_len}}}"
+            export JOINT_PREFIX_LOSS_WEIGHT="${JOINT_PREFIX_LOSS_WEIGHT:-{{joint_prefix_loss_weight}}}"
+            export JOINT_PREFIX_LOSS_LEN="${JOINT_PREFIX_LOSS_LEN:-{{joint_prefix_loss_len}}}"
+            export FIRST_CLOSE_JOINT_LOSS_WEIGHT="${FIRST_CLOSE_JOINT_LOSS_WEIGHT:-{{first_close_joint_loss_weight}}}"
+            export FIRST_CLOSE_JOINT_LOSS_WINDOW_BEFORE="${FIRST_CLOSE_JOINT_LOSS_WINDOW_BEFORE:-{{first_close_joint_loss_window_before}}}"
+            export FIRST_CLOSE_JOINT_LOSS_WINDOW_AFTER="${FIRST_CLOSE_JOINT_LOSS_WINDOW_AFTER:-{{first_close_joint_loss_window_after}}}"
+            export PRE_CLOSE_JOINT_LOSS_WEIGHT="${PRE_CLOSE_JOINT_LOSS_WEIGHT:-{{pre_close_joint_loss_weight}}}"
+            export PRE_CLOSE_JOINT_LOSS_WINDOW_BEFORE="${PRE_CLOSE_JOINT_LOSS_WINDOW_BEFORE:-{{pre_close_joint_loss_window_before}}}"
+            export OPEN_PHASE_JOINT_LOSS_WEIGHT="${OPEN_PHASE_JOINT_LOSS_WEIGHT:-{{open_phase_joint_loss_weight}}}"
+            export JOINT_MOTION_ACTION_LOSS_WEIGHT="${JOINT_MOTION_ACTION_LOSS_WEIGHT:-{{joint_motion_action_loss_weight}}}"
+            export JOINT_MOTION_ACTION_LOSS_THRESHOLD="${JOINT_MOTION_ACTION_LOSS_THRESHOLD:-{{joint_motion_action_loss_threshold}}}"
+            export REPORT_TO=wandb
+            export WANDB_PROJECT=dreamzero_robofactory
+            export WANDB_RUN_NAME="$RUN_NAME"
+            export WANDB_RUN_ID="$RUN_NAME"
+            export DATALOADER_NUM_WORKERS=4
+            export ROBOFACTORY_DATA_ROOT="$DATA_ROOT"
+            export OUTPUT_DIR="/workspace/outputs/robofactory_liftbarrier_stage1_actionfirst"
+            export WAN_CKPT_DIR="${WAN_CKPT_DIR:-/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/Wan2.1-I2V-14B-480P}"
+            export TOKENIZER_DIR="${TOKENIZER_DIR:-/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/umt5-xxl}"
+            export PRETRAINED_DIR="${PRETRAINED_DIR:-/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/DreamZero-DROID}"
+            mkdir -p "$OUTPUT_DIR"
+
+            stage_checkpoints_for_upload() {
+              stage_root="/workspace/rf_stage1_checkpoint_upload"
+              stage_dir="${stage_root}/${RUN_NAME}"
+              rm -rf "$stage_root"
+              mkdir -p "$stage_dir"
+
+              for top_file in wandb_config.json loss_log.jsonl; do
+                if [ -f "${OUTPUT_DIR}/${top_file}" ]; then
+                  cp -a "${OUTPUT_DIR}/${top_file}" "$stage_dir/"
+                fi
+              done
+              if [ -d "${OUTPUT_DIR}/experiment_cfg" ]; then
+                cp -a "${OUTPUT_DIR}/experiment_cfg" "$stage_dir/"
+              fi
+
+              found=0
+              while IFS= read -r ckpt_dir; do
+                [ -n "$ckpt_dir" ] || continue
+                if [ -f "${ckpt_dir}/trainer_state.json" ] && \
+                   { [ -f "${ckpt_dir}/model.safetensors" ] || [ -f "${ckpt_dir}/model.safetensors.index.json" ]; }; then
+                  ckpt_name="$(basename "$ckpt_dir")"
+                  mkdir -p "${stage_dir}/${ckpt_name}"
+                  while IFS= read -r ckpt_file; do
+                    cp -a "$ckpt_file" "${stage_dir}/${ckpt_name}/"
+                  done < <(find "$ckpt_dir" -maxdepth 1 \( -type f -o -type l \) | sort)
+                  if [ -d "${ckpt_dir}/experiment_cfg" ]; then
+                    cp -a "${ckpt_dir}/experiment_cfg" "${stage_dir}/${ckpt_name}/"
+                  fi
+                  found=1
+                else
+                  echo "Skipping incomplete checkpoint ${ckpt_dir}; need model weights plus trainer_state.json."
+                fi
+              done < <(find "$OUTPUT_DIR" -maxdepth 1 -type d -name 'checkpoint-*' | sort -V | tail -n "$CHECKPOINT_UPLOAD_MAX_COUNT")
+
+              if [ "$found" -eq 0 ]; then
+                echo "No complete checkpoints ready for upload." >&2
+                return 1
+              fi
+              echo "$stage_dir"
+              du -sh "$stage_dir" >&2 || true
+              return 0
+            }
+
+            upload_checkpoints_once() {
+              stage_dir="$(stage_checkpoints_for_upload || true)"
+              if [ -n "$stage_dir" ] && [ -d "$stage_dir" ]; then
+                upload_status=0
+                osmo data upload "${OUTPUT_S3_URI}/" "$stage_dir" || upload_status=$?
+                osmo data upload "${CACHE_OUTPUT_S3_URI}/" "$stage_dir" || upload_status=$?
+                rm -rf "$stage_dir"
+                return "$upload_status"
+              fi
+            }
+
+            periodic_checkpoint_upload() {
+              while true; do
+                sleep "$CHECKPOINT_UPLOAD_INTERVAL_SECONDS" || break
+                echo "Periodic checkpoint upload tick: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+                osmo data upload "${LOG_S3_URI}/" /tmp/train_liftbarrier_stage1_actionfirst.log || true
+                upload_checkpoints_once || true
+              done
+            }
+
+            periodic_checkpoint_upload &
+            PERIODIC_UPLOADER_PID=$!
+            echo "Started periodic checkpoint uploader pid=${PERIODIC_UPLOADER_PID}, interval=${CHECKPOINT_UPLOAD_INTERVAL_SECONDS}s"
+
+            require_wandb
+
+            echo "Launching DreamZero RoboFactory LiftBarrier Stage-1 action-first training"
+            echo "RUN_NAME=$RUN_NAME"
+            echo "DATA_VARIANT=$DATA_VARIANT"
+            echo "DATA_ROOT=$DATA_ROOT"
+            echo "OUTPUT_DIR=$OUTPUT_DIR"
+            echo "OUTPUT_S3_URI=$OUTPUT_S3_URI"
+            echo "CACHE_OUTPUT_S3_URI=$CACHE_OUTPUT_S3_URI"
+            echo "PRETRAINED_DIR=$PRETRAINED_DIR"
+            echo "MAX_STEPS=$MAX_STEPS"
+            echo "DYNAMICS_LOSS_WEIGHT=$DYNAMICS_LOSS_WEIGHT"
+            echo "ACTION_LOSS_WEIGHT=$ACTION_LOSS_WEIGHT"
+            echo "GRIPPER_ACTION_LOSS_WEIGHT=$GRIPPER_ACTION_LOSS_WEIGHT"
+            echo "GRIPPER_CLOSE_ACTION_LOSS_WEIGHT=$GRIPPER_CLOSE_ACTION_LOSS_WEIGHT"
+            echo "GRIPPER_CLEAN_ACTION_LOSS_WEIGHT=$GRIPPER_CLEAN_ACTION_LOSS_WEIGHT"
+            echo "GRIPPER_BINARY_ACTION_LOSS_WEIGHT=$GRIPPER_BINARY_ACTION_LOSS_WEIGHT"
+            echo "ACTION_PREFIX_LOSS_WEIGHT=$ACTION_PREFIX_LOSS_WEIGHT"
+            echo "JOINT_PREFIX_LOSS_WEIGHT=$JOINT_PREFIX_LOSS_WEIGHT"
+            echo "FIRST_CLOSE_JOINT_LOSS_WEIGHT=$FIRST_CLOSE_JOINT_LOSS_WEIGHT"
+            echo "PRE_CLOSE_JOINT_LOSS_WEIGHT=$PRE_CLOSE_JOINT_LOSS_WEIGHT"
+            echo "OPEN_PHASE_JOINT_LOSS_WEIGHT=$OPEN_PHASE_JOINT_LOSS_WEIGHT"
+            echo "JOINT_MOTION_ACTION_LOSS_WEIGHT=$JOINT_MOTION_ACTION_LOSS_WEIGHT"
+            bash scripts/train/robofactory_bimanual_training.sh
+
+default-values:
+  workflow_name: dz-rf2-lb500-stage1-actionfirst-droidbase-xz-20260621
+  run_name: dz-rf2-lb500-stage1-actionfirst-droidbase-xz-20260621
+  code_s3_uri: swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_stage1_actionfirst_PENDING
+  expected_code_commit: ""
+  data_variant: LiftBarrier-rf-500
+  expected_data_episodes: "500"
+  data_s3_uri: s3://GearHome/users/xianzhef/oci-migration/data/robofactory_lerobot_v2/LiftBarrier-rf-500
+  max_steps: "10000"
+  save_steps: "500"
+  save_total_limit: "4"
+  learning_rate: "1e-5"
+  dataset_shard_sampling_rate: "1.0"
+  relative_action_per_horizon: "false"
+  dynamics_loss_weight: "0.25"
+  action_loss_weight: "10.0"
+  gripper_action_loss_weight: "8.0"
+  gripper_close_action_loss_weight: "6.0"
+  gripper_clean_action_loss_weight: "2.0"
+  gripper_clean_close_action_loss_weight: "6.0"
+  gripper_binary_action_loss_weight: "4.0"
+  gripper_binary_close_action_loss_weight: "8.0"
+  action_prefix_loss_weight: "2.0"
+  action_prefix_loss_len: "8"
+  joint_prefix_loss_weight: "4.0"
+  joint_prefix_loss_len: "24"
+  first_close_joint_loss_weight: "4.0"
+  first_close_joint_loss_window_before: "3"
+  first_close_joint_loss_window_after: "2"
+  pre_close_joint_loss_weight: "4.0"
+  pre_close_joint_loss_window_before: "0"
+  open_phase_joint_loss_weight: "3.0"
+  joint_motion_action_loss_weight: "4.0"
+  joint_motion_action_loss_threshold: "0.2"

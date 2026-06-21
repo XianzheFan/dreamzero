@@ -120,6 +120,7 @@ WANDB_PROJECT=${WANDB_PROJECT:-dreamzero_robofactory_smoke}
 WANDB_RUN_NAME=${WANDB_RUN_NAME:-robofactory_bimanual_smoke}
 DATASET_SHARD_SAMPLING_RATE=${DATASET_SHARD_SAMPLING_RATE:-1.0}
 RELATIVE_ACTION_PER_HORIZON=${RELATIVE_ACTION_PER_HORIZON:-false}
+DYNAMICS_LOSS_WEIGHT=${DYNAMICS_LOSS_WEIGHT:-1.0}
 ACTION_LOSS_WEIGHT=${ACTION_LOSS_WEIGHT:-5.0}
 GRIPPER_ACTION_LOSS_WEIGHT=${GRIPPER_ACTION_LOSS_WEIGHT:-6.0}
 GRIPPER_CLOSE_ACTION_LOSS_WEIGHT=${GRIPPER_CLOSE_ACTION_LOSS_WEIGHT:-4.0}
@@ -134,6 +135,14 @@ GRIPPER_BINARY_LOGIT_SCALE=${GRIPPER_BINARY_LOGIT_SCALE:-4.0}
 GRIPPER_BINARY_MAX_SIGMA=${GRIPPER_BINARY_MAX_SIGMA:-0.75}
 ACTION_PREFIX_LOSS_WEIGHT=${ACTION_PREFIX_LOSS_WEIGHT:-2.0}
 ACTION_PREFIX_LOSS_LEN=${ACTION_PREFIX_LOSS_LEN:-8}
+JOINT_PREFIX_LOSS_WEIGHT=${JOINT_PREFIX_LOSS_WEIGHT:-1.0}
+JOINT_PREFIX_LOSS_LEN=${JOINT_PREFIX_LOSS_LEN:-0}
+FIRST_CLOSE_JOINT_LOSS_WEIGHT=${FIRST_CLOSE_JOINT_LOSS_WEIGHT:-1.0}
+FIRST_CLOSE_JOINT_LOSS_WINDOW_BEFORE=${FIRST_CLOSE_JOINT_LOSS_WINDOW_BEFORE:-0}
+FIRST_CLOSE_JOINT_LOSS_WINDOW_AFTER=${FIRST_CLOSE_JOINT_LOSS_WINDOW_AFTER:-0}
+PRE_CLOSE_JOINT_LOSS_WEIGHT=${PRE_CLOSE_JOINT_LOSS_WEIGHT:-1.0}
+PRE_CLOSE_JOINT_LOSS_WINDOW_BEFORE=${PRE_CLOSE_JOINT_LOSS_WINDOW_BEFORE:-0}
+OPEN_PHASE_JOINT_LOSS_WEIGHT=${OPEN_PHASE_JOINT_LOSS_WEIGHT:-1.0}
 JOINT_MOTION_ACTION_LOSS_WEIGHT=${JOINT_MOTION_ACTION_LOSS_WEIGHT:-1.0}
 JOINT_MOTION_ACTION_LOSS_THRESHOLD=${JOINT_MOTION_ACTION_LOSS_THRESHOLD:-0.0}
 MODEL_MAX_STATE_DIM=${MODEL_MAX_STATE_DIM:-8}
@@ -201,8 +210,10 @@ fi
 
 echo "save_steps=$SAVE_STEPS  save_total_limit=$SAVE_TOTAL_LIMIT"
 echo "dataset_shard_sampling_rate=$DATASET_SHARD_SAMPLING_RATE"
+echo "dynamics_loss_weight=$DYNAMICS_LOSS_WEIGHT"
 echo "relative_action_per_horizon=$RELATIVE_ACTION_PER_HORIZON"
 echo "action_loss_weight=$ACTION_LOSS_WEIGHT  gripper_action_loss_weight=$GRIPPER_ACTION_LOSS_WEIGHT  gripper_close_action_loss_weight=$GRIPPER_CLOSE_ACTION_LOSS_WEIGHT  gripper_close_threshold=$GRIPPER_CLOSE_THRESHOLD  gripper_action_dims=[$GRIPPER_ACTION_DIMS]  gripper_clean_action_loss_weight=$GRIPPER_CLEAN_ACTION_LOSS_WEIGHT  gripper_clean_close_action_loss_weight=$GRIPPER_CLEAN_CLOSE_ACTION_LOSS_WEIGHT  gripper_clean_max_sigma=$GRIPPER_CLEAN_MAX_SIGMA  action_prefix_loss_weight=$ACTION_PREFIX_LOSS_WEIGHT  action_prefix_loss_len=$ACTION_PREFIX_LOSS_LEN"
+echo "joint_prefix_loss_weight=$JOINT_PREFIX_LOSS_WEIGHT  joint_prefix_loss_len=$JOINT_PREFIX_LOSS_LEN  first_close_joint_loss_weight=$FIRST_CLOSE_JOINT_LOSS_WEIGHT  first_close_joint_loss_window_before=$FIRST_CLOSE_JOINT_LOSS_WINDOW_BEFORE  first_close_joint_loss_window_after=$FIRST_CLOSE_JOINT_LOSS_WINDOW_AFTER  pre_close_joint_loss_weight=$PRE_CLOSE_JOINT_LOSS_WEIGHT  pre_close_joint_loss_window_before=$PRE_CLOSE_JOINT_LOSS_WINDOW_BEFORE  open_phase_joint_loss_weight=$OPEN_PHASE_JOINT_LOSS_WEIGHT"
 echo "joint_motion_action_loss_weight=$JOINT_MOTION_ACTION_LOSS_WEIGHT  joint_motion_action_loss_threshold=$JOINT_MOTION_ACTION_LOSS_THRESHOLD"
 echo "gripper_binary_action_loss_weight=$GRIPPER_BINARY_ACTION_LOSS_WEIGHT  gripper_binary_close_action_loss_weight=$GRIPPER_BINARY_CLOSE_ACTION_LOSS_WEIGHT  gripper_binary_logit_scale=$GRIPPER_BINARY_LOGIT_SCALE  gripper_binary_max_sigma=$GRIPPER_BINARY_MAX_SIGMA"
 echo "model_max_state_dim=$MODEL_MAX_STATE_DIM  model_action_dim=$MODEL_ACTION_DIM  agent_state_pad_dim=$AGENT_STATE_PAD_DIM  agent_action_pad_dim=$AGENT_ACTION_PAD_DIM"
@@ -278,6 +289,7 @@ torchrun "${TORCHRUN_ARGS[@]}" groot/vla/experiment/experiment.py \
     pretrained_model_path=$PRETRAINED_DIR \
     ++action_head_cfg.config.skip_component_loading=true \
     ++action_head_cfg.config.defer_lora_injection=true \
+    ++action_head_cfg.config.dynamics_loss_weight=$DYNAMICS_LOSS_WEIGHT \
     ++action_head_cfg.config.action_loss_weight=$ACTION_LOSS_WEIGHT \
     ++action_head_cfg.config.gripper_action_loss_weight=$GRIPPER_ACTION_LOSS_WEIGHT \
     ++action_head_cfg.config.gripper_close_action_loss_weight=$GRIPPER_CLOSE_ACTION_LOSS_WEIGHT \
@@ -292,6 +304,14 @@ torchrun "${TORCHRUN_ARGS[@]}" groot/vla/experiment/experiment.py \
     ++action_head_cfg.config.gripper_binary_max_sigma=$GRIPPER_BINARY_MAX_SIGMA \
     ++action_head_cfg.config.action_prefix_loss_weight=$ACTION_PREFIX_LOSS_WEIGHT \
     ++action_head_cfg.config.action_prefix_loss_len=$ACTION_PREFIX_LOSS_LEN \
+    ++action_head_cfg.config.joint_prefix_loss_weight=$JOINT_PREFIX_LOSS_WEIGHT \
+    ++action_head_cfg.config.joint_prefix_loss_len=$JOINT_PREFIX_LOSS_LEN \
+    ++action_head_cfg.config.first_close_joint_loss_weight=$FIRST_CLOSE_JOINT_LOSS_WEIGHT \
+    ++action_head_cfg.config.first_close_joint_loss_window_before=$FIRST_CLOSE_JOINT_LOSS_WINDOW_BEFORE \
+    ++action_head_cfg.config.first_close_joint_loss_window_after=$FIRST_CLOSE_JOINT_LOSS_WINDOW_AFTER \
+    ++action_head_cfg.config.pre_close_joint_loss_weight=$PRE_CLOSE_JOINT_LOSS_WEIGHT \
+    ++action_head_cfg.config.pre_close_joint_loss_window_before=$PRE_CLOSE_JOINT_LOSS_WINDOW_BEFORE \
+    ++action_head_cfg.config.open_phase_joint_loss_weight=$OPEN_PHASE_JOINT_LOSS_WEIGHT \
     ++action_head_cfg.config.joint_motion_action_loss_weight=$JOINT_MOTION_ACTION_LOSS_WEIGHT \
     ++action_head_cfg.config.joint_motion_action_loss_threshold=$JOINT_MOTION_ACTION_LOSS_THRESHOLD \
     ++action_head_cfg.config.max_state_dim=$MODEL_MAX_STATE_DIM \

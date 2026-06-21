@@ -89,6 +89,7 @@ action_head_cfg:
 
     action_dim: ${max_action_dim}
     action_horizon: ${action_horizon}
+    dynamics_loss_weight: 1.0
     action_loss_weight: 1.0
     gripper_action_loss_weight: 1.0
     gripper_close_action_loss_weight: 1.0
@@ -103,6 +104,14 @@ action_head_cfg:
     gripper_action_dims: [7]
     action_prefix_loss_weight: 1.0
     action_prefix_loss_len: 0
+    joint_prefix_loss_weight: 1.0
+    joint_prefix_loss_len: 0
+    first_close_joint_loss_weight: 1.0
+    first_close_joint_loss_window_before: 0
+    first_close_joint_loss_window_after: 0
+    pre_close_joint_loss_weight: 1.0
+    pre_close_joint_loss_window_before: 0
+    open_phase_joint_loss_weight: 1.0
     joint_motion_action_loss_weight: 1.0
     joint_motion_action_loss_threshold: 0.0
     num_inference_timesteps: 4  # not used during training
