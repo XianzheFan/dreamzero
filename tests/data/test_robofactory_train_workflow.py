@@ -325,6 +325,7 @@ def test_liftbarrier_gamma_droidwidth_teacher_workflow_preserves_droid_base_head
     for marker in (
         'exec > >(tee /tmp/train_liftbarrier_gamma_droidwidth_teacher.log) 2>&1',
         'STAGE1_RUN_NAME="${STAGE1_RUN_NAME:-${BASE_RUN_NAME}-teacher}"',
+        'CHECKPOINT_UPLOAD_INTERVAL_SECONDS="${CHECKPOINT_UPLOAD_INTERVAL_SECONDS:-120}"',
         'export MODEL_MAX_STATE_DIM="${MODEL_MAX_STATE_DIM:-64}"',
         'export MODEL_ACTION_DIM="${MODEL_ACTION_DIM:-32}"',
         'export AGENT_STATE_PAD_DIM="${AGENT_STATE_PAD_DIM:-64}"',
