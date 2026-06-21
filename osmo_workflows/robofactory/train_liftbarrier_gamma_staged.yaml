@@ -490,6 +490,7 @@ workflow:
             export GLOBAL_VIDEO_TIMESTEP_MODE="${GLOBAL_VIDEO_TIMESTEP_MODE:-clean}"
             export GLOBAL_VIDEO_ATTENTION_MODE="${GLOBAL_VIDEO_ATTENTION_MODE:-read_only}"
             export ATTENTION_BACKEND="${ATTENTION_BACKEND:-flex}"
+            export CHECKPOINT_SLIM_INTERVAL_SECONDS="${CHECKPOINT_SLIM_INTERVAL_SECONDS:-30}"
             export REPORT_TO=wandb
             export WANDB_PROJECT=dreamzero_robofactory
             export DATALOADER_NUM_WORKERS=4
@@ -502,6 +503,60 @@ workflow:
             export TOKENIZER_DIR
             export PRETRAINED_DIR
             mkdir -p "$BASE_OUTPUT_DIR" "$OUTPUT_DIR"
+
+            is_complete_minimal_checkpoint() {
+              ckpt_dir="$1"
+              [ -f "${ckpt_dir}/trainer_state.json" ] && \
+                [ -f "${ckpt_dir}/experiment_cfg/conf.yaml" ] && \
+                { [ -f "${ckpt_dir}/model.safetensors" ] || [ -f "${ckpt_dir}/model.safetensors.index.json" ]; }
+            }
+
+            copy_minimal_checkpoint() {
+              src_dir="$1"
+              dst_dir="$2"
+              rm -rf "$dst_dir"
+              mkdir -p "$dst_dir"
+              for item in model.safetensors model.safetensors.index.json trainer_state.json config.json wandb_config.json latest; do
+                if [ -e "${src_dir}/${item}" ]; then
+                  cp -a "${src_dir}/${item}" "$dst_dir/"
+                fi
+              done
+              if [ -d "${src_dir}/experiment_cfg" ]; then
+                cp -a "${src_dir}/experiment_cfg" "$dst_dir/"
+              fi
+              touch "${dst_dir}/.cache_complete"
+            }
+
+            slim_checkpoint_once() {
+              ckpt_dir="$1"
+              if ! is_complete_minimal_checkpoint "$ckpt_dir"; then
+                return 0
+              fi
+              if [ -f "${ckpt_dir}/.dreamzero_slimmed" ]; then
+                return 0
+              fi
+              echo "Slimming checkpoint ${ckpt_dir} to model/config/trainer metadata only"
+              find "$ckpt_dir" -mindepth 1 -maxdepth 1 \
+                ! -name 'model.safetensors' \
+                ! -name 'model.safetensors.index.json' \
+                ! -name 'trainer_state.json' \
+                ! -name 'config.json' \
+                ! -name 'wandb_config.json' \
+                ! -name 'latest' \
+                ! -name 'experiment_cfg' \
+                ! -name '.cache_complete' \
+                ! -name '.dreamzero_slimmed' \
+                -exec rm -rf {} +
+              touch "${ckpt_dir}/.dreamzero_slimmed"
+              du -sh "$ckpt_dir" || true
+            }
+
+            slim_checkpoints_once() {
+              while IFS= read -r ckpt_dir; do
+                [ -n "$ckpt_dir" ] || continue
+                slim_checkpoint_once "$ckpt_dir"
+              done < <(find "$OUTPUT_DIR" -maxdepth 1 -type d -name 'checkpoint-*' | sort -V)
+            }
 
             stage_checkpoints_for_upload() {
               stage_root="/workspace/rf_checkpoint_upload"
@@ -521,14 +576,12 @@ workflow:
               found=0
               while IFS= read -r ckpt_dir; do
                 [ -n "$ckpt_dir" ] || continue
-                if [ -f "${ckpt_dir}/trainer_state.json" ] && \
-                   { [ -f "${ckpt_dir}/model.safetensors" ] || [ -f "${ckpt_dir}/model.safetensors.index.json" ]; }; then
+                if is_complete_minimal_checkpoint "$ckpt_dir"; then
                   ckpt_name="$(basename "$ckpt_dir")"
-                  mkdir -p "${stage_dir}/${ckpt_name}"
-                  cp -a "${ckpt_dir}/." "${stage_dir}/${ckpt_name}/"
+                  copy_minimal_checkpoint "$ckpt_dir" "${stage_dir}/${ckpt_name}"
                   found=1
                 else
-                  echo "Skipping incomplete checkpoint ${ckpt_dir}; need model weights plus trainer_state.json."
+                  echo "Skipping incomplete checkpoint ${ckpt_dir}; need model weights plus trainer_state.json and experiment_cfg/conf.yaml."
                 fi
               done < <(find "$OUTPUT_DIR" -maxdepth 1 -type d -name 'checkpoint-*' | sort)
 
@@ -541,11 +594,35 @@ workflow:
             }
 
             upload_checkpoints_once() {
+              slim_checkpoints_once || true
               stage_dir="$(stage_checkpoints_for_upload || true)"
               if [ -n "$stage_dir" ] && [ -d "$stage_dir" ]; then
                 osmo data upload "${OUTPUT_S3_URI}/" "$stage_dir"
                 osmo data upload "${CACHE_OUTPUT_S3_URI}/" "$stage_dir"
               fi
+            }
+
+            checkpoint_slimmer_loop() {
+              while true; do
+                sleep "$CHECKPOINT_SLIM_INTERVAL_SECONDS" || break
+                slim_checkpoints_once || true
+              done
+            }
+
+            stop_checkpoint_slimmer() {
+              if [ -n "${CHECKPOINT_SLIMMER_PID:-}" ] && kill -0 "$CHECKPOINT_SLIMMER_PID" 2>/dev/null; then
+                echo "Stopping checkpoint slimmer pid=${CHECKPOINT_SLIMMER_PID}"
+                kill "$CHECKPOINT_SLIMMER_PID" 2>/dev/null || true
+                wait "$CHECKPOINT_SLIMMER_PID" 2>/dev/null || true
+              fi
+              unset CHECKPOINT_SLIMMER_PID
+            }
+
+            start_checkpoint_slimmer() {
+              stop_checkpoint_slimmer
+              checkpoint_slimmer_loop &
+              CHECKPOINT_SLIMMER_PID=$!
+              echo "Started checkpoint slimmer pid=${CHECKPOINT_SLIMMER_PID}, interval=${CHECKPOINT_SLIM_INTERVAL_SECONDS}, output_dir=${OUTPUT_DIR}"
             }
 
             periodic_checkpoint_upload() {
@@ -556,6 +633,22 @@ workflow:
                 osmo data upload "${LOG_S3_URI}/" /tmp/train_liftbarrier_gamma_staged.log || true
                 upload_checkpoints_once || true
               done
+            }
+
+            stop_periodic_checkpoint_upload() {
+              if [ -n "${PERIODIC_UPLOADER_PID:-}" ] && kill -0 "$PERIODIC_UPLOADER_PID" 2>/dev/null; then
+                echo "Stopping periodic checkpoint uploader pid=${PERIODIC_UPLOADER_PID}"
+                kill "$PERIODIC_UPLOADER_PID" 2>/dev/null || true
+                wait "$PERIODIC_UPLOADER_PID" 2>/dev/null || true
+              fi
+              unset PERIODIC_UPLOADER_PID
+            }
+
+            start_periodic_checkpoint_upload() {
+              stop_periodic_checkpoint_upload
+              periodic_checkpoint_upload &
+              PERIODIC_UPLOADER_PID=$!
+              echo "Started periodic checkpoint uploader pid=${PERIODIC_UPLOADER_PID}, interval=${CHECKPOINT_UPLOAD_INTERVAL_SECONDS}, run=${RUN_NAME}, output_dir=${OUTPUT_DIR}"
             }
 
             is_complete_resume_checkpoint() {
@@ -720,18 +813,25 @@ workflow:
               echo "Checkpoints available before ${stage_label}:"
               find "$OUTPUT_DIR" -maxdepth 1 -type d -name 'checkpoint-*' -print | sort -V || true
 
+              start_checkpoint_slimmer
+              start_periodic_checkpoint_upload
+              set +e
               bash scripts/train/robofactory_bimanual_training.sh
+              train_status=$?
+              set -e
+              stop_periodic_checkpoint_upload
+              stop_checkpoint_slimmer
+              slim_checkpoints_once || true
               osmo data upload "${LOG_S3_URI}/" /tmp/train_liftbarrier_gamma_staged.log || true
               upload_checkpoints_once
+              if [ "$train_status" -ne 0 ]; then
+                exit "$train_status"
+              fi
             }
 
             if [ -n "$RESTORE_RUN_NAME" ]; then
               echo "RESTORE_RUN_NAME is ignored by the staged workflow; stage1 starts from DreamZero-DROID and stage2 starts from stage1."
             fi
-
-            periodic_checkpoint_upload &
-            PERIODIC_UPLOADER_PID=$!
-            echo "Started periodic checkpoint uploader pid=${PERIODIC_UPLOADER_PID}, interval=${CHECKPOINT_UPLOAD_INTERVAL_SECONDS}s"
 
             require_wandb
 

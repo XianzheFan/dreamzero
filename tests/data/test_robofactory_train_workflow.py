@@ -195,7 +195,6 @@ def test_liftbarrier_train_workflow_restores_and_uploads_run_and_s3cache_checkpo
     assert "No restore run configured; training will start fresh." in script
     assert '[ -f "${ckpt_dir}/trainer_state.json" ]' in script
 
-
 def test_liftbarrier_train_workflow_promotes_nested_model_cache_without_mv_failure():
     with WORKFLOW_PATH.open() as f:
         workflow = yaml.safe_load(f)
@@ -256,6 +255,16 @@ def test_liftbarrier_gamma_staged_workflow_runs_dense_teacher_then_sparse_studen
         'echo "ACTION_LOSS_WEIGHT=$ACTION_LOSS_WEIGHT"',
         'echo "ACTION_DELTA_LOSS_WEIGHT=$ACTION_DELTA_LOSS_WEIGHT"',
         'echo "ATTENTION_BACKEND=$ATTENTION_BACKEND"',
+        "start_periodic_checkpoint_upload()",
+        "stop_periodic_checkpoint_upload()",
+        "start_checkpoint_slimmer()",
+        "stop_checkpoint_slimmer()",
+        "slim_checkpoint_once()",
+        "copy_minimal_checkpoint()",
+        'export CHECKPOINT_SLIM_INTERVAL_SECONDS="${CHECKPOINT_SLIM_INTERVAL_SECONDS:-30}"',
+        'echo "Started checkpoint slimmer pid=${CHECKPOINT_SLIMMER_PID}, interval=${CHECKPOINT_SLIM_INTERVAL_SECONDS}, output_dir=${OUTPUT_DIR}"',
+        'echo "Started periodic checkpoint uploader pid=${PERIODIC_UPLOADER_PID}, interval=${CHECKPOINT_UPLOAD_INTERVAL_SECONDS}, run=${RUN_NAME}, output_dir=${OUTPUT_DIR}"',
+        "train_status=$?",
         '"dense-teacher-style"',
         '"false"',
         '"sparse-causal-student-style"',
@@ -268,6 +277,18 @@ def test_liftbarrier_gamma_staged_workflow_runs_dense_teacher_then_sparse_studen
     ):
         assert marker in script
 
+    output_dir_idx = script.index('export OUTPUT_DIR="$stage_output_dir"')
+    start_uploader_idx = script.index(
+        "start_periodic_checkpoint_upload",
+        output_dir_idx,
+    )
+    start_slimmer_idx = script.index("start_checkpoint_slimmer", output_dir_idx)
+    assert output_dir_idx < start_slimmer_idx < start_uploader_idx
+    assert output_dir_idx < start_uploader_idx
+    assert 'interval=${CHECKPOINT_UPLOAD_INTERVAL_SECONDS}s' not in script
+    assert "is_complete_minimal_checkpoint()" in script
+    assert "experiment_cfg/conf.yaml" in script
+    assert 'cp -a "${ckpt_dir}/." "${stage_dir}/${ckpt_name}/"' not in script
     assert 'cp -an "${resolved}/." "$dest/"' in script
     assert "mv -n -t" not in script
 
