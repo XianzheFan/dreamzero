@@ -41,9 +41,6 @@ class VLATrainer(BaseTrainer):
     def training_step(self, model, inputs, *args, **kwargs):
         self.micro_global_step += 1
 
-        if hasattr(self.model.action_head, "global_step"):
-            self.model.action_head.global_step = self.state.global_step
-
         if self.benchmark_time:
             if self.state.global_step % 100 == 0:
                 if self.step_timer is not None:

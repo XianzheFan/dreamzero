@@ -978,8 +978,16 @@ class WANPolicyHead(ActionHead):
     def _self_forcing_train_enabled(self) -> bool:
         env_value = os.environ.get("MAI_SELF_FORCING_TRAIN")
         if env_value is not None:
-            return env_value.lower() in ("1", "true", "yes", "on")
-        return self._config_bool("self_forcing_train", False)
+            enabled = env_value.lower() in ("1", "true", "yes", "on")
+        else:
+            enabled = self._config_bool("self_forcing_train", False)
+        if not enabled:
+            return False
+
+        warmup_steps = self._config_int("self_forcing_warmup_steps", 0)
+        if warmup_steps > 0 and int(getattr(self, "global_step", 0)) < warmup_steps:
+            return False
+        return True
 
     def _sigma_for_timestep(
         self,

@@ -411,6 +411,27 @@ class BaseTrainer(transformers.Trainer):
         self.loss_queues = {}
         self.loss_queue_size = 10
 
+    def _set_action_head_global_step(self, model=None) -> bool:
+        wrapped_model = model if model is not None else getattr(self, "model", None)
+        if wrapped_model is None:
+            return False
+
+        unwrapped_model = wrapped_model
+        accelerator = getattr(self, "accelerator", None)
+        if accelerator is not None and hasattr(accelerator, "unwrap_model"):
+            unwrapped_model = accelerator.unwrap_model(wrapped_model)
+
+        action_head = getattr(unwrapped_model, "action_head", None)
+        if action_head is None and hasattr(unwrapped_model, "module"):
+            action_head = getattr(unwrapped_model.module, "action_head", None)
+        if action_head is None and unwrapped_model is not wrapped_model:
+            action_head = getattr(wrapped_model, "action_head", None)
+        if action_head is None or not hasattr(action_head, "global_step"):
+            return False
+
+        action_head.global_step = int(getattr(self.state, "global_step", 0))
+        return True
+
     def _get_train_sampler(self):
         return BaseSampler(self.train_dataset, shuffle=True, seed=self.args.seed)
 
@@ -418,6 +439,8 @@ class BaseTrainer(transformers.Trainer):
         return BaseSampler(eval_dataset, shuffle=False)
 
     def training_step(self, model, inputs, num_items_in_batch=None):
+        self._set_action_head_global_step(model)
+
         enable_profile = self.enable_profiling and self.current_step % self.profiling_steps == 0
         if enable_profile:
             profile_context = profile(

@@ -1,4 +1,5 @@
 from pathlib import Path
+import types
 
 import pytest
 
@@ -87,3 +88,38 @@ def test_wan_action_head_config_imports_with_gripper_defaults():
     assert cfg.self_forcing_train is False
     assert cfg.self_forcing_warmup_steps == 0
     assert cfg.self_forcing_fast_writeback is False
+
+
+def test_self_forcing_train_enabled_respects_warmup_steps(monkeypatch):
+    pytest.importorskip("torch")
+    pytest.importorskip("einops")
+    pytest.importorskip("transformers")
+    pytest.importorskip("torchvision")
+    pytest.importorskip("diffusers")
+    pytest.importorskip("accelerate")
+    pytest.importorskip("hydra")
+    pytest.importorskip("peft")
+
+    from groot.vla.model.dreamzero.action_head.wan_flow_matching_action_tf import (
+        WANPolicyHead,
+    )
+
+    monkeypatch.delenv("MAI_SELF_FORCING_TRAIN", raising=False)
+    head = WANPolicyHead.__new__(WANPolicyHead)
+    head.config = types.SimpleNamespace(
+        self_forcing_train=True,
+        self_forcing_warmup_steps=5,
+    )
+
+    head.global_step = 4
+    assert head._self_forcing_train_enabled() is False
+
+    head.global_step = 5
+    assert head._self_forcing_train_enabled() is True
+
+    monkeypatch.setenv("MAI_SELF_FORCING_TRAIN", "0")
+    assert head._self_forcing_train_enabled() is False
+
+    monkeypatch.setenv("MAI_SELF_FORCING_TRAIN", "1")
+    head.global_step = 4
+    assert head._self_forcing_train_enabled() is False
