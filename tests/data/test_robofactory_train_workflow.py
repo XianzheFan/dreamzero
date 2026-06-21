@@ -11,6 +11,8 @@ DROIDWIDTH_TEACHER_WORKFLOW_PATH = (
 )
 CODE_CACHE_URI = "swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_gamma_jerkloss_32e8028_20260621"
 EXPECTED_CODE_COMMIT = "32e80283df4d1655045dacea9cc14ad49760b7d2"
+STAGED_CODE_CACHE_URI = "swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_gamma_self_forcing_e6e2d2f_20260621"
+STAGED_EXPECTED_CODE_COMMIT = "e6e2d2f8612b7723389548d1c49b2e07ebd1adc4"
 
 
 def _task_by_name(workflow, name):
@@ -270,8 +272,8 @@ def test_liftbarrier_gamma_staged_workflow_runs_dense_teacher_then_sparse_studen
     assert defaults["workflow_name"] == "dz-rf-sg-gamma-staged-lb500-xianzhef-20260621"
     assert defaults["run_name"] == "dz-rf-sg-gamma-staged-lb500-xianzhef-20260621"
     assert defaults["restore_run_name"] == ""
-    assert defaults["code_s3_uri"] == CODE_CACHE_URI
-    assert defaults["expected_code_commit"] == EXPECTED_CODE_COMMIT
+    assert defaults["code_s3_uri"] == STAGED_CODE_CACHE_URI
+    assert defaults["expected_code_commit"] == STAGED_EXPECTED_CODE_COMMIT
     assert defaults["stage1_max_steps"] == "10000"
     assert defaults["stage2_warmup_max_steps"] == "3000"
     assert defaults["stage2_max_steps"] == "37000"
