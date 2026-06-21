@@ -39,10 +39,13 @@ def test_robofactory_training_script_passes_action_delta_loss_knobs():
 
     for marker in (
         "ACTION_DELTA_LOSS_WEIGHT=${ACTION_DELTA_LOSS_WEIGHT:-0.0}",
+        "ACTION_JERK_LOSS_WEIGHT=${ACTION_JERK_LOSS_WEIGHT:-0.0}",
         "ACTION_DELTA_MAX_SIGMA=${ACTION_DELTA_MAX_SIGMA:-0.75}",
         "ACTION_DELTA_EXCLUDE_GRIPPER=${ACTION_DELTA_EXCLUDE_GRIPPER:-true}",
         "action_delta_loss_weight=$ACTION_DELTA_LOSS_WEIGHT",
+        "action_jerk_loss_weight=$ACTION_JERK_LOSS_WEIGHT",
         "++action_head_cfg.config.action_delta_loss_weight=$ACTION_DELTA_LOSS_WEIGHT",
+        "++action_head_cfg.config.action_jerk_loss_weight=$ACTION_JERK_LOSS_WEIGHT",
         "++action_head_cfg.config.action_delta_max_sigma=$ACTION_DELTA_MAX_SIGMA",
         "++action_head_cfg.config.action_delta_exclude_gripper=$ACTION_DELTA_EXCLUDE_GRIPPER",
     ):

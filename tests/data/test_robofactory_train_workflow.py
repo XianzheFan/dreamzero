@@ -80,6 +80,7 @@ def test_liftbarrier_train_workflow_verifies_code_cache_and_robofactory_dataset(
         "DATASET_SHARD_SAMPLING_RATE",
         "dynamics_loss_weight",
         "action_delta_loss_weight",
+        "action_jerk_loss_weight",
         "gripper_binary_action_loss_weight",
         "ROPE_AGENT_DIM",
         "GLOBAL_VIDEO_DROPOUT_PROB",
@@ -89,6 +90,7 @@ def test_liftbarrier_train_workflow_verifies_code_cache_and_robofactory_dataset(
         "multi_agent_shuffle_agents",
         "global_video_dropout_prob",
         "_compute_action_delta_loss",
+        "_compute_action_jerk_loss",
         "_compute_gripper_binary_action_loss",
         "agent_action_dims: [[0, 8], [8, 16]]",
     ):
@@ -160,6 +162,7 @@ def test_liftbarrier_train_workflow_passes_shared_global_binary_gripper_training
         "GRIPPER_BINARY_LOGIT_SCALE=$GRIPPER_BINARY_LOGIT_SCALE",
         "GRIPPER_BINARY_MAX_SIGMA=$GRIPPER_BINARY_MAX_SIGMA",
         "action_delta_loss_weight",
+        "ACTION_JERK_LOSS_WEIGHT=$ACTION_JERK_LOSS_WEIGHT",
         "FIRST_CLOSE_JOINT_LOSS_WEIGHT=$FIRST_CLOSE_JOINT_LOSS_WEIGHT",
         "FIRST_CLOSE_JOINT_LOSS_WINDOW_BEFORE=$FIRST_CLOSE_JOINT_LOSS_WINDOW_BEFORE",
         "FIRST_CLOSE_JOINT_LOSS_WINDOW_AFTER=$FIRST_CLOSE_JOINT_LOSS_WINDOW_AFTER",

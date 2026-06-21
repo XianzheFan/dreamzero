@@ -210,10 +210,16 @@ class WANPolicyHeadConfig(PretrainedConfig):
             "help": "Optional MSE on adjacent clean-action deltas to reduce high-frequency joint jitter."
         },
     )
+    action_jerk_loss_weight: float = field(
+        default=0.0,
+        metadata={
+            "help": "Optional MSE on second-order clean-action differences to reduce action jerk."
+        },
+    )
     action_delta_max_sigma: float = field(
         default=1.0,
         metadata={
-            "help": "Only apply clean-action delta loss at action diffusion sigmas <= this value."
+            "help": "Only apply clean-action delta/jerk losses at action diffusion sigmas <= this value."
         },
     )
     action_delta_exclude_gripper: bool = field(
@@ -1153,6 +1159,64 @@ class WANPolicyHead(ActionHead):
         denom = valid_f.sum().clamp_min(1.0)
         return (delta_loss * valid_f).sum() / denom * loss_weight
 
+    def _compute_action_jerk_loss(
+        self,
+        clean_action_pred: torch.Tensor,
+        actions: torch.Tensor,
+        action_mask: torch.Tensor,
+        has_real_action: torch.Tensor,
+    ) -> torch.Tensor:
+        loss_weight = self._config_float("action_jerk_loss_weight", 0.0)
+        if loss_weight == 0.0:
+            return torch.tensor(0.0, device=clean_action_pred.device)
+        if clean_action_pred.shape != actions.shape:
+            raise ValueError(
+                "clean_action_pred and actions must have the same shape: "
+                f"{tuple(clean_action_pred.shape)} != {tuple(actions.shape)}"
+            )
+        if actions.shape[-2] < 3:
+            return torch.tensor(0.0, device=clean_action_pred.device)
+
+        pred_jerk = (
+            clean_action_pred[..., 2:, :]
+            - 2.0 * clean_action_pred[..., 1:-1, :]
+            + clean_action_pred[..., :-2, :]
+        )
+        target_jerk = actions[..., 2:, :] - 2.0 * actions[..., 1:-1, :] + actions[..., :-2, :]
+        valid = (
+            action_mask[..., 2:, :].bool()
+            & action_mask[..., 1:-1, :].bool()
+            & action_mask[..., :-2, :].bool()
+        )
+
+        if bool(getattr(self.config, "action_delta_exclude_gripper", True)):
+            dim_mask = torch.ones(
+                actions.shape[-1],
+                device=actions.device,
+                dtype=torch.bool,
+            )
+            for dim in getattr(self.config, "gripper_action_dims", [7]):
+                dim = int(dim)
+                if -actions.shape[-1] <= dim < actions.shape[-1]:
+                    dim_mask[dim % actions.shape[-1]] = False
+            view_shape = [1] * valid.ndim
+            view_shape[-1] = valid.shape[-1]
+            valid = valid & dim_mask.view(*view_shape)
+
+        real_action_mask = has_real_action.bool()
+        while real_action_mask.ndim < valid.ndim:
+            real_action_mask = real_action_mask.unsqueeze(-1)
+        valid = valid & real_action_mask
+
+        jerk_loss = torch.nn.functional.mse_loss(
+            pred_jerk.float(),
+            target_jerk.float(),
+            reduction="none",
+        )
+        valid_f = valid.to(dtype=jerk_loss.dtype)
+        denom = valid_f.sum().clamp_min(1.0)
+        return (jerk_loss * valid_f).sum() / denom * loss_weight
+
     def _gripper_clean_sigma_mask(self, sigma: torch.Tensor) -> torch.Tensor:
         max_sigma = self._config_float("gripper_clean_max_sigma", 1.0)
         if not (0.0 <= max_sigma <= 1.0):
@@ -2033,6 +2097,7 @@ class WANPolicyHead(ActionHead):
                 gripper_clean_action_loss = torch.tensor(0.0, device=self._device)
                 gripper_binary_action_loss = torch.tensor(0.0, device=self._device)
                 action_delta_loss = torch.tensor(0.0, device=self._device)
+                action_jerk_loss = torch.tensor(0.0, device=self._device)
                 needs_gripper_clean_pred = (
                     float(
                         getattr(
@@ -2056,6 +2121,15 @@ class WANPolicyHead(ActionHead):
                         getattr(
                             self.config,
                             "action_delta_loss_weight",
+                            0.0,
+                        )
+                        or 0.0
+                    )
+                    != 0.0
+                    or float(
+                        getattr(
+                            self.config,
+                            "action_jerk_loss_weight",
                             0.0,
                         )
                         or 0.0
@@ -2123,18 +2197,37 @@ class WANPolicyHead(ActionHead):
                         action_mask=delta_action_mask,
                         has_real_action=has_real_action,
                     )
+                if float(
+                    getattr(
+                        self.config,
+                        "action_jerk_loss_weight",
+                        0.0,
+                    )
+                    or 0.0
+                ) != 0.0:
+                    jerk_action_mask = action_mask.bool() & self._action_delta_sigma_mask(
+                        sigma_action
+                    )
+                    action_jerk_loss = self._compute_action_jerk_loss(
+                        clean_action_pred=clean_action_pred,
+                        actions=actions,
+                        action_mask=jerk_action_mask,
+                        has_real_action=has_real_action,
+                    )
                 loss = (
                     weighted_dynamics_loss
                     + weighted_action_loss
                     + gripper_clean_action_loss
                     + gripper_binary_action_loss
                     + action_delta_loss
+                    + action_jerk_loss
                 )
             else:
                 weighted_action_loss = torch.tensor(0.0, device=self._device)
                 gripper_clean_action_loss = torch.tensor(0.0, device=self._device)
                 gripper_binary_action_loss = torch.tensor(0.0, device=self._device)
                 action_delta_loss = torch.tensor(0.0, device=self._device)
+                action_jerk_loss = torch.tensor(0.0, device=self._device)
                 loss = weighted_dynamics_loss
 
         output_dict = {
@@ -2145,6 +2238,7 @@ class WANPolicyHead(ActionHead):
             "gripper_clean_action_loss": gripper_clean_action_loss,
             "gripper_binary_action_loss": gripper_binary_action_loss,
             "action_delta_loss": action_delta_loss,
+            "action_jerk_loss": action_jerk_loss,
         }
         return BatchFeature(data=output_dict)
 
@@ -3049,6 +3143,7 @@ class WANPolicyHead(ActionHead):
                 gripper_clean_action_loss = torch.tensor(0.0, device=self._device)
                 gripper_binary_action_loss = torch.tensor(0.0, device=self._device)
                 action_delta_loss = torch.tensor(0.0, device=self._device)
+                action_jerk_loss = torch.tensor(0.0, device=self._device)
                 needs_gripper_clean_pred = (
                     float(
                         getattr(
@@ -3072,6 +3167,15 @@ class WANPolicyHead(ActionHead):
                         getattr(
                             self.config,
                             "action_delta_loss_weight",
+                            0.0,
+                        )
+                        or 0.0
+                    )
+                    != 0.0
+                    or float(
+                        getattr(
+                            self.config,
+                            "action_jerk_loss_weight",
                             0.0,
                         )
                         or 0.0
@@ -3139,18 +3243,37 @@ class WANPolicyHead(ActionHead):
                         action_mask=delta_action_mask,
                         has_real_action=has_real_action,
                     )
+                if float(
+                    getattr(
+                        self.config,
+                        "action_jerk_loss_weight",
+                        0.0,
+                    )
+                    or 0.0
+                ) != 0.0:
+                    jerk_action_mask = action_mask.bool() & self._action_delta_sigma_mask(
+                        sigma_action
+                    )
+                    action_jerk_loss = self._compute_action_jerk_loss(
+                        clean_action_pred=clean_action_pred,
+                        actions=actions,
+                        action_mask=jerk_action_mask,
+                        has_real_action=has_real_action,
+                    )
                 loss = (
                     weighted_dynamics_loss
                     + weighted_action_loss
                     + gripper_clean_action_loss
                     + gripper_binary_action_loss
                     + action_delta_loss
+                    + action_jerk_loss
                 )
             else:
                 weighted_action_loss = torch.tensor(0.0, device=self._device)
                 gripper_clean_action_loss = torch.tensor(0.0, device=self._device)
                 gripper_binary_action_loss = torch.tensor(0.0, device=self._device)
                 action_delta_loss = torch.tensor(0.0, device=self._device)
+                action_jerk_loss = torch.tensor(0.0, device=self._device)
                 loss = weighted_dynamics_loss
             # loss = dynamics_loss_per_sample.mean()
 
@@ -3163,6 +3286,7 @@ class WANPolicyHead(ActionHead):
             "gripper_clean_action_loss": gripper_clean_action_loss,
             "gripper_binary_action_loss": gripper_binary_action_loss,
             "action_delta_loss": action_delta_loss,
+            "action_jerk_loss": action_jerk_loss,
         }
 
         return BatchFeature(data=output_dict)

@@ -105,6 +105,7 @@ action_head_cfg:
     action_prefix_loss_weight: 1.0
     action_prefix_loss_len: 0
     action_delta_loss_weight: 0.0
+    action_jerk_loss_weight: 0.0
     action_delta_max_sigma: 1.0
     action_delta_exclude_gripper: true
     joint_prefix_loss_weight: 1.0

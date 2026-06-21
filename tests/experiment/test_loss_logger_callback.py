@@ -25,3 +25,4 @@ def test_loss_logger_callback_tracks_auxiliary_loss_keys():
     assert "gripper_clean_action_loss_avg" in logged_keys
     assert "gripper_binary_action_loss_avg" in logged_keys
     assert "action_delta_loss_avg" in logged_keys
+    assert "action_jerk_loss_avg" in logged_keys

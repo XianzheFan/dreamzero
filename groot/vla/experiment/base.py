@@ -133,6 +133,7 @@ class LossLoggerCallback(TrainerCallback):
             "gripper_clean_action_loss_avg",
             "gripper_binary_action_loss_avg",
             "action_delta_loss_avg",
+            "action_jerk_loss_avg",
             "learning_rate",
         ):
             if key in logs:
