@@ -373,6 +373,124 @@ def test_noncausal_video_pred_rollout_restores_action_head_control_state(monkeyp
     }
 
 
+def test_causal_full_denoise_video_pred_replays_from_pre_state_and_restores_post_state(
+    monkeypatch,
+):
+    policy = _make_policy(_metadata_with_action_stats())
+    action_head = SimpleNamespace(
+        current_start_frame=1,
+        language="pre-language",
+        kv_cache1=["pre-cache"],
+        kv_cache_neg=None,
+        crossattn_cache=["pre-cross"],
+        crossattn_cache_neg=None,
+        clip_feas="pre-clip",
+        ys="pre-y",
+        _ma_cached_token_agent_id="pre-agent-cache",
+        _ma_cached_token_agent_id_neg=None,
+        skip_countdown=7,
+        _last_video_pred="primary-video",
+        config=SimpleNamespace(
+            decouple_inference_noise=True,
+            video_inference_final_noise=0.8,
+        ),
+        model=SimpleNamespace(_cached_token_agent_id="pre-model-token-cache"),
+    )
+
+    class _FakeModel:
+        def __init__(self, head):
+            self.action_head = head
+            self.calls = []
+
+        def get_action(self, inputs):
+            self.calls.append(
+                {
+                    "inputs": inputs,
+                    "causal_env": os.environ.get("MAI_USE_CAUSAL_INFERENCE"),
+                    "start_frame": action_head.current_start_frame,
+                    "decouple": action_head.config.decouple_inference_noise,
+                    "final_noise": action_head.config.video_inference_final_noise,
+                }
+            )
+            action_head.current_start_frame = 3
+            action_head.language = "diagnostic-language"
+            action_head.kv_cache1 = ["diagnostic-cache"]
+            action_head.crossattn_cache = ["diagnostic-cross"]
+            action_head.clip_feas = "diagnostic-clip"
+            action_head.ys = "diagnostic-y"
+            action_head._ma_cached_token_agent_id = "diagnostic-agent-cache"
+            action_head.skip_countdown = 0
+            action_head.model._cached_token_agent_id = "diagnostic-model-token-cache"
+            action_head._last_video_pred = "diagnostic-video"
+            return SimpleNamespace()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        SimpleNamespace(inference_mode=lambda: _FakeInferenceMode()),
+    )
+    monkeypatch.setenv("MAI_USE_CAUSAL_INFERENCE", "0")
+    model = _FakeModel(action_head)
+    policy._model = model
+
+    pre_state = policy._snapshot_action_head_control_state()
+    action_head.current_start_frame = 9
+    action_head.language = "post-language"
+    action_head.kv_cache1 = ["post-cache"]
+    action_head.crossattn_cache = ["post-cross"]
+    action_head.clip_feas = "post-clip"
+    action_head.ys = "post-y"
+    action_head._ma_cached_token_agent_id = "post-agent-cache"
+    action_head.skip_countdown = 2
+    action_head.model._cached_token_agent_id = "post-model-token-cache"
+    post_state = policy._snapshot_action_head_control_state()
+
+    inputs = {"video": object()}
+    policy._run_causal_full_denoise_video_pred_rollout(
+        inputs,
+        pre_control_state=pre_state,
+        post_control_state=post_state,
+        reason="action_rollout_video_final_noise",
+    )
+
+    assert model.calls == [
+        {
+            "inputs": inputs,
+            "causal_env": "1",
+            "start_frame": 1,
+            "decouple": False,
+            "final_noise": 0.0,
+        }
+    ]
+    assert os.environ["MAI_USE_CAUSAL_INFERENCE"] == "0"
+    assert action_head.config.decouple_inference_noise is True
+    assert action_head.config.video_inference_final_noise == 0.8
+    assert action_head.current_start_frame == 9
+    assert action_head.language == "post-language"
+    assert action_head.kv_cache1 == ["post-cache"]
+    assert action_head.crossattn_cache == ["post-cross"]
+    assert action_head.clip_feas == "post-clip"
+    assert action_head.ys == "post-y"
+    assert action_head._ma_cached_token_agent_id == "post-agent-cache"
+    assert action_head.skip_countdown == 2
+    assert action_head.model._cached_token_agent_id == "post-model-token-cache"
+    assert action_head._last_video_pred == "diagnostic-video"
+    assert policy._last_video_pred_context == {
+        "source": "causal_full_denoise_diagnostic_rollout",
+        "rollout_mode": "causal",
+        "causal_env_during_rollout": "1",
+        "causal_env_before_rollout": "0",
+        "control_current_start_frame_before_replay": 9,
+        "diagnostic_current_start_frame_before_rollout": 1,
+        "diagnostic_current_start_frame_after_rollout": 3,
+        "old_decouple_inference_noise": True,
+        "old_video_inference_final_noise": 0.8,
+        "diagnostic_decouple_inference_noise": False,
+        "diagnostic_video_inference_final_noise": 0.0,
+        "reason": "action_rollout_video_final_noise",
+    }
+
+
 def test_metadata_tag_prefers_robotwin_over_legacy_robofactory():
     metadata = {
         **_metadata_with_action_stats("robofactory"),

@@ -1737,6 +1737,9 @@ class WANPolicyHead(ActionHead):
             )
         else:
             global_latents = None
+        self._last_global_video_cond = (
+            global_latents.detach() if global_latents is not None else None
+        )
 
         block = self.num_frame_per_block
         assert block >= 1
@@ -2156,6 +2159,9 @@ class WANPolicyHead(ActionHead):
             global_latents = self._encode_global_video(video_global_raw).to(dtype=latents.dtype)
         else:
             global_latents = None
+        self._last_global_video_cond = (
+            global_latents.detach() if global_latents is not None else None
+        )
 
         # Keep the I2V condition frame fixed by default in multi-agent
         # inference. Without this, the diagnostic predicted video starts

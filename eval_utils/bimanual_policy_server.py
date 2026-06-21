@@ -1457,7 +1457,23 @@ class BimanualPolicy:
                     t = t.to(self._device)
                 inputs_gpu[k] = t.unsqueeze(0)
 
+            action_head = getattr(getattr(self, "_model", None), "action_head", None)
+            auto_full_denoise_reason = (
+                self._auto_full_denoise_video_pred_reason(action_head)
+                if self.save_video_pred
+                else None
+            )
+            pre_control_state = (
+                self._snapshot_action_head_control_state()
+                if auto_full_denoise_reason is not None
+                else None
+            )
             outputs = self._model.get_action(inputs_gpu)
+            post_control_state = (
+                self._snapshot_action_head_control_state()
+                if pre_control_state is not None
+                else None
+            )
 
         flat_action = self._denorm_action(outputs, qpos)
         self._apply_gripper_force_open(sess, flat_action)
@@ -1468,15 +1484,14 @@ class BimanualPolicy:
         if self.save_video_pred:
             try:
                 action_head = getattr(getattr(self, "_model", None), "action_head", None)
-                auto_noncausal_reason = self._auto_noncausal_video_pred_reason(
-                    action_head
-                )
                 if self.video_pred_rollout_mode == "noncausal":
                     self._run_noncausal_video_pred_rollout(inputs_gpu)
-                elif auto_noncausal_reason is not None:
-                    self._run_noncausal_video_pred_rollout(
+                elif auto_full_denoise_reason is not None:
+                    self._run_causal_full_denoise_video_pred_rollout(
                         inputs_gpu,
-                        reason=auto_noncausal_reason,
+                        pre_control_state=pre_control_state,
+                        post_control_state=post_control_state,
+                        reason=auto_full_denoise_reason,
                     )
                 else:
                     self._last_video_pred_context = {
@@ -1617,21 +1632,116 @@ class BimanualPolicy:
             final_noise = 0.0
         return final_noise > 0.0
 
-    def _auto_noncausal_video_pred_reason(self, action_head: Any) -> str | None:
+    def _auto_full_denoise_video_pred_reason(self, action_head: Any) -> str | None:
         """Return why action-mode video diagnostics need a full-denoise pass.
 
         Some checkpoints leave the action rollout's video latents at a nonzero
         final sigma because control only needs the denoised action. The primary
-        rollout's ``_last_video_pred`` is therefore a residual-noise latent, not
-        a usable predicted video. When saving diagnostics, rerun a noncausal
-        full-denoise pass after control action generation and decode that pass
-        instead.
+        rollout's ``_last_video_pred`` can therefore be a residual-noise latent,
+        not a usable predicted video. When saving diagnostics, rerun the same
+        causal control path from the pre-action state with video final noise
+        forced to zero, then restore the real control state.
         """
         if self.video_pred_rollout_mode != "action":
             return None
         if self._action_head_keeps_video_final_noise(action_head):
             return "action_rollout_video_final_noise"
         return None
+
+    def _auto_noncausal_video_pred_reason(self, action_head: Any) -> str | None:
+        """Backward-compatible alias for older tests/callers."""
+        return self._auto_full_denoise_video_pred_reason(action_head)
+
+    def _run_causal_full_denoise_video_pred_rollout(
+        self,
+        inputs_gpu: dict[str, Any],
+        *,
+        pre_control_state: dict[str, Any] | None,
+        post_control_state: dict[str, Any] | None,
+        reason: str | None = None,
+    ) -> None:
+        """Refresh ``_last_video_pred`` by replaying the causal rollout.
+
+        The production action has already been generated. This diagnostic pass
+        restores the action head to the state it had before that control call,
+        runs the normal causal inference path with video final noise forced to
+        zero, and then restores the post-control state so subsequent replans see
+        the same streaming/KV cache state as they would without diagnostics.
+        Only ``_last_video_pred`` and conditioning-debug tensors are kept from
+        the diagnostic pass for artifact writing.
+        """
+        import torch
+
+        action_head = getattr(getattr(self, "_model", None), "action_head", None)
+        if action_head is None:
+            return
+        if pre_control_state is None or post_control_state is None:
+            logging.warning(
+                "Falling back to noncausal video diagnostic because causal "
+                "pre/post control state was unavailable"
+            )
+            self._run_noncausal_video_pred_rollout(inputs_gpu, reason=reason)
+            return
+
+        cfg = getattr(action_head, "config", None)
+        old_decouple = (
+            None if cfg is None else getattr(cfg, "decouple_inference_noise", None)
+        )
+        old_final_noise = (
+            None if cfg is None else getattr(cfg, "video_inference_final_noise", None)
+        )
+        old_causal = os.environ.get("MAI_USE_CAUSAL_INFERENCE")
+        control_start_frame = (
+            None if action_head is None else getattr(action_head, "current_start_frame", None)
+        )
+        diagnostic_start_before: Any = None
+        diagnostic_start_after: Any = None
+        logging.info(
+            "Running causal full-denoise predicted-video diagnostic rollout; "
+            "control action/state will be restored afterwards"
+        )
+        try:
+            self._restore_action_head_control_state(pre_control_state)
+            diagnostic_start_before = getattr(action_head, "current_start_frame", None)
+            os.environ["MAI_USE_CAUSAL_INFERENCE"] = "1"
+            if cfg is not None:
+                if hasattr(cfg, "decouple_inference_noise"):
+                    setattr(cfg, "decouple_inference_noise", False)
+                if hasattr(cfg, "video_inference_final_noise"):
+                    setattr(cfg, "video_inference_final_noise", 0.0)
+            with torch.inference_mode():
+                self._model.get_action(inputs_gpu)
+            diagnostic_start_after = getattr(action_head, "current_start_frame", None)
+            self._last_video_pred_context = {
+                "source": "causal_full_denoise_diagnostic_rollout",
+                "rollout_mode": "causal",
+                "causal_env_during_rollout": "1",
+                "causal_env_before_rollout": old_causal,
+                "control_current_start_frame_before_replay": control_start_frame,
+                "diagnostic_current_start_frame_before_rollout": diagnostic_start_before,
+                "diagnostic_current_start_frame_after_rollout": diagnostic_start_after,
+                "old_decouple_inference_noise": old_decouple,
+                "old_video_inference_final_noise": old_final_noise,
+                "diagnostic_decouple_inference_noise": (
+                    None if cfg is None else getattr(cfg, "decouple_inference_noise", None)
+                ),
+                "diagnostic_video_inference_final_noise": (
+                    None if cfg is None else getattr(cfg, "video_inference_final_noise", None)
+                ),
+            }
+            if reason is not None:
+                self._last_video_pred_context["reason"] = reason
+        finally:
+            if cfg is not None:
+                if old_decouple is not None and hasattr(cfg, "decouple_inference_noise"):
+                    setattr(cfg, "decouple_inference_noise", old_decouple)
+                if old_final_noise is not None and hasattr(cfg, "video_inference_final_noise"):
+                    setattr(cfg, "video_inference_final_noise", old_final_noise)
+            if old_causal is None:
+                os.environ.pop("MAI_USE_CAUSAL_INFERENCE", None)
+            else:
+                os.environ["MAI_USE_CAUSAL_INFERENCE"] = old_causal
+            self._restore_action_head_control_state(post_control_state)
 
     def _run_noncausal_video_pred_rollout(
         self,
@@ -1769,10 +1879,16 @@ class BimanualPolicy:
         )
 
     def _decode_latent_video(self, latents):
-        """Decode VAE latents in ``[B, P, C, F, H, W]`` layout."""
+        """Decode VAE latents in ``[B, P, C, F, H, W]`` layout.
+
+        A P-less shared-global latent in ``[B, C, F, H, W]`` is accepted
+        for diagnostics and decoded as a single pseudo-agent stream.
+        """
         import torch
 
         action_head = self._model.action_head
+        if latents.dim() == 5:
+            latents = latents.unsqueeze(1)
         B, P, C_lat, F_lat, H_lat, W_lat = latents.shape
         lat_bp = latents.reshape(B * P, C_lat, F_lat, H_lat, W_lat)
         with torch.inference_mode():
@@ -2042,6 +2158,17 @@ class BimanualPolicy:
                     "wrote conditioning y-latent video: infer_idx=%d env_step=%s session=%s dir=%s",
                     infer_idx, "unknown" if env_step is None else env_step, sid[:12], out_dir,
                 )
+
+        global_latents = getattr(action_head, "_last_global_video_cond", None)
+        if global_latents is not None:
+            global_frames = self._decode_latent_video(global_latents)
+            self._write_decoded_video_set(
+                global_frames, out_dir, f"{prefix}_global_latent"
+            )
+            logging.info(
+                "wrote conditioning global-latent video: infer_idx=%d env_step=%s session=%s dir=%s",
+                infer_idx, "unknown" if env_step is None else env_step, sid[:12], out_dir,
+            )
 
         sess["condition_debug_dumped"] = True
 
