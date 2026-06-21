@@ -111,6 +111,9 @@ action_head_cfg:
     pre_close_joint_loss_weight: 1.0
     pre_close_joint_loss_window_before: 0
     open_phase_joint_loss_weight: 1.0
+    multi_agent_shuffle_agents: false
+    multi_agent_sample_agent_pool: false
+    global_video_dropout_prob: 0.0
     num_inference_timesteps: 4  # not used during training
     noise_beta_alpha: 1.5
     noise_beta_beta: 1.0

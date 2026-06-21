@@ -26,6 +26,7 @@ def _load(name: str, path: Path):
 
 _mod = _load("simplex_rope_under_test", _MODULE_PATH)
 build_simplex_vertices = _mod.build_simplex_vertices
+compute_gamma_world_temporal_agent_dims = _mod.compute_gamma_world_temporal_agent_dims
 SimplexRotaryPositionEmbedding4D = _mod.SimplexRotaryPositionEmbedding4D
 
 
@@ -74,6 +75,21 @@ def test_simplex_rejects_V_below_2():
 def test_simplex_rejects_d_below_V():
     with pytest.raises(ValueError, match="d >= V"):
         build_simplex_vertices(4, 3)
+
+
+def test_gamma_world_temporal_agent_split_for_wan_head_dim():
+    d_t_active, d_agent, d_h, d_w = compute_gamma_world_temporal_agent_dims(128)
+    assert (d_t_active, d_agent, d_h, d_w) == (22, 22, 42, 42)
+
+
+def test_agent_dim_gamma_uses_gamma_world_split():
+    rope = _make_rope(head_dim=128, agent_dim="gamma", V=4)
+    assert rope.gamma_world_band_split is True
+    assert rope.d_t_active == 22
+    assert rope.agent_dim == 22
+    assert rope.d_h == 42
+    assert rope.d_w == 42
+    assert rope.temporal_freq_dim == 22
 
 
 # ---------------------------------------------------------------------------

@@ -61,6 +61,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import copy
 import dataclasses
 import gc
 import inspect
@@ -1350,12 +1351,16 @@ class BimanualPolicy:
         self._apply_gripper_force_open(sess, flat_action)
         self._apply_gripper_override(sess, flat_action)
         self._last_action_debug["action_physical_final"] = flat_action.copy()
+        control_action_debug = self._copy_action_debug(self._last_action_debug)
         self._log_action_summary(sess, sid, flat_action)
 
         if self.save_video_pred:
             try:
                 if self.video_pred_rollout_mode == "noncausal":
-                    self._run_noncausal_video_pred_rollout(inputs_gpu)
+                    try:
+                        self._run_noncausal_video_pred_rollout(inputs_gpu)
+                    finally:
+                        self._last_action_debug = control_action_debug
                 self._dump_video_pred(sess, sid)
                 self._dump_conditioning_pred(sess, sid)
             except Exception:
@@ -1388,6 +1393,15 @@ class BimanualPolicy:
         manifest_path = out_dir / "manifest.jsonl"
         with manifest_path.open("a") as f:
             f.write(json.dumps(entry, sort_keys=True) + "\n")
+
+    @staticmethod
+    def _copy_action_debug(debug: dict[str, Any]) -> dict[str, Any]:
+        copied: dict[str, Any] = {}
+        for key, value in debug.items():
+            copied[key] = (
+                value.copy() if isinstance(value, np.ndarray) else copy.deepcopy(value)
+            )
+        return copied
 
     def _run_noncausal_video_pred_rollout(self, inputs_gpu: dict[str, Any]) -> None:
         """Refresh ``_last_video_pred`` with noncausal flowmatch for diagnostics.

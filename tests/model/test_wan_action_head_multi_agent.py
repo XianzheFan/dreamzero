@@ -248,6 +248,49 @@ def test_forward_multi_agent_shared_global_video_runs(cuda_available):
     assert (B, 3, T, H, W) in encode_video_shapes
     assert out["loss"].ndim == 0
     assert torch.isfinite(out["loss"]).item()
+
+
+def test_forward_multi_agent_global_video_dropout_skips_global_encode(cuda_available):
+    """Training-time global dropout must remove only the shared global
+    clean-token stream; per-agent wrist video is still encoded as the
+    denoising target."""
+    torch.manual_seed(0)
+    device = "cuda"
+    B, P, T, F_lat, H, W = 1, 2, 4, 2, 4, 4
+
+    head = _make_head(num_agents=P, device=device)
+    head.config.global_video_dropout_prob = 1.0
+
+    text_dim = head.model.text_dim
+    text_len = head.model.text_len
+    in_dim = head.model.in_dim
+    encode_video_shapes = []
+
+    def _stub_encode_prompt(self, input_ids, attention_mask):
+        b = input_ids.shape[0]
+        return torch.randn(b, text_len, text_dim, dtype=torch.bfloat16, device=device)
+
+    def _stub_encode_video(self, video, tiled=False, tile_size=None, tile_stride=None):
+        encode_video_shapes.append(tuple(video.shape))
+        b = video.shape[0]
+        return torch.randn(
+            b, in_dim, F_lat, H, W, dtype=torch.bfloat16, device=device
+        )
+
+    head.encode_prompt = types.MethodType(_stub_encode_prompt, head)
+    head.encode_video = types.MethodType(_stub_encode_video, head)
+
+    action_input = _make_batch(B=B, P=P, T=T, F_lat=F_lat, H=H, W=W, device=device)
+    action_input["video_global"] = torch.randint(
+        0, 256, (B, T, H, W, 3), dtype=torch.uint8, device=device
+    )
+    backbone_output = type(action_input)(data={})
+
+    out = head.forward(backbone_output, action_input)
+
+    assert (B * P, 3, T, H, W) in encode_video_shapes
+    assert (B, 3, T, H, W) not in encode_video_shapes
+    assert torch.isfinite(out["loss"]).item()
     assert torch.isfinite(out["dynamics_loss"]).item()
     assert torch.isfinite(out["action_loss"]).item()
     assert out["action_loss"].item() > 0.0

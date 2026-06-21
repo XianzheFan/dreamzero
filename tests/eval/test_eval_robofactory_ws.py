@@ -238,6 +238,52 @@ def test_blend_replan_boundary_target_zero_is_noop(monkeypatch):
     np.testing.assert_allclose(out, action)
 
 
+def test_temporal_action_ensembler_blends_old_and_current_joints_only(monkeypatch):
+    mod = _load_eval_module(monkeypatch)
+    ensembler = mod.TemporalActionEnsembler(decay=0.5)
+    old_chunk = np.zeros((3, 16), dtype=np.float32)
+    old_chunk[1, 0:7] = 1.0
+    old_chunk[1, 8:15] = -2.0
+    old_chunk[1, 7] = 99.0
+    old_chunk[1, 15] = 99.0
+    ensembler.add_chunk(0, old_chunk)
+
+    current = np.zeros(16, dtype=np.float32)
+    current[0:7] = 3.0
+    current[8:15] = 6.0
+    current[7] = -1.0
+    current[15] = 1.0
+
+    out = ensembler.apply(1, current)
+
+    np.testing.assert_allclose(out[0:7], (0.5 * 1.0 + 3.0) / 1.5, atol=1e-6)
+    np.testing.assert_allclose(out[8:15], (0.5 * -2.0 + 6.0) / 1.5, atol=1e-6)
+    np.testing.assert_allclose(out[[7, 15]], [-1.0, 1.0])
+
+
+def test_temporal_action_ensembler_zero_decay_is_noop(monkeypatch):
+    mod = _load_eval_module(monkeypatch)
+    ensembler = mod.TemporalActionEnsembler(decay=0.0)
+    old_chunk = np.ones((3, 16), dtype=np.float32)
+    current = np.arange(16, dtype=np.float32)
+
+    ensembler.add_chunk(0, old_chunk)
+    out = ensembler.apply(1, current)
+
+    np.testing.assert_allclose(out, current)
+
+
+def test_temporal_action_ensembler_rejects_invalid_decay(monkeypatch):
+    mod = _load_eval_module(monkeypatch)
+
+    try:
+        mod.TemporalActionEnsembler(decay=1.5)
+    except ValueError as exc:
+        assert "must be in [0, 1]" in str(exc)
+    else:
+        raise AssertionError("expected invalid temporal action ensemble decay")
+
+
 def test_scale_joint_targets_one_is_noop(monkeypatch):
     mod = _load_eval_module(monkeypatch)
     qpos = np.arange(16, dtype=np.float32)

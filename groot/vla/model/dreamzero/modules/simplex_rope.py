@@ -13,10 +13,38 @@ slots and the full spatial bands intact.
 Math reference: Gamma-World paper, Appendix B.
 """
 
-import math
-
 import torch
 import torch.nn as nn
+
+
+def compute_gamma_world_temporal_agent_dims(head_dim: int) -> tuple[int, int, int, int]:
+    """Return Gamma-World's 4D RoPE real-dimension split.
+
+    Gamma-World first reserves ``floor(head_dim / 3)`` real dimensions for
+    each spatial axis, then splits the remaining temporal band roughly in
+    half between the active time axis and the simplex agent axis.
+
+    Returns:
+        ``(d_t_active, d_agent, d_h, d_w)`` in real channel dimensions.
+    """
+    if head_dim <= 0:
+        raise ValueError(f"head_dim must be positive, got {head_dim}")
+    dim_spatial = head_dim // 3
+    dim_temporal = head_dim - 2 * dim_spatial
+    dim_t_active = (dim_temporal // 2 // 2) * 2
+    if dim_t_active == 0:
+        dim_t_active = 2
+    dim_agent = dim_temporal - dim_t_active
+    if dim_agent % 2 == 1:
+        dim_t_active += 1
+        dim_agent -= 1
+    if dim_t_active <= 0 or dim_agent <= 0:
+        raise ValueError(
+            f"Gamma-World split produced invalid temporal/agent dims for "
+            f"head_dim={head_dim}: d_t_active={dim_t_active}, "
+            f"d_agent={dim_agent}"
+        )
+    return dim_t_active, dim_agent, dim_spatial, dim_spatial
 
 
 def build_simplex_vertices(V: int, d: int) -> torch.Tensor:
@@ -52,7 +80,7 @@ def build_simplex_vertices(V: int, d: int) -> torch.Tensor:
         )
 
     centered = torch.eye(V) - 1.0 / V  # row v = e_v - 1/V * 1, shape [V, V]
-    vertices = math.sqrt(V / (V - 1)) * centered  # unit-norm, equidistant
+    vertices = (V / (V - 1)) ** 0.5 * centered  # unit-norm, equidistant
     if d > V:
         pad = torch.zeros(V, d - V, dtype=vertices.dtype)
         vertices = torch.cat([vertices, pad], dim=-1)
@@ -90,7 +118,9 @@ class SimplexRotaryPositionEmbedding4D(nn.Module):
             (``V`` in the paper). Defaults to ``4``, matching Gamma-World §D.
         agent_dim: Width of the agent rotary band, carved out of the temporal
             band. Must be even and ``<= temporal_dim``. Defaults to ``16``
-            (i.e. ``agent_dim/2 = 8`` complex slots per vertex).
+            (i.e. ``agent_dim/2 = 8`` complex slots per vertex). Pass
+            ``"gamma"`` or ``"auto"`` to use Gamma-World's split
+            ``temporal_active=22, agent=22`` for Wan head_dim 128.
         alpha: Scale factor on the simplex phase (Equation 9 in the paper).
             Defaults to ``1.0``.
         end_t: Maximum supported temporal length for the precomputed table.
@@ -103,7 +133,7 @@ class SimplexRotaryPositionEmbedding4D(nn.Module):
         num_heads: int,
         head_dim: int,
         simplex_pool_size: int = 4,
-        agent_dim: int = 16,
+        agent_dim: int | str = 16,
         alpha: float = 1.0,
         end_t: int = 1024,
         end_hw: int = 1024,
@@ -113,20 +143,12 @@ class SimplexRotaryPositionEmbedding4D(nn.Module):
         super().__init__()
         if head_dim % 2 != 0:
             raise ValueError(f"head_dim must be even, got {head_dim}")
-        if agent_dim % 2 != 0:
-            raise ValueError(f"agent_dim must be even, got {agent_dim}")
         if simplex_pool_size < 2:
             raise ValueError(f"simplex_pool_size must be >= 2, got {simplex_pool_size}")
-        if agent_dim // 2 < simplex_pool_size:
-            raise ValueError(
-                f"agent_dim/2 ({agent_dim // 2}) must be >= simplex_pool_size "
-                f"({simplex_pool_size}) for the zero-padded simplex construction"
-            )
 
         self.num_heads = num_heads
         self.head_dim = head_dim
         self.simplex_pool_size = simplex_pool_size
-        self.agent_dim = agent_dim
         self.alpha = alpha
         self.polar_output = polar_output
 
@@ -136,22 +158,49 @@ class SimplexRotaryPositionEmbedding4D(nn.Module):
         d_h = head_dim // 3
         d_w = head_dim // 3
         d_t_full = head_dim - d_h - d_w
+        self.gamma_world_band_split = False
+        self.temporal_freq_dim = d_t_full
+        if isinstance(agent_dim, str):
+            if agent_dim.lower() not in {"gamma", "gamma-world", "auto"}:
+                raise ValueError(
+                    f"agent_dim string must be 'gamma'/'gamma-world'/'auto', "
+                    f"got {agent_dim!r}"
+                )
+            d_t_active, resolved_agent_dim, gamma_d_h, gamma_d_w = (
+                compute_gamma_world_temporal_agent_dims(head_dim)
+            )
+            if (gamma_d_h, gamma_d_w) != (d_h, d_w):
+                raise AssertionError("Gamma-World spatial split diverged unexpectedly")
+            agent_dim = resolved_agent_dim
+            self.gamma_world_band_split = True
+            self.temporal_freq_dim = d_t_active
+        else:
+            agent_dim = int(agent_dim)
+
+        if agent_dim % 2 != 0:
+            raise ValueError(f"agent_dim must be even, got {agent_dim}")
+        if agent_dim // 2 < simplex_pool_size:
+            raise ValueError(
+                f"agent_dim/2 ({agent_dim // 2}) must be >= simplex_pool_size "
+                f"({simplex_pool_size}) for the zero-padded simplex construction"
+            )
         if agent_dim > d_t_full:
             raise ValueError(
                 f"agent_dim ({agent_dim}) exceeds temporal band size "
                 f"({d_t_full}); pick a smaller agent_dim or a larger head_dim."
             )
 
+        self.agent_dim = agent_dim
         self.d_t_full = d_t_full
         self.d_t_active = d_t_full - agent_dim  # post-ReRoPE temporal width
         self.d_h = d_h
         self.d_w = d_w
 
-        # Per-axis frequency tables. The temporal table covers the full
-        # ``d_t_full`` width using the *original* schedule; we'll select only
-        # the high-freq prefix at runtime so the active temporal slots match
-        # the 3D layout bit-for-bit.
-        t_cos, t_sin = self._precompute_1d(d_t_full, end_t, theta)
+        # Per-axis frequency tables. Integer ``agent_dim`` keeps the legacy
+        # ReRoPE-compatible temporal table over ``d_t_full`` and uses its
+        # prefix. ``agent_dim="gamma"`` instead precomputes only the active
+        # temporal width, matching Gamma-World's independent 4D split.
+        t_cos, t_sin = self._precompute_1d(self.temporal_freq_dim, end_t, theta)
         h_cos, h_sin = self._precompute_1d(d_h, end_hw, theta)
         w_cos, w_sin = self._precompute_1d(d_w, end_hw, theta)
         self.register_buffer("t_cos", t_cos, persistent=False)

@@ -515,6 +515,21 @@ def test_action_summary_logs_final_and_debug_gripper_values(caplog):
     assert "physical_pre_binarize_left_gripper[min=0.600 max=0.600 mean=0.600 close_lt_0p5=0/2" in caplog.text
 
 
+def test_copy_action_debug_detaches_numpy_arrays():
+    mod = _load_server_module()
+    source = {
+        "action_norm_raw": np.ones((2, 16), dtype=np.float32),
+        "meta": {"rollout": "control"},
+    }
+
+    copied = mod.BimanualPolicy._copy_action_debug(source)
+    source["action_norm_raw"][0, 0] = 9.0
+    source["meta"]["rollout"] = "diagnostic"
+
+    assert copied["action_norm_raw"][0, 0] == 1.0
+    assert copied["meta"]["rollout"] == "control"
+
+
 def test_denorm_action_raises_when_action_stats_are_missing():
     metadata = _metadata_with_action_stats()
     del metadata["robofactory"]["statistics"]["action"]["panda1_gripper_pos"]

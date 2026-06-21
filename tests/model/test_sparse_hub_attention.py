@@ -255,6 +255,55 @@ def test_hub_mask_blocks_direct_cross_agent_path(cuda_available):
     assert diag.all()
 
 
+def test_shared_global_read_only_mask_keeps_context_from_becoming_hub():
+    pytest.importorskip("einops")
+    from groot.vla.model.dreamzero.modules.wan_video_dit_action_casual_chunk import (
+        CausalWanModel,
+    )
+
+    # Token ids: agent0, agent1, shared-global, hub.
+    token_agent = torch.tensor([0, 1, 3, 2], dtype=torch.long)
+    hub_id = 2
+    shared_id = 3
+
+    legacy = CausalWanModel._sparse_hub_dense_token_mask(
+        token_agent,
+        token_agent,
+        hub_id=hub_id,
+        shared_id=shared_id,
+        shared_global_attention_mode="bidirectional",
+    )
+    read_only = CausalWanModel._sparse_hub_dense_token_mask(
+        token_agent,
+        token_agent,
+        hub_id=hub_id,
+        shared_id=shared_id,
+        shared_global_attention_mode="read_only",
+    )
+
+    a0, a1, shared, hub = 0, 1, 2, 3
+
+    # Direct cross-agent attention remains masked.
+    assert not read_only[a0, a1]
+    assert not read_only[a1, a0]
+
+    # Agent/hub queries can read shared-global context.
+    assert read_only[a0, shared]
+    assert read_only[a1, shared]
+    assert read_only[hub, shared]
+
+    # Shared-global query cannot read noisy agent/hub tokens in read-only mode.
+    assert not read_only[shared, a0]
+    assert not read_only[shared, a1]
+    assert not read_only[shared, hub]
+    assert read_only[shared, shared]
+
+    # Legacy mode kept shared-global bidirectional for checkpoint compatibility.
+    assert legacy[shared, a0]
+    assert legacy[shared, a1]
+    assert legacy[shared, hub]
+
+
 def test_multi_agent_register_block_ids_align_with_future_video_blocks():
     """Video chunk i must be able to read action/state register chunk i.
 

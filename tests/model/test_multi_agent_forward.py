@@ -126,6 +126,58 @@ def test_shared_global_latent_uses_patch_embedding_latent_slice():
     torch.testing.assert_close(projected, expected)
 
 
+def test_global_video_timestep_mode_config_validation():
+    pytest.importorskip("einops")
+    pytest.importorskip("diffusers")
+    from groot.vla.model.dreamzero.modules.wan_video_dit_action_casual_chunk import (
+        CausalWanModel,
+    )
+
+    kwargs = dict(
+        model_type="i2v",
+        patch_size=(1, 2, 2),
+        frame_seqlen=4,
+        text_len=8,
+        in_dim=12,
+        dim=96,
+        ffn_dim=192,
+        freq_dim=32,
+        text_dim=32,
+        out_dim=8,
+        num_heads=4,
+        num_layers=1,
+        num_frame_per_block=1,
+        action_dim=4,
+        num_registers=2,
+        max_state_dim=8,
+        max_num_embodiments=1,
+        hidden_size=64,
+        num_action_per_block=1,
+        num_state_per_block=1,
+        concat_first_frame_latent=True,
+        num_agents=2,
+        agent_dim=4,
+        simplex_pool_size=2,
+    )
+
+    model = CausalWanModel(**kwargs)
+    assert model.global_video_timestep_mode == "video"
+    assert model.global_video_attention_mode == "bidirectional"
+
+    model = CausalWanModel(
+        **kwargs,
+        global_video_timestep_mode="clean",
+        global_video_attention_mode="read_only",
+    )
+    assert model.global_video_timestep_mode == "clean"
+    assert model.global_video_attention_mode == "read_only"
+
+    with pytest.raises(ValueError, match="global_video_timestep_mode"):
+        CausalWanModel(**kwargs, global_video_timestep_mode="future")
+    with pytest.raises(ValueError, match="global_video_attention_mode"):
+        CausalWanModel(**kwargs, global_video_attention_mode="future")
+
+
 def test_p1_keeps_3d_path(cuda_available):
     model = _make_model(num_agents=1)
     assert model.simplex_rope is None, (

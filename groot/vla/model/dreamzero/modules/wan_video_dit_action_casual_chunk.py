@@ -1348,7 +1348,9 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                  simplex_alpha=1.0,
                  num_hub_tokens=8,
                  use_sparse_hub_attention=True,
-                 num_roles=8):
+                 num_roles=8,
+                 global_video_timestep_mode="video",
+                 global_video_attention_mode="bidirectional"):
         r"""
         Initialize the diffusion model backbone.
 
@@ -1426,6 +1428,18 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         self.num_hub_tokens = num_hub_tokens
         self.use_sparse_hub_attention = use_sparse_hub_attention
         self.num_roles = num_roles
+        if global_video_timestep_mode not in ("video", "clean"):
+            raise ValueError(
+                "global_video_timestep_mode must be 'video' or 'clean', "
+                f"got {global_video_timestep_mode!r}"
+            )
+        self.global_video_timestep_mode = global_video_timestep_mode
+        if global_video_attention_mode not in ("bidirectional", "read_only"):
+            raise ValueError(
+                "global_video_attention_mode must be 'bidirectional' or "
+                f"'read_only', got {global_video_attention_mode!r}"
+            )
+        self.global_video_attention_mode = global_video_attention_mode
 
         max_num_embodiments = 1
 
@@ -1503,6 +1517,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                 # default; no-polar when ENABLE_TENSORRT is set.
                 polar_output=not ENABLE_TENSORRT,
             )
+            self.agent_dim = self.simplex_rope.agent_dim
             # Learnable hub tokens shared across all batches and broadcast
             # over latent frames. K=num_hub_tokens per frame, following
             # Gamma-World §3.3 / Appendix D (default K=8).
@@ -2372,6 +2387,45 @@ class CausalWanModel(ModelMixin, ConfigMixin):
 
         return video_noise_pred, action_noise_pred
 
+    @staticmethod
+    def _sparse_hub_dense_token_mask(
+        query_agent_id: torch.Tensor,
+        key_agent_id: torch.Tensor,
+        *,
+        hub_id: int,
+        shared_id: int,
+        shared_global_attention_mode: str = "bidirectional",
+    ) -> torch.Tensor:
+        """Dense token-routing mask for multi-agent sparse hub attention.
+
+        ``bidirectional`` matches the legacy PR 23 behavior: shared-global
+        tokens can both be read by everyone and read everyone back. In
+        ``read_only`` mode, shared-global tokens are clean context keys:
+        agent/hub queries may read them, but shared-global queries only read
+        other shared-global tokens. That prevents the clean scene stream from
+        becoming a second dynamic hub across transformer layers.
+        """
+        if shared_global_attention_mode not in ("bidirectional", "read_only"):
+            raise ValueError(
+                "shared_global_attention_mode must be 'bidirectional' or "
+                f"'read_only', got {shared_global_attention_mode!r}"
+            )
+        q = query_agent_id
+        k = key_agent_id
+        same_agent = q.unsqueeze(1) == k.unsqueeze(0)
+        q_is_hub = (q == hub_id).unsqueeze(1)
+        k_is_hub = (k == hub_id).unsqueeze(0)
+        k_is_shared = (k == shared_id).unsqueeze(0)
+
+        if shared_global_attention_mode == "bidirectional":
+            q_is_shared = (q == shared_id).unsqueeze(1)
+            return same_agent | q_is_hub | k_is_hub | q_is_shared | k_is_shared
+
+        q_is_shared = (q == shared_id).unsqueeze(1)
+        read_mask = same_agent | q_is_hub | k_is_hub | k_is_shared
+        shared_self_mask = k_is_shared.expand(q.shape[0], k.shape[0])
+        return torch.where(q_is_shared, shared_self_mask, read_mask)
+
     def _forward_train_multi_agent(
         self,
         x,
@@ -2861,7 +2915,10 @@ class CausalWanModel(ModelMixin, ConfigMixin):
 
         # Time embeddings (shared across agents). Each frame's timestep is
         # broadcast over all spatial tokens AND over all P agents.
-        timestep = timestep.unsqueeze(-1).expand(B, F_lat, L_per_agent // F_lat)
+        frame_timestep = timestep
+        timestep = frame_timestep.unsqueeze(-1).expand(
+            B, F_lat, L_per_agent // F_lat
+        )
         agent_time = timestep.reshape(B, L_per_agent).repeat(1, P)
         if clean_token_count > 0:
             if aug_t is None:
@@ -2883,13 +2940,17 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         else:
             clean_time = None
 
-        # PR 23: shared-global tokens reuse the per-frame timestep so that
-        # AdaLN modulation along F matches the per-agent video stream.
-        # They're clean (not noisy), but reusing timestep keeps temporal
-        # modulation consistent across the sequence.
+        # PR 23: shared-global tokens are clean context, not noisy targets.
+        # Legacy checkpoints were trained with video timestep modulation on
+        # this block; new Gamma-style runs can set
+        # global_video_timestep_mode="clean" so the block uses zero timestep,
+        # matching clean_x/current-observation conditioning semantics.
         if global_token_count > 0:
             global_per_frame = H_g_global * W_g_global
-            ts_per_frame = timestep.reshape(B, F_lat, L_per_agent // F_lat)[:, :, 0]
+            if self.global_video_timestep_mode == "clean":
+                ts_per_frame = torch.zeros_like(frame_timestep)
+            else:
+                ts_per_frame = frame_timestep
             global_time = (
                 ts_per_frame.unsqueeze(-1)
                 .expand(B, F_lat, global_per_frame)
@@ -3065,8 +3126,10 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                     qa = _agent_q[q_idx]
                     ka = _agent_k[kv_idx]
                     # Per-agent tokens see their own stream + hub + the
-                    # shared scene; hub and shared tokens see everyone
-                    # (each is permissive on the K side and the Q side).
+                    # shared scene. Legacy bidirectional shared-global lets
+                    # shared tokens see everyone; read_only treats shared
+                    # tokens as clean context keys whose own queries see
+                    # only shared tokens.
                     #
                     # Do not additionally compose a block-causal time mask
                     # here. The original DreamZero training path is
@@ -3074,6 +3137,14 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                     # streaming inference gets past context from KV cache.
                     # Adding ``qb >= kb`` in this shared-global path produced
                     # a strong periodic grid artifact in predicted video.
+                    if self.global_video_attention_mode == "read_only":
+                        shared_self = ka == shared_id_local
+                        read_mask = (
+                            (qa == ka)
+                            | (qa == hub_id_local) | (ka == hub_id_local)
+                            | (ka == shared_id_local)
+                        )
+                        return torch.where(qa == shared_id_local, shared_self, read_mask)
                     return (
                         (qa == ka)
                         | (qa == hub_id_local) | (ka == hub_id_local)
@@ -3091,17 +3162,12 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                     _compile=False,
                 )
             else:
-                q_is_hub = (new_token_agent_id == hub_id).unsqueeze(1)
-                k_is_hub = (key_agent == hub_id).unsqueeze(0)
-                q_is_shared = (new_token_agent_id == shared_id).unsqueeze(1)
-                k_is_shared = (key_agent == shared_id).unsqueeze(0)
-                same_agent = (
-                    new_token_agent_id.unsqueeze(1) == key_agent.unsqueeze(0)
-                )
-                mask_2d = (
-                    same_agent
-                    | q_is_hub | k_is_hub
-                    | q_is_shared | k_is_shared
+                mask_2d = self._sparse_hub_dense_token_mask(
+                    new_token_agent_id,
+                    key_agent,
+                    hub_id=hub_id,
+                    shared_id=shared_id,
+                    shared_global_attention_mode=self.global_video_attention_mode,
                 )
                 attn_mask = mask_2d.unsqueeze(0).unsqueeze(0)
         else:

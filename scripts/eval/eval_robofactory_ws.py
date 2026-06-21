@@ -61,6 +61,7 @@ ENV_TRACE_COLUMNS = np.asarray(
     ],
     dtype="<U32",
 )
+JOINT_TARGET_SLICES = ((0, 7), (8, 15))
 
 # Module-level wildcard import for env registration -- Python rejects
 # ``from x import *`` inside a function. Only ever imported from the
@@ -392,7 +393,7 @@ def limit_joint_target_slew(
         raise ValueError(f"joint target slew rate must be finite, got {max_joint_delta}")
 
     prev = np.asarray(previous_action16, dtype=np.float32)
-    for start, end in ((0, 7), (8, 15)):
+    for start, end in JOINT_TARGET_SLICES:
         delta = np.clip(out[start:end] - prev[start:end], -max_joint_delta, max_joint_delta)
         out[start:end] = prev[start:end] + delta
     return out
@@ -419,9 +420,76 @@ def blend_replan_boundary_target(
 
     anchor = np.asarray(boundary_anchor16, dtype=np.float32)
     alpha = float(chunk_offset + 1) / float(blend_steps)
-    for start, end in ((0, 7), (8, 15)):
+    for start, end in JOINT_TARGET_SLICES:
         out[start:end] = anchor[start:end] + alpha * (out[start:end] - anchor[start:end])
     return out
+
+
+class TemporalActionEnsembler:
+    """Blend overlapping replanned joint targets for the same env step.
+
+    Closed-loop eval executes only ``replan_every`` steps from each predicted
+    chunk. This keeps the unused future targets around so later replans can be
+    averaged with earlier predictions for the same env step. Gripper commands
+    stay on the newest/current chunk.
+    """
+
+    def __init__(self, decay: float):
+        if not np.isfinite(decay) or decay < 0.0 or decay > 1.0:
+            raise ValueError(
+                f"temporal action ensemble decay must be in [0, 1], got {decay}"
+            )
+        self.decay = float(decay)
+        self._next_plan_idx = 0
+        self._plans: dict[int, list[tuple[int, np.ndarray]]] = {}
+
+    @property
+    def enabled(self) -> bool:
+        return self.decay > 0.0
+
+    def add_chunk(self, start_step: int, actions16: np.ndarray) -> None:
+        if not self.enabled:
+            return
+        actions = np.asarray(actions16, dtype=np.float32)
+        if actions.ndim != 2 or actions.shape[1] != 16:
+            raise ValueError(f"actions16 must be [H, 16], got {actions.shape}")
+        plan_idx = self._next_plan_idx
+        self._next_plan_idx += 1
+        for offset, action in enumerate(actions):
+            self._plans.setdefault(int(start_step) + offset, []).append(
+                (plan_idx, action.copy())
+            )
+
+    def apply(self, step: int, current_action16: np.ndarray) -> np.ndarray:
+        out = np.asarray(current_action16, dtype=np.float32).copy()
+        if not self.enabled:
+            return out
+        proposals = self._plans.get(int(step), [])
+        if not proposals:
+            return out
+        current_plan_idx = max(plan_idx for plan_idx, _ in proposals) + 1
+        all_proposals = [*proposals, (current_plan_idx, out)]
+        weights = np.asarray(
+            [
+                self.decay ** (current_plan_idx - plan_idx)
+                for plan_idx, _ in all_proposals
+            ],
+            dtype=np.float32,
+        )
+        denom = float(weights.sum())
+        if denom <= 0.0:
+            return out
+        for start, end in JOINT_TARGET_SLICES:
+            stacked = np.stack([action[start:end] for _, action in all_proposals])
+            out[start:end] = (stacked * weights[:, None]).sum(axis=0) / denom
+        return out
+
+    def prune(self, before_step: int) -> None:
+        if not self.enabled:
+            return
+        for step in list(self._plans):
+            if step < before_step:
+                del self._plans[step]
 
 
 def apply_gripper_override(
@@ -554,6 +622,7 @@ def run_episode(
     gripper_policy_close_min_step: int,
     joint_target_slew_rate: float,
     replan_boundary_blend_steps: int,
+    temporal_action_ensemble_decay: float,
     success_mode: str,
     strict_success_min_grasp_count: int,
     dump: dict | None = None,
@@ -577,8 +646,12 @@ def run_episode(
     steps = 0
     last_commanded: np.ndarray | None = None
     gripper_latch_state = {"left": False, "right": False}
+    temporal_action_ensembler = TemporalActionEnsembler(
+        temporal_action_ensemble_decay
+    )
     while steps < max_steps:
         head, left, right, qpos = extract_obs(raw_obs)
+        chunk_start_step = int(steps)
         ws.send(
             msgpack.packb(
                 {
@@ -623,6 +696,28 @@ def run_episode(
         infer_qpos = qpos.copy()
         cur = infer_qpos.copy()
         boundary_anchor = last_commanded.copy() if last_commanded is not None else None
+        planned_targets_for_future = None
+        if temporal_action_ensembler.enabled:
+            planned_targets = []
+            plan_cur = infer_qpos.copy()
+            for da_plan in actions:
+                plan_abs16 = prepare_env_action_target(
+                    da_plan,
+                    plan_cur,
+                    infer_qpos,
+                    action_representation,
+                    joint_target_scale,
+                    joint_target_scale_reference,
+                    joint_target_scale_clip,
+                    left_joint_target_scale=left_joint_target_scale,
+                    right_joint_target_scale=right_joint_target_scale,
+                )
+                planned_targets.append(plan_abs16)
+                plan_cur = plan_abs16
+            planned_targets_for_future = (
+                np.stack(planned_targets) if planned_targets else None
+            )
+
         for chunk_offset, da in enumerate(actions[:replan_every]):
             abs16 = prepare_env_action_target(
                 da,
@@ -648,6 +743,8 @@ def run_episode(
                 left_close_after_step=left_gripper_close_after_step,
                 right_close_after_step=right_gripper_close_after_step,
             )
+            pre_ensemble_abs16 = abs16.copy()
+            abs16 = temporal_action_ensembler.apply(steps, abs16)
             pre_blend_abs16 = abs16.copy()
             abs16 = blend_replan_boundary_target(
                 abs16,
@@ -661,7 +758,9 @@ def run_episode(
             last_commanded = abs16.copy()
             cur = abs16
             steps += 1
+            temporal_action_ensembler.prune(steps)
             if dump is not None:
+                dump["exec_action_pre_ensemble"].append(pre_ensemble_abs16.copy())
                 dump["exec_action_pre_blend"].append(pre_blend_abs16.copy())
                 dump["exec_action_pre_slew"].append(pre_slew_abs16.copy())
                 dump["exec_action"].append(abs16.copy())
@@ -677,6 +776,12 @@ def run_episode(
                 return False, steps
             if steps >= max_steps:
                 break
+        if planned_targets_for_future is not None:
+            temporal_action_ensembler.add_chunk(
+                chunk_start_step,
+                planned_targets_for_future,
+            )
+            temporal_action_ensembler.prune(steps)
     return False, steps
 
 
@@ -825,6 +930,17 @@ def main():
         ),
     )
     ap.add_argument(
+        "--temporal-action-ensemble-decay",
+        type=float,
+        default=0.0,
+        help=(
+            "Optional eval-only exponential decay for blending overlapping "
+            "joint targets from older predicted chunks at the same env step. "
+            "0 disables ensemble; 1 gives equal weight to all available chunk "
+            "predictions. Gripper commands are not ensembled."
+        ),
+    )
+    ap.add_argument(
         "--left-joint-target-scale",
         "--left-joint-delta-scale",
         dest="left_joint_target_scale",
@@ -877,6 +993,12 @@ def main():
     args = ap.parse_args()
     if args.replan_boundary_blend_steps < 0:
         ap.error("--replan-boundary-blend-steps must be >= 0")
+    if (
+        not np.isfinite(args.temporal_action_ensemble_decay)
+        or args.temporal_action_ensemble_decay < 0.0
+        or args.temporal_action_ensemble_decay > 1.0
+    ):
+        ap.error("--temporal-action-ensemble-decay must be in [0, 1]")
 
     # Late imports so a server-side schema mismatch fails before the heavy
     # sapien init. (``from x import *`` is illegal inside a function, so
@@ -897,6 +1019,7 @@ def main():
     print(f"Joint clip:    {args.joint_target_scale_clip}")
     print(f"Joint slew:    {args.joint_target_slew_rate}")
     print(f"Boundary blend: {args.replan_boundary_blend_steps}")
+    print(f"Temporal action ensemble decay: {args.temporal_action_ensemble_decay}")
     if args.left_joint_target_scale is not None or args.right_joint_target_scale is not None:
         effective_left = (
             args.joint_target_scale
@@ -1023,6 +1146,7 @@ def main():
                         "joint_delta_output_clip": args.joint_target_scale_clip,
                         "joint_target_slew_rate": args.joint_target_slew_rate,
                         "replan_boundary_blend_steps": args.replan_boundary_blend_steps,
+                        "temporal_action_ensemble_decay": args.temporal_action_ensemble_decay,
                         "effective_joint_delta_scale": args.joint_target_scale,
                         "effective_joint_delta_output_clip": args.joint_target_scale_clip,
                         "allow_absolute_joint_delta_scale": True,
@@ -1059,6 +1183,7 @@ def main():
             "pred_chunk": np.stack(dump["pred_chunk"]),       # denorm [n_infer, chunk_len, 16]
             "obs_qpos": np.stack(dump["obs_qpos"]),           # [n_infer, 16]
             "exec_action_pre_blend": np.stack(dump["exec_action_pre_blend"]),
+            "exec_action_pre_ensemble": np.stack(dump["exec_action_pre_ensemble"]),
             "exec_action_pre_slew": np.stack(dump["exec_action_pre_slew"]),
             "exec_action": np.stack(dump["exec_action"]),     # [n_steps, 16]
             "env_trace": np.stack(dump["env_trace"]),         # [n_steps + 1, len(ENV_TRACE_COLUMNS)]
@@ -1079,6 +1204,7 @@ def main():
                 "pred_chunk": [],
                 "obs_qpos": [],
                 "exec_action_pre_blend": [],
+                "exec_action_pre_ensemble": [],
                 "exec_action_pre_slew": [],
                 "exec_action": [],
                 "env_trace": [],
@@ -1107,6 +1233,7 @@ def main():
                 gripper_policy_close_min_step=args.gripper_policy_close_min_step,
                 joint_target_slew_rate=args.joint_target_slew_rate,
                 replan_boundary_blend_steps=args.replan_boundary_blend_steps,
+                temporal_action_ensemble_decay=args.temporal_action_ensemble_decay,
                 success_mode=args.success_mode,
                 strict_success_min_grasp_count=args.strict_success_min_grasp_count,
                 dump=dump,

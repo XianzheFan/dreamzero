@@ -240,6 +240,24 @@ class WANPolicyHeadConfig(PretrainedConfig):
             "help": "Extra multiplier for non-gripper joint action loss on timesteps whose target gripper is open."
         },
     )
+    multi_agent_shuffle_agents: bool = field(
+        default=False,
+        metadata={
+            "help": "Training-only augmentation: randomly permute the explicit agent axis before multi-agent denoising."
+        },
+    )
+    multi_agent_sample_agent_pool: bool = field(
+        default=False,
+        metadata={
+            "help": "Training-only augmentation: sample active simplex vertices from the configured simplex pool."
+        },
+    )
+    global_video_dropout_prob: float = field(
+        default=0.0,
+        metadata={
+            "help": "Training-only probability of dropping shared-global clean video context tokens."
+        },
+    )
     max_num_embodiments: int = field(default=32, metadata={"help": "Number of embodiments."})
     tune_projector: bool = field(default=True, metadata={"help": "Whether to tune the projector."})
     tune_diffusion_model: bool = field(
@@ -1529,6 +1547,54 @@ class WANPolicyHead(ActionHead):
             return int(actions.shape[1])
         return None
 
+    def _multi_agent_training_slot_perm(
+        self,
+        num_agents: int,
+        device: torch.device | str,
+    ) -> torch.Tensor | None:
+        """Sample the train-time data-axis permutation for agent slots."""
+        if (
+            not self.training
+            or num_agents <= 1
+            or not bool(getattr(self.config, "multi_agent_shuffle_agents", False))
+        ):
+            return None
+        return torch.randperm(num_agents, device=device, dtype=torch.long)
+
+    def _multi_agent_training_agent_perm(
+        self,
+        num_agents: int,
+        device: torch.device | str,
+    ) -> torch.Tensor | None:
+        """Sample active simplex vertices for the current training batch.
+
+        Gamma-World trains with a simplex pool larger than the active view
+        count and samples a unique subset per iteration. This keeps the
+        model from binding a semantic role to a single simplex vertex.
+        """
+        if (
+            not self.training
+            or num_agents <= 1
+            or not bool(getattr(self.config, "multi_agent_sample_agent_pool", False))
+        ):
+            return None
+
+        pool_size = int(getattr(self.model, "simplex_pool_size", num_agents))
+        if pool_size <= num_agents:
+            return None
+        return torch.randperm(pool_size, device=device, dtype=torch.long)[:num_agents]
+
+    def _drop_global_video_for_training(self, device: torch.device | str) -> bool:
+        """Return whether to remove shared-global clean context this batch."""
+        if not self.training:
+            return False
+        prob = float(getattr(self.config, "global_video_dropout_prob", 0.0) or 0.0)
+        if prob <= 0.0:
+            return False
+        if prob >= 1.0:
+            return True
+        return bool(torch.rand((), device=device) < prob)
+
     def _forward_multi_agent(
         self, backbone_output: BatchFeature, action_input: BatchFeature, num_agents: int,
     ) -> BatchFeature:
@@ -1578,6 +1644,13 @@ class WANPolicyHead(ActionHead):
         )
         B, P = actions.shape[0], actions.shape[1]
 
+        slot_perm = self._multi_agent_training_slot_perm(P, actions.device)
+        agent_perm = self._multi_agent_training_agent_perm(P, actions.device)
+        if slot_perm is not None:
+            state_features = state_features.index_select(1, slot_perm)
+            actions = actions.index_select(1, slot_perm)
+            action_mask = action_mask.index_select(1, slot_perm)
+
         if actions.numel() > 0:
             assert actions.min() >= -1.0 and actions.max() <= 1.0, (
                 "actions must be in [-1,1] range"
@@ -1593,6 +1666,8 @@ class WANPolicyHead(ActionHead):
             f"done in the data transform."
         )
         assert videos.shape[1] == P
+        if slot_perm is not None:
+            videos = videos.index_select(1, slot_perm.to(videos.device))
         videos = rearrange(videos, "b p t h w c -> b p c t h w")
 
         if videos.dtype == torch.uint8:
@@ -1777,6 +1852,10 @@ class WANPolicyHead(ActionHead):
             video_global_raw = data.get("video_global", None)
         else:
             video_global_raw = getattr(data, "video_global", None)
+        if video_global_raw is not None and self._drop_global_video_for_training(
+            actions.device
+        ):
+            video_global_raw = None
         if video_global_raw is not None:
             global_latents = self._encode_global_video(video_global_raw)
             global_latents = global_latents.to(dtype=self.dtype)
@@ -1813,6 +1892,7 @@ class WANPolicyHead(ActionHead):
                     y=ys,
                     clean_x=clean_latents,
                     global_video=global_latents,
+                    agent_perm=agent_perm,
                 )
             else:
                 video_noise_pred, action_noise_pred = self.model(
@@ -1827,6 +1907,7 @@ class WANPolicyHead(ActionHead):
                     y=ys,
                     clean_x=clean_latents,
                     global_video=global_latents,
+                    agent_perm=agent_perm,
                 )
 
             # Per-sample dynamics loss. Crop target to model output spatial

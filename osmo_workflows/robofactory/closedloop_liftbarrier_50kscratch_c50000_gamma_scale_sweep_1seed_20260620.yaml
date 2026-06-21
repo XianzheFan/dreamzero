@@ -66,6 +66,7 @@ workflow:
           JOINT_DELTA_SCALE_REFERENCE="observed"
           JOINT_TARGET_SLEW_RATES="0.35"
           REPLAN_BOUNDARY_BLEND_STEPS="${REPLAN_BOUNDARY_BLEND_STEPS:-0}"
+          TEMPORAL_ACTION_ENSEMBLE_DECAY="${TEMPORAL_ACTION_ENSEMBLE_DECAY:-0}"
           SERVER_CUDA_VISIBLE_DEVICES="4"
           CLIENT_CUDA_VISIBLE_DEVICES="0"
           SUCCESS_MODE="strict-lift"
@@ -744,10 +745,11 @@ workflow:
             slew_tag="$(echo "${JOINT_TARGET_SLEW_RATE}" | tr . p)"
             clip_tag="$(echo "${JOINT_DELTA_OUTPUT_CLIP}" | tr . p)"
             blend_tag="$(echo "${REPLAN_BOUNDARY_BLEND_STEP}" | tr . p)"
+            ensemble_tag="$(echo "${TEMPORAL_ACTION_ENSEMBLE_DECAY}" | tr . p)"
             close_tag="lclose${LEFT_GRIPPER_CLOSE_AFTER_STEP}_rclose${RIGHT_GRIPPER_CLOSE_AFTER_STEP}"
-            out_dir="/workspace/eval_outputs/${INFERENCE_MODE}_${RESET_TAG}_rp${REPLAN_EVERY}_${GRIPPER_OVERRIDE}_${close_tag}_jscale_${scale_tag}_clip_${clip_tag}_slew_${slew_tag}_blend_${blend_tag}_${SUCCESS_MODE}"
+            out_dir="/workspace/eval_outputs/${INFERENCE_MODE}_${RESET_TAG}_rp${REPLAN_EVERY}_${GRIPPER_OVERRIDE}_${close_tag}_jscale_${scale_tag}_clip_${clip_tag}_slew_${slew_tag}_blend_${blend_tag}_ensemble_${ensemble_tag}_${SUCCESS_MODE}"
             mkdir -p "${out_dir}/action_dump" "${out_dir}/videos"
-            echo "Running direct closed-loop RoboFactory eval inference_mode=${INFERENCE_MODE}, reset_mode=${RESET_TAG}, replan=${REPLAN_EVERY}, scale=${JOINT_DELTA_SCALE}, server_cuda=${SERVER_CUDA_VISIBLE_DEVICES}, client_cuda=${CLIENT_CUDA_VISIBLE_DEVICES}, output_clip=${JOINT_DELTA_OUTPUT_CLIP}, ref=${JOINT_DELTA_SCALE_REFERENCE}, slew_rate=${JOINT_TARGET_SLEW_RATE}, boundary_blend_steps=${REPLAN_BOUNDARY_BLEND_STEP}, gripper override ${GRIPPER_OVERRIDE}, left close step ${LEFT_GRIPPER_CLOSE_AFTER_STEP}, right close step ${RIGHT_GRIPPER_CLOSE_AFTER_STEP}, success_mode ${SUCCESS_MODE}, binarize threshold ${GRIPPER_BINARIZE_THRESHOLD}"
+            echo "Running direct closed-loop RoboFactory eval inference_mode=${INFERENCE_MODE}, reset_mode=${RESET_TAG}, replan=${REPLAN_EVERY}, scale=${JOINT_DELTA_SCALE}, server_cuda=${SERVER_CUDA_VISIBLE_DEVICES}, client_cuda=${CLIENT_CUDA_VISIBLE_DEVICES}, output_clip=${JOINT_DELTA_OUTPUT_CLIP}, ref=${JOINT_DELTA_SCALE_REFERENCE}, slew_rate=${JOINT_TARGET_SLEW_RATE}, boundary_blend_steps=${REPLAN_BOUNDARY_BLEND_STEP}, temporal_ensemble_decay=${TEMPORAL_ACTION_ENSEMBLE_DECAY}, gripper override ${GRIPPER_OVERRIDE}, left close step ${LEFT_GRIPPER_CLOSE_AFTER_STEP}, right close step ${RIGHT_GRIPPER_CLOSE_AFTER_STEP}, success_mode ${SUCCESS_MODE}, binarize threshold ${GRIPPER_BINARIZE_THRESHOLD}"
             set +e
             timeout 10800 env CUDA_VISIBLE_DEVICES="${CLIENT_CUDA_VISIBLE_DEVICES}" python /workspace/code/dreamzero/scripts/eval/eval_robofactory_ws.py \
               --host 127.0.0.1 \
@@ -772,18 +774,19 @@ workflow:
               --joint-delta-scale-reference "$JOINT_DELTA_SCALE_REFERENCE" \
               --joint-target-slew-rate "$JOINT_TARGET_SLEW_RATE" \
               --replan-boundary-blend-steps "$REPLAN_BOUNDARY_BLEND_STEP" \
+              --temporal-action-ensemble-decay "$TEMPORAL_ACTION_ENSEMBLE_DECAY" \
               --success-mode "$SUCCESS_MODE" \
               --strict-success-min-grasp-count "$STRICT_SUCCESS_MIN_GRASP_COUNT" \
               --dump-actions "${out_dir}/action_dump" \
               --video-dir "${out_dir}/videos" \
-              2>&1 | tee "/tmp/client_${INFERENCE_MODE}_${RESET_TAG}_rp${REPLAN_EVERY}_${GRIPPER_OVERRIDE}_close${close_tag}_jscale_${scale_tag}_clip_${clip_tag}_slew_${slew_tag}_blend_${blend_tag}_${SUCCESS_MODE}.log"
+              2>&1 | tee "/tmp/client_${INFERENCE_MODE}_${RESET_TAG}_rp${REPLAN_EVERY}_${GRIPPER_OVERRIDE}_close${close_tag}_jscale_${scale_tag}_clip_${clip_tag}_slew_${slew_tag}_blend_${blend_tag}_ensemble_${ensemble_tag}_${SUCCESS_MODE}.log"
             client_status=${PIPESTATUS[0]}
             set -e
 
-            echo "Client replan=${REPLAN_EVERY} scale=${JOINT_DELTA_SCALE} slew_rate=${JOINT_TARGET_SLEW_RATE} blend_steps=${REPLAN_BOUNDARY_BLEND_STEP} exit status: ${client_status}"
-            echo "Last 220 client log lines for replan=${REPLAN_EVERY} scale=${JOINT_DELTA_SCALE} slew_rate=${JOINT_TARGET_SLEW_RATE} blend_steps=${REPLAN_BOUNDARY_BLEND_STEP}:"
-            tail -n 220 "/tmp/client_${INFERENCE_MODE}_${RESET_TAG}_rp${REPLAN_EVERY}_${GRIPPER_OVERRIDE}_close${close_tag}_jscale_${scale_tag}_clip_${clip_tag}_slew_${slew_tag}_blend_${blend_tag}_${SUCCESS_MODE}.log" || true
-            cp -f "/tmp/client_${INFERENCE_MODE}_${RESET_TAG}_rp${REPLAN_EVERY}_${GRIPPER_OVERRIDE}_close${close_tag}_jscale_${scale_tag}_clip_${clip_tag}_slew_${slew_tag}_blend_${blend_tag}_${SUCCESS_MODE}.log" "${out_dir}/client.log"
+            echo "Client replan=${REPLAN_EVERY} scale=${JOINT_DELTA_SCALE} slew_rate=${JOINT_TARGET_SLEW_RATE} blend_steps=${REPLAN_BOUNDARY_BLEND_STEP} ensemble_decay=${TEMPORAL_ACTION_ENSEMBLE_DECAY} exit status: ${client_status}"
+            echo "Last 220 client log lines for replan=${REPLAN_EVERY} scale=${JOINT_DELTA_SCALE} slew_rate=${JOINT_TARGET_SLEW_RATE} blend_steps=${REPLAN_BOUNDARY_BLEND_STEP} ensemble_decay=${TEMPORAL_ACTION_ENSEMBLE_DECAY}:"
+            tail -n 220 "/tmp/client_${INFERENCE_MODE}_${RESET_TAG}_rp${REPLAN_EVERY}_${GRIPPER_OVERRIDE}_close${close_tag}_jscale_${scale_tag}_clip_${clip_tag}_slew_${slew_tag}_blend_${blend_tag}_ensemble_${ensemble_tag}_${SUCCESS_MODE}.log" || true
+            cp -f "/tmp/client_${INFERENCE_MODE}_${RESET_TAG}_rp${REPLAN_EVERY}_${GRIPPER_OVERRIDE}_close${close_tag}_jscale_${scale_tag}_clip_${clip_tag}_slew_${slew_tag}_blend_${blend_tag}_ensemble_${ensemble_tag}_${SUCCESS_MODE}.log" "${out_dir}/client.log"
             if [ "$client_status" -ne 0 ]; then
               overall_status="$client_status"
             fi
@@ -855,6 +858,7 @@ workflow:
                       "output_clip": cfg.get("joint_delta_output_clip"),
                       "target_slew_rate": cfg.get("joint_target_slew_rate"),
                       "replan_boundary_blend_steps": cfg.get("replan_boundary_blend_steps"),
+                      "temporal_action_ensemble_decay": cfg.get("temporal_action_ensemble_decay"),
                       "effective_scale": cfg.get("effective_joint_delta_scale"),
                       "effective_output_clip": cfg.get("effective_joint_delta_output_clip"),
                       "allow_absolute_joint_delta_scale": cfg.get("allow_absolute_joint_delta_scale"),

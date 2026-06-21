@@ -99,6 +99,62 @@ def test_detect_three_agents():
     assert inst._detect_multi_agent(af) == 3
 
 
+def test_multi_agent_training_augmentation_defaults_are_noop():
+    Cls = _maybe_load_head()
+    inst = Cls.__new__(Cls)
+    inst.training = True
+    inst.config = SimpleNamespace(
+        multi_agent_shuffle_agents=False,
+        multi_agent_sample_agent_pool=False,
+        global_video_dropout_prob=0.0,
+    )
+    inst.model = SimpleNamespace(simplex_pool_size=4)
+
+    assert inst._multi_agent_training_slot_perm(2, "cpu") is None
+    assert inst._multi_agent_training_agent_perm(2, "cpu") is None
+    assert inst._drop_global_video_for_training("cpu") is False
+
+
+def test_multi_agent_training_augmentation_samples_valid_perms():
+    Cls = _maybe_load_head()
+    inst = Cls.__new__(Cls)
+    inst.training = True
+    inst.config = SimpleNamespace(
+        multi_agent_shuffle_agents=True,
+        multi_agent_sample_agent_pool=True,
+        global_video_dropout_prob=1.0,
+    )
+    inst.model = SimpleNamespace(simplex_pool_size=4)
+
+    torch.manual_seed(0)
+    slot_perm = inst._multi_agent_training_slot_perm(2, "cpu")
+    agent_perm = inst._multi_agent_training_agent_perm(2, "cpu")
+
+    assert slot_perm.shape == (2,)
+    assert sorted(slot_perm.tolist()) == [0, 1]
+    assert agent_perm.shape == (2,)
+    assert len(set(agent_perm.tolist())) == 2
+    assert min(agent_perm.tolist()) >= 0
+    assert max(agent_perm.tolist()) < 4
+    assert inst._drop_global_video_for_training("cpu") is True
+
+
+def test_multi_agent_training_augmentation_is_training_only():
+    Cls = _maybe_load_head()
+    inst = Cls.__new__(Cls)
+    inst.training = False
+    inst.config = SimpleNamespace(
+        multi_agent_shuffle_agents=True,
+        multi_agent_sample_agent_pool=True,
+        global_video_dropout_prob=1.0,
+    )
+    inst.model = SimpleNamespace(simplex_pool_size=4)
+
+    assert inst._multi_agent_training_slot_perm(2, "cpu") is None
+    assert inst._multi_agent_training_agent_perm(2, "cpu") is None
+    assert inst._drop_global_video_for_training("cpu") is False
+
+
 def test_reset_causal_state_clears_multi_agent_cache_progress():
     Cls = _maybe_load_head()
     inst = Cls.__new__(Cls)

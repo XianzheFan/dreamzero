@@ -9,6 +9,10 @@
   policy samples before/after inference-time clipping to ``[-1, 1]``.
 * ``exec_action``: commands actually executed in the env, shape
   ``[n_steps, D]``.
+* ``exec_action_pre_ensemble`` / ``exec_action_pre_blend`` /
+  ``exec_action_pre_slew`` (optional): intermediate diagnostic commands
+  before temporal action ensemble, replan-boundary blending, and slew
+  limiting.
 * ``obs_qpos``: qpos observed at each policy call, shape ``[n_infer, D]``.
 
 By default, the script assumes each arm occupies an 8-D block:
@@ -381,6 +385,11 @@ def analyze_episode(
         if "exec_action_pre_blend" in d.files
         else None
     )
+    exec_action_pre_ensemble = (
+        np.asarray(d["exec_action_pre_ensemble"], dtype=np.float32)
+        if "exec_action_pre_ensemble" in d.files
+        else None
+    )
     exec_action_pre_slew = (
         np.asarray(d["exec_action_pre_slew"], dtype=np.float32)
         if "exec_action_pre_slew" in d.files
@@ -469,6 +478,36 @@ def analyze_episode(
         "replan_boundary_joint_jump": _abs_stats(replan_boundary_jump),
         "pred_chunk_joint": _range_stats(pred_chunk[..., joint_dims]) if joint_dims else None,
     }
+    if (
+        joint_dims
+        and exec_action_pre_ensemble is not None
+        and exec_action_pre_ensemble.shape == exec_action.shape
+    ):
+        pre_ensemble_boundary_jump = _joint_boundary_jumps(
+            exec_action_pre_ensemble,
+            joint_dims,
+            infer_step,
+        )
+        temporal_ensemble_target = (
+            exec_action_pre_blend
+            if exec_action_pre_blend is not None
+            and exec_action_pre_blend.shape == exec_action.shape
+            else exec_action
+        )
+        temporal_ensemble_correction = (
+            exec_action_pre_ensemble[:, joint_dims]
+            - temporal_ensemble_target[:, joint_dims]
+        )
+        joint_debug.update(
+            {
+                "pre_ensemble_replan_boundary_joint_jump": _abs_stats(
+                    pre_ensemble_boundary_jump
+                ),
+                "temporal_ensemble_correction_joint": _abs_stats(
+                    temporal_ensemble_correction
+                ),
+            }
+        )
     if (
         joint_dims
         and exec_action_pre_blend is not None
@@ -665,6 +704,15 @@ def analyze_episode(
             print(
                 "  pre-blend replan boundary joint jump: "
                 f"{_fmt_abs(joint_debug['pre_blend_replan_boundary_joint_jump'])}"
+            )
+        if "pre_ensemble_replan_boundary_joint_jump" in joint_debug:
+            print(
+                "  pre-ensemble replan boundary joint jump: "
+                f"{_fmt_abs(joint_debug['pre_ensemble_replan_boundary_joint_jump'])}"
+            )
+            print(
+                "  temporal ensemble correction joint: "
+                f"{_fmt_abs(joint_debug['temporal_ensemble_correction_joint'])}"
             )
         if "pre_slew_joint_step_delta" in joint_debug:
             print(

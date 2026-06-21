@@ -73,6 +73,11 @@ def test_liftbarrier_train_workflow_verifies_code_cache_and_robofactory_dataset(
     for marker in (
         "DATASET_SHARD_SAMPLING_RATE",
         "gripper_binary_action_loss_weight",
+        "ROPE_AGENT_DIM",
+        "GLOBAL_VIDEO_DROPOUT_PROB",
+        "GLOBAL_VIDEO_TIMESTEP_MODE",
+        "multi_agent_shuffle_agents",
+        "global_video_dropout_prob",
         "_compute_gripper_binary_action_loss",
         "agent_action_dims: [[0, 8], [8, 16]]",
     ):
@@ -120,6 +125,11 @@ def test_liftbarrier_train_workflow_passes_shared_global_binary_gripper_training
         'export FIRST_CLOSE_JOINT_LOSS_WEIGHT="${FIRST_CLOSE_JOINT_LOSS_WEIGHT:-1.0}"',
         'export FIRST_CLOSE_JOINT_LOSS_WINDOW_BEFORE="${FIRST_CLOSE_JOINT_LOSS_WINDOW_BEFORE:-0}"',
         'export FIRST_CLOSE_JOINT_LOSS_WINDOW_AFTER="${FIRST_CLOSE_JOINT_LOSS_WINDOW_AFTER:-0}"',
+        'export ROPE_AGENT_DIM="${ROPE_AGENT_DIM:-gamma}"',
+        'export MULTI_AGENT_SHUFFLE_AGENTS="${MULTI_AGENT_SHUFFLE_AGENTS:-true}"',
+        'export MULTI_AGENT_SAMPLE_AGENT_POOL="${MULTI_AGENT_SAMPLE_AGENT_POOL:-true}"',
+        'export GLOBAL_VIDEO_DROPOUT_PROB="${GLOBAL_VIDEO_DROPOUT_PROB:-0.1}"',
+        'export GLOBAL_VIDEO_TIMESTEP_MODE="${GLOBAL_VIDEO_TIMESTEP_MODE:-clean}"',
         "bash scripts/train/robofactory_bimanual_training.sh",
     ):
         assert marker in script
@@ -133,6 +143,11 @@ def test_liftbarrier_train_workflow_passes_shared_global_binary_gripper_training
         "FIRST_CLOSE_JOINT_LOSS_WEIGHT=$FIRST_CLOSE_JOINT_LOSS_WEIGHT",
         "FIRST_CLOSE_JOINT_LOSS_WINDOW_BEFORE=$FIRST_CLOSE_JOINT_LOSS_WINDOW_BEFORE",
         "FIRST_CLOSE_JOINT_LOSS_WINDOW_AFTER=$FIRST_CLOSE_JOINT_LOSS_WINDOW_AFTER",
+        "ROPE_AGENT_DIM=$ROPE_AGENT_DIM",
+        "MULTI_AGENT_SHUFFLE_AGENTS=$MULTI_AGENT_SHUFFLE_AGENTS",
+        "MULTI_AGENT_SAMPLE_AGENT_POOL=$MULTI_AGENT_SAMPLE_AGENT_POOL",
+        "GLOBAL_VIDEO_DROPOUT_PROB=$GLOBAL_VIDEO_DROPOUT_PROB",
+        "GLOBAL_VIDEO_TIMESTEP_MODE=$GLOBAL_VIDEO_TIMESTEP_MODE",
     ):
         assert marker in script
 
