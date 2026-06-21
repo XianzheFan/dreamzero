@@ -461,6 +461,7 @@ def test_liftbarrier_gamma_droidwidth_teacher_workflow_preserves_droid_base_head
         'export AGENT_STATE_PAD_DIM="${AGENT_STATE_PAD_DIM:-64}"',
         'export AGENT_ACTION_PAD_DIM="${AGENT_ACTION_PAD_DIM:-32}"',
         'export BASE_ACTION_JERK_LOSS_WEIGHT="${ACTION_JERK_LOSS_WEIGHT:-{{action_jerk_loss_weight}}}"',
+        'export GLOBAL_VIDEO_DROPOUT_PROB="${GLOBAL_VIDEO_DROPOUT_PROB:-0.0}"',
         'export GLOBAL_VIDEO_ATTENTION_MODE="${GLOBAL_VIDEO_ATTENTION_MODE:-bidirectional}"',
         "droidwidth teacher requires GLOBAL_VIDEO_ATTENTION_MODE=bidirectional",
         "ALLOW_NONBIDIRECTIONAL_TEACHER=true",
@@ -516,6 +517,10 @@ def test_liftbarrier_gamma_droidwidth_teacher_workflow_preserves_droid_base_head
     assert "Stage1 complete checkpoint selected for stage2 warm-start" not in script
     assert "RESTORE_RUN_NAME is ignored by the droidwidth teacher workflow" not in script
     assert "Restored checkpoints will be staged under STAGE1_OUTPUT_DIR" not in script
+    stage_idx = script.index('"droidwidth-teacher-style"')
+    stage_end = script.index('"$DREAMZERO_DROID_PRETRAINED_DIR"', stage_idx)
+    stage_block = script[stage_idx:stage_end]
+    assert '"false"' in stage_block
 
 
 def test_liftbarrier_gamma_droidwidth_teacher_workflow_embedded_python_blocks_compile():

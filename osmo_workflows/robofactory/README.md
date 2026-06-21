@@ -37,6 +37,9 @@ The standalone droidwidth teacher workflow also defaults
 `GLOBAL_VIDEO_ATTENTION_MODE=bidirectional` so new 32D teacher runs match the
 dense-teacher side of this curriculum rather than the sparse read-only student
 side.
+It also keeps `GLOBAL_VIDEO_DROPOUT_PROB=0.0` by default, matching the
+teacher-style objective where the available shared global observation should
+remain clean context for video planning.
 
 The standalone droidwidth teacher default is a 50k bidirectional-teacher run:
 `run_name=dz-rf-sg-gamma-dwteacher-bidir-lb500-50k-xz-20260622`, with the
