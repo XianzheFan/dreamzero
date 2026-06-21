@@ -179,12 +179,23 @@ def compare_videos(
     pred = pred_frames[:n].astype(np.float32)
     obs_f = obs.astype(np.float32)
     luma_diff = np.abs(_gray(pred_frames[:n]) - _gray(obs))
+    frame_mae_rgb = np.abs(pred - obs_f).mean(axis=(1, 2, 3))
+    frame_mae_luma = luma_diff.mean(axis=(1, 2))
     return {
         "frame_count": int(n),
-        "mae_rgb": _safe_float(np.abs(pred - obs_f).mean()),
+        "mae_rgb": _safe_float(frame_mae_rgb.mean()),
         "mae_luma": _safe_float(luma_diff.mean()),
         "first_frame_mae_rgb": _safe_float(np.abs(pred[0] - obs_f[0]).mean()),
         "last_frame_mae_rgb": _safe_float(np.abs(pred[-1] - obs_f[-1]).mean()),
+        "mae_rgb_by_frame": [
+            _safe_float(value) for value in frame_mae_rgb.astype(np.float32)
+        ],
+        "mae_luma_by_frame": [
+            _safe_float(value) for value in frame_mae_luma.astype(np.float32)
+        ],
+        "mae_rgb_first_to_last_delta": _safe_float(
+            frame_mae_rgb[-1] - frame_mae_rgb[0]
+        ),
     }
 
 
@@ -534,6 +545,36 @@ def _aggregate(videos: list[dict[str, Any]]) -> dict[str, Any]:
                 values.append(float(value))
         return np.asarray(values, dtype=np.float32)
 
+    def mean_curve(path: tuple[str, ...]) -> list[float]:
+        curves = []
+        for row in videos:
+            value: Any = row
+            for key in path:
+                value = value.get(key) if isinstance(value, dict) else None
+            if isinstance(value, list) and value:
+                curve = np.asarray(
+                    [
+                        float(item)
+                        for item in value
+                        if item is not None and math.isfinite(float(item))
+                    ],
+                    dtype=np.float32,
+                )
+                if curve.size:
+                    curves.append(curve)
+        if not curves:
+            return []
+        max_len = max(curve.size for curve in curves)
+        padded = np.full((len(curves), max_len), np.nan, dtype=np.float32)
+        for idx, curve in enumerate(curves):
+            padded[idx, : curve.size] = curve
+        means = np.nanmean(padded, axis=0)
+        return [
+            float(value)
+            for value in means
+            if math.isfinite(float(value))
+        ]
+
     flag_counts: dict[str, int] = {}
     for row in videos:
         for flag in row["risk_flags"]:
@@ -588,6 +629,15 @@ def _aggregate(videos: list[dict[str, Any]]) -> dict[str, Any]:
         "pred_vs_future_last_frame_mae_rgb_mean": _mean_or_none(
             collect(("pred_vs_future", "last_frame_mae_rgb"))
         ),
+        "pred_vs_future_mae_rgb_first_to_last_delta_mean": _mean_or_none(
+            collect(("pred_vs_future", "mae_rgb_first_to_last_delta"))
+        ),
+        "pred_vs_future_mae_rgb_by_frame_mean": mean_curve(
+            ("pred_vs_future", "mae_rgb_by_frame")
+        ),
+        "pred_vs_future_mae_luma_by_frame_mean": mean_curve(
+            ("pred_vs_future", "mae_luma_by_frame")
+        ),
         "pred_vs_future_matched_frame_count_mean": _mean_or_none(
             collect(("pred_vs_future", "matched_frame_count"))
         ),
@@ -628,6 +678,10 @@ def write_text_report(payload: dict[str, Any], path: Path) -> None:
         f"{summary.get('pred_vs_future_mae_luma_mean')}",
         "  pred_vs_future_matched_frame_count_mean: "
         f"{summary.get('pred_vs_future_matched_frame_count_mean')}",
+        "  pred_vs_future_mae_rgb_first_to_last_delta_mean: "
+        f"{summary.get('pred_vs_future_mae_rgb_first_to_last_delta_mean')}",
+        "  pred_vs_future_mae_rgb_by_frame_mean: "
+        f"{summary.get('pred_vs_future_mae_rgb_by_frame_mean')}",
         "",
         "per video:",
     ]
@@ -652,6 +706,7 @@ def write_text_report(payload: dict[str, Any], path: Path) -> None:
             f"sat_mean={metrics['saturation_frac']['mean']} "
             f"condition_window_mae={comparison.get('mae_rgb')} "
             f"future_mae={future.get('mae_rgb')} "
+            f"future_delta={future.get('mae_rgb_first_to_last_delta')} "
             f"future_steps={future.get('first_matched_step')}:{future.get('last_matched_step')} "
             f"flags={row['risk_flags']}"
         )
