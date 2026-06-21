@@ -17,11 +17,26 @@ DEFAULT_WORKFLOW = (
 )
 DEFAULT_POOL = "groot-h100-02"
 DEFAULT_NAME_TEMPLATE = (
-    "dz-rf-sg-gamma-dwteacher-50kfrom0-c{step}-slim-eval-h100-1seed1000-xz-{tag}"
+    "dz-rf-sg-gamma-dwteacher-bidir-50k-c{step}-slim-eval-h100-1seed1000-xz-{tag}"
 )
 DEFAULT_LOCAL_ROOT_TEMPLATE = (
-    "gamma_droidwidth_teacher_50kfrom0_c{step}_slim_eval_h100_1seed1000"
+    "gamma_droidwidth_teacher_bidir_50k_c{step}_slim_eval_h100_1seed1000"
 )
+DEFAULT_CKPT_RUN_NAME = "dz-rf-sg-gamma-dwteacher-bidir-lb500-50k-xz-20260622-teacher"
+DEFAULT_CKPT_S3_RUNS_PREFIX = "s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs"
+DEFAULT_CKPT_AMLFS_RUNS_PREFIX = "/mnt/amlfs-01/home/xianzhef/osmo_cache/dreamzero/checkpoints"
+
+
+def checkpoint_s3_base(ckpt_run_name: str, *, runs_prefix: str = DEFAULT_CKPT_S3_RUNS_PREFIX) -> str:
+    prefix = runs_prefix.rstrip("/")
+    return f"{prefix}/{ckpt_run_name}/checkpoints/{ckpt_run_name}"
+
+
+def checkpoint_amlfs_base(
+    ckpt_run_name: str, *, runs_prefix: str = DEFAULT_CKPT_AMLFS_RUNS_PREFIX
+) -> str:
+    prefix = runs_prefix.rstrip("/")
+    return f"{prefix}/{ckpt_run_name}/{ckpt_run_name}"
 
 
 def checkpoint_steps(start_step: int, max_step: int, interval: int) -> list[int]:
@@ -69,6 +84,9 @@ def build_submit_command(
     tag: str,
     name_template: str,
     local_root_template: str,
+    ckpt_run_name: str,
+    ckpt_s3_base_value: str,
+    ckpt_amlfs_base_value: str,
     extra_set_string: Sequence[str] = (),
     osmo_binary: str = "osmo",
 ) -> list[str]:
@@ -77,6 +95,9 @@ def build_submit_command(
     set_string = [
         f"workflow_name={workflow_name}",
         f"run_name={workflow_name}",
+        f"ckpt_run_name={ckpt_run_name}",
+        f"ckpt_s3_base={ckpt_s3_base_value}",
+        f"ckpt_amlfs_base={ckpt_amlfs_base_value}",
         f"ckpt_setting=checkpoint-{step}",
         f"local_eval_ckpt_root={local_root}",
         *extra_set_string,
@@ -133,6 +154,25 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--name-template", default=DEFAULT_NAME_TEMPLATE)
     parser.add_argument("--local-root-template", default=DEFAULT_LOCAL_ROOT_TEMPLATE)
     parser.add_argument(
+        "--ckpt-run-name",
+        default=DEFAULT_CKPT_RUN_NAME,
+        help="Training stage run name that owns the checkpoint-* directories.",
+    )
+    parser.add_argument(
+        "--ckpt-s3-base",
+        help=(
+            "Full S3 checkpoint base. Defaults to "
+            f"{DEFAULT_CKPT_S3_RUNS_PREFIX}/<ckpt-run-name>/checkpoints/<ckpt-run-name>."
+        ),
+    )
+    parser.add_argument(
+        "--ckpt-amlfs-base",
+        help=(
+            "Full AMLFS checkpoint cache base. Defaults to "
+            f"{DEFAULT_CKPT_AMLFS_RUNS_PREFIX}/<ckpt-run-name>/<ckpt-run-name>."
+        ),
+    )
+    parser.add_argument(
         "--set-string",
         action="append",
         default=[],
@@ -151,6 +191,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     steps = args.steps or checkpoint_steps(args.start_step, args.max_step, args.interval)
+    ckpt_s3_base_value = args.ckpt_s3_base or checkpoint_s3_base(args.ckpt_run_name)
+    ckpt_amlfs_base_value = args.ckpt_amlfs_base or checkpoint_amlfs_base(args.ckpt_run_name)
     if args.steps and not args.allow_off_grid_steps:
         bad_steps = off_grid_steps(
             steps,
@@ -174,6 +216,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             tag=args.tag,
             name_template=args.name_template,
             local_root_template=args.local_root_template,
+            ckpt_run_name=args.ckpt_run_name,
+            ckpt_s3_base_value=ckpt_s3_base_value,
+            ckpt_amlfs_base_value=ckpt_amlfs_base_value,
             extra_set_string=args.set_string,
             osmo_binary=args.osmo_binary,
         )

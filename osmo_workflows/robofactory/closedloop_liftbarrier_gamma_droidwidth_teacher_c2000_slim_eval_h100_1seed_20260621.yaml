@@ -33,8 +33,9 @@ workflow:
           ROBOFACTORY_GIT_COMMIT="5868242322414a91454e22f1dd9641f613ba1bcf"
           DATA_S3_URI="s3://GearHome/users/xianzhef/oci-migration/data/robofactory_lerobot_v2/LiftBarrier-rf-500"
           MODEL_CACHE_S3_URI="s3://GearHome/users/xianzhef/oci-migration/checkpoints"
-          CKPT_S3_BASE="s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/dz-rf-sg-gamma-dwteacher-lb500-50k-from0-xz-20260621-teacher/checkpoints/dz-rf-sg-gamma-dwteacher-lb500-50k-from0-xz-20260621-teacher"
-          CKPT_AMLFS_BASE="/mnt/amlfs-01/home/xianzhef/osmo_cache/dreamzero/checkpoints/dz-rf-sg-gamma-dwteacher-lb500-50k-from0-xz-20260621-teacher/dz-rf-sg-gamma-dwteacher-lb500-50k-from0-xz-20260621-teacher"
+          CKPT_RUN_NAME="{{ckpt_run_name}}"
+          CKPT_S3_BASE="${CKPT_S3_BASE:-{{ckpt_s3_base}}}"
+          CKPT_AMLFS_BASE="${CKPT_AMLFS_BASE:-{{ckpt_amlfs_base}}}"
           CKPT_SETTING="{{ckpt_setting}}"
           CKPT_WAIT_TIMEOUT_SECONDS=5400
           CKPT_WAIT_INTERVAL_SECONDS=120
@@ -50,7 +51,7 @@ workflow:
           MAX_STEPS=300
           INFERENCE_MODES="${INFERENCE_MODES:-causal_flowmatch}"
           RESET_CAUSAL_STATE_EACH_INFERS="${RESET_CAUSAL_STATE_EACH_INFERS:-1}"
-          VIDEO_PRED_ROLLOUT_MODES="${VIDEO_PRED_ROLLOUT_MODES:-action noncausal}"
+          VIDEO_PRED_ROLLOUT_MODES="${VIDEO_PRED_ROLLOUT_MODES:-{{video_pred_rollout_modes}}}"
           if [ -n "${VIDEO_PRED_ROLLOUT_MODE:-}" ]; then
             VIDEO_PRED_ROLLOUT_MODES="${VIDEO_PRED_ROLLOUT_MODE}"
           fi
@@ -132,6 +133,7 @@ workflow:
               DREAMZERO_GIT_REF="$DREAMZERO_GIT_REF" \
               DREAMZERO_GIT_COMMIT="${DREAMZERO_GIT_COMMIT:-}" \
               ROBOFACTORY_GIT_COMMIT="$ROBOFACTORY_GIT_COMMIT" \
+              CKPT_RUN_NAME="$CKPT_RUN_NAME" \
               CKPT_S3_BASE="$CKPT_S3_BASE" \
               CKPT_AMLFS_BASE="$CKPT_AMLFS_BASE" \
               RUN_S3_ROOT="$RUN_S3_ROOT" \
@@ -164,6 +166,7 @@ workflow:
               "DREAMZERO_GIT_REF",
               "DREAMZERO_GIT_COMMIT",
               "ROBOFACTORY_GIT_COMMIT",
+              "CKPT_RUN_NAME",
               "CKPT_S3_BASE",
               "CKPT_AMLFS_BASE",
               "RUN_S3_ROOT",
@@ -1183,12 +1186,16 @@ workflow:
     exec_timeout: 5h
     queue_timeout: 2h
 default-values:
-  workflow_name: dz-rf-sg-gamma-dwteacher-50kfrom0-c2000-slim-eval-h100-1seed1000-xz-20260621
-  run_name: dz-rf-sg-gamma-dwteacher-50kfrom0-c2000-slim-eval-h100-1seed1000-xz-20260621
+  workflow_name: dz-rf-sg-gamma-dwteacher-bidir-50k-c2000-slim-eval-h100-1seed1000-xz-20260622
+  run_name: dz-rf-sg-gamma-dwteacher-bidir-50k-c2000-slim-eval-h100-1seed1000-xz-20260622
+  ckpt_run_name: dz-rf-sg-gamma-dwteacher-bidir-lb500-50k-xz-20260622-teacher
+  ckpt_s3_base: s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/dz-rf-sg-gamma-dwteacher-bidir-lb500-50k-xz-20260622-teacher/checkpoints/dz-rf-sg-gamma-dwteacher-bidir-lb500-50k-xz-20260622-teacher
+  ckpt_amlfs_base: /mnt/amlfs-01/home/xianzhef/osmo_cache/dreamzero/checkpoints/dz-rf-sg-gamma-dwteacher-bidir-lb500-50k-xz-20260622-teacher/dz-rf-sg-gamma-dwteacher-bidir-lb500-50k-xz-20260622-teacher
   ckpt_setting: checkpoint-2000
-  local_eval_ckpt_root: gamma_droidwidth_teacher_50kfrom0_c2000_slim_eval_h100_1seed1000
+  local_eval_ckpt_root: gamma_droidwidth_teacher_bidir_50k_c2000_slim_eval_h100_1seed1000
+  video_pred_rollout_modes: "action noncausal"
   replan_everys: "24 12"
-  joint_delta_scales: "1.0 2.0"
+  joint_delta_scales: "1.0"
   joint_target_accel_limits: "0 0.08"
   replan_boundary_blend_steps: "4"
   temporal_action_ensemble_decays: "0.6"

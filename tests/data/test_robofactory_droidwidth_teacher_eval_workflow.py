@@ -135,27 +135,37 @@ def test_droidwidth_teacher_h100_eval_targets_h100_pool_resources():
     defaults = workflow["default-values"]
     assert workflow["workflow"]["name"] == "{{workflow_name}}"
     assert defaults["workflow_name"] == (
-        "dz-rf-sg-gamma-dwteacher-50kfrom0-c2000-slim-eval-h100-1seed1000-xz-20260621"
+        "dz-rf-sg-gamma-dwteacher-bidir-50k-c2000-slim-eval-h100-1seed1000-xz-20260622"
     )
     assert defaults["run_name"] == (
-        "dz-rf-sg-gamma-dwteacher-50kfrom0-c2000-slim-eval-h100-1seed1000-xz-20260621"
+        "dz-rf-sg-gamma-dwteacher-bidir-50k-c2000-slim-eval-h100-1seed1000-xz-20260622"
+    )
+    assert defaults["ckpt_run_name"] == (
+        "dz-rf-sg-gamma-dwteacher-bidir-lb500-50k-xz-20260622-teacher"
+    )
+    assert defaults["ckpt_s3_base"] == (
+        "s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/"
+        "dz-rf-sg-gamma-dwteacher-bidir-lb500-50k-xz-20260622-teacher/checkpoints/"
+        "dz-rf-sg-gamma-dwteacher-bidir-lb500-50k-xz-20260622-teacher"
     )
     assert defaults["ckpt_setting"] == "checkpoint-2000"
-    assert defaults["local_eval_ckpt_root"] == "gamma_droidwidth_teacher_50kfrom0_c2000_slim_eval_h100_1seed1000"
+    assert (
+        defaults["local_eval_ckpt_root"]
+        == "gamma_droidwidth_teacher_bidir_50k_c2000_slim_eval_h100_1seed1000"
+    )
+    assert defaults["video_pred_rollout_modes"] == "action noncausal"
     assert defaults["replan_everys"] == "24 12"
-    assert defaults["joint_delta_scales"] == "1.0 2.0"
+    assert defaults["joint_delta_scales"] == "1.0"
     assert defaults["joint_target_accel_limits"] == "0 0.08"
     assert defaults["replan_boundary_blend_steps"] == "4"
     assert defaults["temporal_action_ensemble_decays"] == "0.6"
     assert task["image"].startswith("nvcr.io/nvidian/groot-ci-base-eval:")
     assert 'RUN_NAME="{{run_name}}"' in script
-    assert (
-        "dreamzero_runs/dz-rf-sg-gamma-dwteacher-lb500-50k-from0-xz-20260621-teacher/"
-        "checkpoints/dz-rf-sg-gamma-dwteacher-lb500-50k-from0-xz-20260621-teacher"
-        in script
-    )
+    assert 'CKPT_RUN_NAME="{{ckpt_run_name}}"' in script
+    assert 'CKPT_S3_BASE="${CKPT_S3_BASE:-{{ckpt_s3_base}}}"' in script
+    assert 'CKPT_AMLFS_BASE="${CKPT_AMLFS_BASE:-{{ckpt_amlfs_base}}}"' in script
     assert 'VIDEO_PRED_WRIST_WINDOW_MODE="${VIDEO_PRED_WRIST_WINDOW_MODE:-action}"' in script
-    assert 'VIDEO_PRED_ROLLOUT_MODES="${VIDEO_PRED_ROLLOUT_MODES:-action noncausal}"' in script
+    assert 'VIDEO_PRED_ROLLOUT_MODES="${VIDEO_PRED_ROLLOUT_MODES:-{{video_pred_rollout_modes}}}"' in script
     assert 'VIDEO_PRED_ROLLOUT_MODES="${VIDEO_PRED_ROLLOUT_MODE}"' in script
     assert "for VIDEO_PRED_ROLLOUT_MODE in ${VIDEO_PRED_ROLLOUT_MODES}; do" in script
     assert "Unknown VIDEO_PRED_ROLLOUT_MODE=${VIDEO_PRED_ROLLOUT_MODE}" in script
@@ -199,6 +209,7 @@ def test_droidwidth_teacher_h100_eval_targets_h100_pool_resources():
     assert "write_eval_manifest" in script
     assert "checkpoint_eval_manifest.json" in script
     assert "DREAMZERO_GIT_COMMIT" in script
+    assert "CKPT_RUN_NAME" in script
     assert "runtime_provenance.json" in script
     assert "checkpoint_code_commit" in script
     assert "checkpoint_stage_label" in script

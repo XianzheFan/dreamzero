@@ -49,6 +49,9 @@ def test_build_submit_command_uses_checkpoint_specific_names():
         tag="20260621",
         name_template=module.DEFAULT_NAME_TEMPLATE,
         local_root_template=module.DEFAULT_LOCAL_ROOT_TEMPLATE,
+        ckpt_run_name=module.DEFAULT_CKPT_RUN_NAME,
+        ckpt_s3_base_value=module.checkpoint_s3_base(module.DEFAULT_CKPT_RUN_NAME),
+        ckpt_amlfs_base_value=module.checkpoint_amlfs_base(module.DEFAULT_CKPT_RUN_NAME),
     )
 
     assert command[:4] == ["osmo", "workflow", "submit", "eval.yaml"]
@@ -56,14 +59,24 @@ def test_build_submit_command_uses_checkpoint_specific_names():
     assert "ckpt_setting=checkpoint-4000" in command
     assert "ckpt_setting=checkpoint-2500" not in command
     assert (
-        "workflow_name=dz-rf-sg-gamma-dwteacher-50kfrom0-c4000-slim-eval-h100-1seed1000-xz-20260621"
+        "workflow_name=dz-rf-sg-gamma-dwteacher-bidir-50k-c4000-slim-eval-h100-1seed1000-xz-20260621"
         in command
     )
     assert (
-        "run_name=dz-rf-sg-gamma-dwteacher-50kfrom0-c4000-slim-eval-h100-1seed1000-xz-20260621"
+        "run_name=dz-rf-sg-gamma-dwteacher-bidir-50k-c4000-slim-eval-h100-1seed1000-xz-20260621"
         in command
     )
-    assert "local_eval_ckpt_root=gamma_droidwidth_teacher_50kfrom0_c4000_slim_eval_h100_1seed1000" in command
+    assert "ckpt_run_name=dz-rf-sg-gamma-dwteacher-bidir-lb500-50k-xz-20260622-teacher" in command
+    assert (
+        "ckpt_s3_base=s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/"
+        "dz-rf-sg-gamma-dwteacher-bidir-lb500-50k-xz-20260622-teacher/checkpoints/"
+        "dz-rf-sg-gamma-dwteacher-bidir-lb500-50k-xz-20260622-teacher"
+        in command
+    )
+    assert (
+        "local_eval_ckpt_root=gamma_droidwidth_teacher_bidir_50k_c4000_slim_eval_h100_1seed1000"
+        in command
+    )
 
 
 def test_main_prints_dry_run_commands_without_submitting(capsys):
@@ -91,6 +104,7 @@ def test_main_prints_dry_run_commands_without_submitting(capsys):
     assert "ckpt_setting=checkpoint-4000" in out
     assert "ckpt_setting=checkpoint-6000" in out
     assert "ckpt_setting=checkpoint-2500" not in out
+    assert "ckpt_run_name=dz-rf-sg-gamma-dwteacher-bidir-lb500-50k-xz-20260622-teacher" in out
 
 
 def test_main_rejects_explicit_off_grid_steps_by_default():
