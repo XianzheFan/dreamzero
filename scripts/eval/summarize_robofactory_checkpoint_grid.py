@@ -215,6 +215,18 @@ def summarize_eval_root(root: Path) -> dict[str, Any]:
         "pred_vs_future_mae_rgb_first_to_last_delta_mean": video.get(
             "pred_vs_future_mae_rgb_first_to_last_delta_mean"
         ),
+        "pred_vs_future_best_alignment_offset_counts": video.get(
+            "pred_vs_future_best_alignment_offset_counts"
+        ),
+        "pred_vs_future_best_alignment_offset_abs_mean": video.get(
+            "pred_vs_future_best_alignment_offset_abs_mean"
+        ),
+        "pred_vs_future_best_alignment_mae_rgb_mean": video.get(
+            "pred_vs_future_best_alignment_mae_rgb_mean"
+        ),
+        "pred_vs_future_best_alignment_improvement_rgb_mean": video.get(
+            "pred_vs_future_best_alignment_improvement_rgb_mean"
+        ),
         "temporal_absdiff_mean": video.get("temporal_absdiff_mean"),
         "temporal_freeze_frac_mean": video.get("temporal_freeze_frac_mean"),
         "laplacian_var_mean": video.get("laplacian_var_mean"),
@@ -268,6 +280,9 @@ TABLE_COLUMNS = [
     ("future_t0", "pred_vs_future_first_frame_mae_rgb_mean"),
     ("future_tlast", "pred_vs_future_last_frame_mae_rgb_mean"),
     ("future_drift", "pred_vs_future_mae_rgb_first_to_last_delta_mean"),
+    ("future_best_off", "pred_vs_future_best_alignment_offset_counts"),
+    ("future_best_mae", "pred_vs_future_best_alignment_mae_rgb_mean"),
+    ("future_best_gain", "pred_vs_future_best_alignment_improvement_rgb_mean"),
     ("tempdiff", "temporal_absdiff_mean"),
 ]
 

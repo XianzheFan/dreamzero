@@ -98,6 +98,10 @@ def _make_eval(
                 "pred_vs_future_first_frame_mae_rgb_mean": 12.0,
                 "pred_vs_future_last_frame_mae_rgb_mean": 12.0 + future_delta,
                 "pred_vs_future_mae_rgb_first_to_last_delta_mean": future_delta,
+                "pred_vs_future_best_alignment_offset_counts": {"1": 2},
+                "pred_vs_future_best_alignment_offset_abs_mean": 1.0,
+                "pred_vs_future_best_alignment_mae_rgb_mean": 10.0,
+                "pred_vs_future_best_alignment_improvement_rgb_mean": 4.0,
                 "temporal_absdiff_mean": 18.0,
                 "temporal_freeze_frac_mean": 0.0,
                 "laplacian_var_mean": 40.0,
@@ -134,6 +138,9 @@ def test_summarize_roots_orders_by_checkpoint_and_selects_best_setting(tmp_path)
     assert rows[0]["best_setting_dir"] == "rp12_best"
     assert rows[0]["raw_joint_saturation_frac"] == 0.7
     assert rows[0]["pred_vs_future_mae_rgb_first_to_last_delta_mean"] == 8.0
+    assert rows[0]["pred_vs_future_best_alignment_offset_counts"] == {"1": 2}
+    assert rows[0]["pred_vs_future_best_alignment_mae_rgb_mean"] == 10.0
+    assert rows[0]["pred_vs_future_best_alignment_improvement_rgb_mean"] == 4.0
     assert rows[1]["success_count"] == 1
     assert rows[1]["raw_joint_saturation_frac_left"] == 0.21000000000000002
     assert rows[1]["pred_vs_future_mae_rgb_first_to_last_delta_mean"] == 3.0

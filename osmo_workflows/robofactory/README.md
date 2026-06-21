@@ -84,7 +84,10 @@ python scripts/eval/summarize_robofactory_checkpoint_grid.py \
 
 The summary table compares the best physical setting per checkpoint, including
 success, reach/grasp margins, action saturation/clamping, boundary jumps, and
-predicted-video future MAE/drift.
+predicted-video future MAE/drift. The video-quality report also scans a small
+future-frame alignment window and reports the best offset; a consistent nonzero
+best offset is evidence of a pred-video/eval time-window mismatch rather than
+only poor visual modeling.
 
 New gamma training checkpoints include `experiment_cfg/runtime_provenance.json`,
 and the droidwidth closed-loop eval manifests surface checkpoint code commit,

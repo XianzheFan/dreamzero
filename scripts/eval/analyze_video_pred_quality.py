@@ -264,6 +264,7 @@ def compare_pred_to_future_trace(
     agent_id: int | None,
     env_step: int | None,
     includes_conditioning_frame: bool | None,
+    offset_radius: int = 3,
 ) -> dict[str, Any] | None:
     """Compare predicted wrist frames with realized future RGB trace frames."""
     view_key = _future_view_key(agent_id)
@@ -276,28 +277,75 @@ def compare_pred_to_future_trace(
     step_to_index = {int(step): idx for idx, step in enumerate(steps.tolist())}
     first_offset = 0 if includes_conditioning_frame else 1
     pred_frames = np.asarray(pred_frames, dtype=np.uint8)
-    future_frames = []
-    matched_steps = []
-    for pred_idx in range(pred_frames.shape[0]):
-        target_step = int(env_step) + first_offset + pred_idx
-        trace_idx = step_to_index.get(target_step)
-        if trace_idx is None:
-            continue
-        future_frames.append(frames[trace_idx])
-        matched_steps.append(target_step)
-    if not future_frames:
+
+    def compare_at_offset(alignment_offset: int) -> dict[str, Any] | None:
+        future_frames = []
+        matched_steps = []
+        for pred_idx in range(pred_frames.shape[0]):
+            target_step = int(env_step) + first_offset + alignment_offset + pred_idx
+            trace_idx = step_to_index.get(target_step)
+            if trace_idx is None:
+                continue
+            future_frames.append(frames[trace_idx])
+            matched_steps.append(target_step)
+        if not future_frames:
+            return None
+        comparison = compare_videos(
+            pred_frames[: len(future_frames)],
+            np.stack(future_frames),
+        )
+        comparison.update(
+            {
+                "alignment_offset": int(alignment_offset),
+                "trace_path": str(trace.get("path", "")),
+                "view_key": view_key,
+                "first_offset": int(first_offset),
+                "matched_frame_count": int(len(future_frames)),
+                "first_matched_step": int(matched_steps[0]),
+                "last_matched_step": int(matched_steps[-1]),
+            }
+        )
+        return comparison
+
+    comparison = compare_at_offset(0)
+    if comparison is None:
         return None
-    comparison = compare_videos(pred_frames[: len(future_frames)], np.stack(future_frames))
-    comparison.update(
-        {
-            "trace_path": str(trace.get("path", "")),
-            "view_key": view_key,
-            "first_offset": int(first_offset),
-            "matched_frame_count": int(len(future_frames)),
-            "first_matched_step": int(matched_steps[0]),
-            "last_matched_step": int(matched_steps[-1]),
-        }
-    )
+    min_overlap = max(1, int(comparison["matched_frame_count"]) // 2)
+    candidates = []
+    radius = max(int(offset_radius), 0)
+    for alignment_offset in range(-radius, radius + 1):
+        candidate = compare_at_offset(alignment_offset)
+        if candidate is None:
+            continue
+        if int(candidate["matched_frame_count"]) < min_overlap:
+            continue
+        candidates.append(
+            {
+                "alignment_offset": int(alignment_offset),
+                "mae_rgb": candidate.get("mae_rgb"),
+                "mae_luma": candidate.get("mae_luma"),
+                "matched_frame_count": candidate.get("matched_frame_count"),
+                "first_matched_step": candidate.get("first_matched_step"),
+                "last_matched_step": candidate.get("last_matched_step"),
+            }
+        )
+    valid_candidates = [
+        candidate
+        for candidate in candidates
+        if candidate.get("mae_rgb") is not None
+    ]
+    if valid_candidates:
+        best = min(valid_candidates, key=lambda item: float(item["mae_rgb"]))
+        comparison["alignment_offset_candidates"] = candidates
+        comparison["best_alignment_offset"] = best["alignment_offset"]
+        comparison["best_alignment_mae_rgb"] = best["mae_rgb"]
+        comparison["best_alignment_mae_luma"] = best.get("mae_luma")
+        comparison["best_alignment_matched_frame_count"] = best.get(
+            "matched_frame_count"
+        )
+        comparison["best_alignment_improvement_rgb"] = _safe_float(
+            float(comparison["mae_rgb"]) - float(best["mae_rgb"])
+        )
     return comparison
 
 
@@ -413,6 +461,7 @@ def analyze_video_tree(
     *,
     max_frames: int | None = None,
     future_trace_dir: Path | None = None,
+    future_offset_radius: int = 3,
 ) -> dict[str, Any]:
     root = Path(root)
     manifest_rows = _load_manifest_rows(root)
@@ -451,6 +500,7 @@ def analyze_video_tree(
                         includes_conditioning_frame=entry.get(
                             "pred_latent_includes_conditioning_frame"
                         ),
+                        offset_radius=future_offset_radius,
                     )
                     if future_trace is not None
                     else None
@@ -575,6 +625,22 @@ def _aggregate(videos: list[dict[str, Any]]) -> dict[str, Any]:
             if math.isfinite(float(value))
         ]
 
+    def count_numeric_values(path: tuple[str, ...]) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for row in videos:
+            value: Any = row
+            for key in path:
+                value = value.get(key) if isinstance(value, dict) else None
+            if value is None:
+                continue
+            label = (
+                str(int(value))
+                if isinstance(value, (int, float))
+                else str(value)
+            )
+            counts[label] = counts.get(label, 0) + 1
+        return counts
+
     flag_counts: dict[str, int] = {}
     for row in videos:
         for flag in row["risk_flags"]:
@@ -641,6 +707,18 @@ def _aggregate(videos: list[dict[str, Any]]) -> dict[str, Any]:
         "pred_vs_future_matched_frame_count_mean": _mean_or_none(
             collect(("pred_vs_future", "matched_frame_count"))
         ),
+        "pred_vs_future_best_alignment_offset_counts": count_numeric_values(
+            ("pred_vs_future", "best_alignment_offset")
+        ),
+        "pred_vs_future_best_alignment_offset_abs_mean": _mean_or_none(
+            np.abs(collect(("pred_vs_future", "best_alignment_offset")))
+        ),
+        "pred_vs_future_best_alignment_mae_rgb_mean": _mean_or_none(
+            collect(("pred_vs_future", "best_alignment_mae_rgb"))
+        ),
+        "pred_vs_future_best_alignment_improvement_rgb_mean": _mean_or_none(
+            collect(("pred_vs_future", "best_alignment_improvement_rgb"))
+        ),
     }
 
 
@@ -682,6 +760,14 @@ def write_text_report(payload: dict[str, Any], path: Path) -> None:
         f"{summary.get('pred_vs_future_mae_rgb_first_to_last_delta_mean')}",
         "  pred_vs_future_mae_rgb_by_frame_mean: "
         f"{summary.get('pred_vs_future_mae_rgb_by_frame_mean')}",
+        "  pred_vs_future_best_alignment_offset_counts: "
+        f"{summary.get('pred_vs_future_best_alignment_offset_counts', {})}",
+        "  pred_vs_future_best_alignment_offset_abs_mean: "
+        f"{summary.get('pred_vs_future_best_alignment_offset_abs_mean')}",
+        "  pred_vs_future_best_alignment_mae_rgb_mean: "
+        f"{summary.get('pred_vs_future_best_alignment_mae_rgb_mean')}",
+        "  pred_vs_future_best_alignment_improvement_rgb_mean: "
+        f"{summary.get('pred_vs_future_best_alignment_improvement_rgb_mean')}",
         "",
         "per video:",
     ]
@@ -707,6 +793,9 @@ def write_text_report(payload: dict[str, Any], path: Path) -> None:
             f"condition_window_mae={comparison.get('mae_rgb')} "
             f"future_mae={future.get('mae_rgb')} "
             f"future_delta={future.get('mae_rgb_first_to_last_delta')} "
+            f"future_best_offset={future.get('best_alignment_offset')} "
+            f"future_best_mae={future.get('best_alignment_mae_rgb')} "
+            f"future_best_improve={future.get('best_alignment_improvement_rgb')} "
             f"future_steps={future.get('first_matched_step')}:{future.get('last_matched_step')} "
             f"flags={row['risk_flags']}"
         )
@@ -763,6 +852,16 @@ def main() -> None:
             "predicted wrist video vs realized future RGB-frame MAE."
         ),
     )
+    ap.add_argument(
+        "--future-offset-radius",
+        type=int,
+        default=3,
+        help=(
+            "When future RGB traces are available, also scan +/- this many "
+            "environment steps around the nominal alignment and report the "
+            "best MAE offset. Default: 3."
+        ),
+    )
     args = ap.parse_args()
 
     payload = analyze_video_tree(
@@ -773,6 +872,7 @@ def main() -> None:
             if args.future_rgb_trace_dir
             else None
         ),
+        future_offset_radius=args.future_offset_radius,
     )
     print(json.dumps(payload["summary"], indent=2, sort_keys=True))
     if args.output_json:
