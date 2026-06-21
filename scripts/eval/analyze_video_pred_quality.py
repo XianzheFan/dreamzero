@@ -347,6 +347,12 @@ def analyze_video_tree(
                     "last_video_pred_rollout_mode": entry.get(
                         "last_video_pred_rollout_mode"
                     ),
+                    "shared_global_wrist_window_mode": entry.get(
+                        "shared_global_wrist_window_mode"
+                    ),
+                    "video_pred_wrist_window_mode": entry.get(
+                        "video_pred_wrist_window_mode"
+                    ),
                     "mai_rolling_noise": entry.get("mai_rolling_noise"),
                     "noise_draw_counts": entry.get("noise_draw_counts"),
                     "observed_path": (
@@ -416,6 +422,9 @@ def _aggregate(videos: list[dict[str, Any]]) -> dict[str, Any]:
         "shared_global_wrist_window_mode_counts": count_values(
             "shared_global_wrist_window_mode"
         ),
+        "video_pred_wrist_window_mode_counts": count_values(
+            "video_pred_wrist_window_mode"
+        ),
         "reset_causal_state_each_infer_counts": count_values(
             "reset_causal_state_each_infer"
         ),
@@ -457,6 +466,8 @@ def write_text_report(payload: dict[str, Any], path: Path) -> None:
         f"{summary.get('last_video_pred_rollout_mode_counts', {})}",
         "  shared_global_wrist_window_mode_counts: "
         f"{summary.get('shared_global_wrist_window_mode_counts', {})}",
+        "  video_pred_wrist_window_mode_counts: "
+        f"{summary.get('video_pred_wrist_window_mode_counts', {})}",
         "  reset_causal_state_each_infer_counts: "
         f"{summary.get('reset_causal_state_each_infer_counts', {})}",
         "aggregate:",
@@ -480,7 +491,8 @@ def write_text_report(payload: dict[str, Any], path: Path) -> None:
             f"{row['path']} agent={row.get('agent_id')} env_step={row.get('env_step')} "
             f"rollout={row.get('video_pred_rollout_mode')}/"
             f"{row.get('last_video_pred_rollout_mode')} "
-            f"wrist_window={row.get('shared_global_wrist_window_mode')} "
+            f"action_wrist_window={row.get('shared_global_wrist_window_mode')} "
+            f"video_wrist_window={row.get('video_pred_wrist_window_mode')} "
             f"reset_cache={row.get('reset_causal_state_each_infer')} "
             f"latent_frames={row.get('pred_latent_start_frame')}:{row.get('pred_latent_end_frame')} "
             f"cache_after={row.get('current_start_frame_after_infer')}/{row.get('cached_until_frame')} "

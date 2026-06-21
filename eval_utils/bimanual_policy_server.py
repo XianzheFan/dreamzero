@@ -81,6 +81,7 @@ import websockets.frames
 
 _DEFAULT_SHARED_GLOBAL_WRIST_WINDOW_MODE = "history-chronological"
 _DEFAULT_VIDEO_PRED_ROLLOUT_MODE = "noncausal"
+_DEFAULT_VIDEO_PRED_WRIST_WINDOW_MODE = _DEFAULT_SHARED_GLOBAL_WRIST_WINDOW_MODE
 
 
 @dataclasses.dataclass
@@ -107,6 +108,7 @@ class BimanualServerConfig:
     mai_num_inference_steps: int | None = None
     mai_rolling_noise: bool = True
     shared_global_wrist_window_mode: str = _DEFAULT_SHARED_GLOBAL_WRIST_WINDOW_MODE
+    video_pred_wrist_window_mode: str = _DEFAULT_VIDEO_PRED_WRIST_WINDOW_MODE
     reset_causal_state_each_infer: bool = False
     video_pred_rollout_mode: str = _DEFAULT_VIDEO_PRED_ROLLOUT_MODE
 
@@ -118,6 +120,7 @@ _SHARED_GLOBAL_WRIST_WINDOW_MODES = (
 )
 
 _VIDEO_PRED_ROLLOUT_MODES = ("action", "noncausal")
+_VIDEO_PRED_WRIST_WINDOW_MODES = ("action",) + _SHARED_GLOBAL_WRIST_WINDOW_MODES
 
 
 def _resolve_video_pred_rollout_mode(value: str | None) -> str:
@@ -414,6 +417,7 @@ class BimanualPolicy:
         gripper_force_open_until_infer: int | None = None,
         gripper_convention: str = "auto",
         shared_global_wrist_window_mode: str | None = None,
+        video_pred_wrist_window_mode: str | None = None,
         reset_causal_state_each_infer: bool | None = None,
         device: str | None = None,
         device_mesh: Any | None = None,
@@ -505,6 +509,21 @@ class BimanualPolicy:
                 "shared_global_wrist_window_mode must be one of "
                 f"{_SHARED_GLOBAL_WRIST_WINDOW_MODES}; got "
                 f"{shared_global_wrist_window_mode!r}"
+            )
+        if video_pred_wrist_window_mode is None:
+            video_pred_wrist_window_mode = os.environ.get(
+                "DREAMZERO_VIDEO_PRED_WRIST_WINDOW_MODE",
+                _DEFAULT_VIDEO_PRED_WRIST_WINDOW_MODE,
+            )
+        self.video_pred_wrist_window_mode = str(
+            video_pred_wrist_window_mode
+            or _DEFAULT_VIDEO_PRED_WRIST_WINDOW_MODE
+        ).strip().lower()
+        if self.video_pred_wrist_window_mode not in _VIDEO_PRED_WRIST_WINDOW_MODES:
+            raise ValueError(
+                "video_pred_wrist_window_mode must be one of "
+                f"{_VIDEO_PRED_WRIST_WINDOW_MODES}; got "
+                f"{video_pred_wrist_window_mode!r}"
             )
         if reset_causal_state_each_infer is None:
             reset_causal_state_each_infer = self._parse_bool(
@@ -1130,6 +1149,7 @@ class BimanualPolicy:
     def _build_video_windows(
         self,
         history: list[tuple[np.ndarray, np.ndarray, np.ndarray]],
+        mode: str | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Return global/left/right video windows for the transform input.
 
@@ -1152,11 +1172,12 @@ class BimanualPolicy:
         if self._uses_shared_global():
             current_global, current_agent0, current_agent1 = history[-1]
             global_history = np.repeat(current_global[None], self.num_frames, axis=0)
-            mode = getattr(
+            mode = mode or getattr(
                 self,
                 "shared_global_wrist_window_mode",
                 _DEFAULT_SHARED_GLOBAL_WRIST_WINDOW_MODE,
             )
+            mode = str(mode).strip().lower()
             if mode == "repeat-current":
                 agent0_history = np.repeat(
                     current_agent0[None], self.num_frames, axis=0
@@ -1179,6 +1200,85 @@ class BimanualPolicy:
                     f"{_SHARED_GLOBAL_WRIST_WINDOW_MODES}; got {mode!r}"
                 )
         return global_history, agent0_history, agent1_history
+
+    def _make_infer_batch(
+        self,
+        *,
+        qpos: np.ndarray,
+        prompt: str,
+        global_video: np.ndarray,
+        agent0_video: np.ndarray,
+        agent1_video: np.ndarray,
+    ) -> dict[str, Any]:
+        T_s = 1
+        T_a = self.action_horizon
+        return {
+            "video.global_camera-images-rgb": global_video,
+            "video.agent0_camera-images-rgb": agent0_video,
+            "video.agent1_camera-images-rgb": agent1_video,
+            "state.panda0_joint_pos": qpos[0:7].reshape(T_s, 7).copy(),
+            "state.panda0_gripper_pos": qpos[7:8].reshape(T_s, 1).copy(),
+            "state.panda1_joint_pos": qpos[8:15].reshape(T_s, 7).copy(),
+            "state.panda1_gripper_pos": qpos[15:16].reshape(T_s, 1).copy(),
+            "action.panda0_joint_pos": np.zeros((T_a, 7), dtype=np.float32),
+            "action.panda0_gripper_pos": np.zeros((T_a, 1), dtype=np.float32),
+            "action.panda1_joint_pos": np.zeros((T_a, 7), dtype=np.float32),
+            "action.panda1_gripper_pos": np.zeros((T_a, 1), dtype=np.float32),
+            "annotation.task": prompt,
+        }
+
+    def _prepare_inputs_gpu(self, batch: dict[str, Any]) -> dict[str, Any]:
+        import torch
+
+        saved_transform_modes = self._set_eval_inference_transform_modes()
+        try:
+            normalized_inputs = self._transform.apply(batch)
+        finally:
+            self._restore_transform_modes(saved_transform_modes)
+
+        tok = None
+        for t in getattr(self._transform, "transforms", []):
+            if hasattr(t, "tokenizer"):
+                tok = t.tokenizer
+                break
+        if tok is None:
+            raise RuntimeError(
+                "No tokenizer found on any sub-transform; cannot "
+                "tokenize text for inference."
+            )
+        for str_key, ids_key, mask_key in [
+            ("text", "text", "text_attention_mask"),
+            ("text_negative", "text_negative", "text_attention_mask_negative"),
+        ]:
+            if str_key in normalized_inputs and isinstance(
+                normalized_inputs[str_key], str
+            ):
+                text_val = normalized_inputs[str_key]
+                ids, mask = tok(text_val, return_mask=True, add_special_tokens=True)
+                if ids.dim() == 2 and ids.shape[0] == 1:
+                    ids = ids.squeeze(0)
+                    mask = mask.squeeze(0)
+                normalized_inputs[ids_key] = ids
+                normalized_inputs[mask_key] = mask
+
+        inputs_gpu = {}
+        for k, v in normalized_inputs.items():
+            if isinstance(v, torch.Tensor):
+                t = v
+            elif isinstance(v, np.ndarray):
+                t = torch.from_numpy(v)
+            elif isinstance(
+                v, (int, float, bool, np.integer, np.floating, np.bool_)
+            ):
+                t = torch.as_tensor(v)
+            else:
+                continue
+            if t.is_floating_point():
+                t = t.to(self._device, dtype=self._dtype)
+            else:
+                t = t.to(self._device)
+            inputs_gpu[k] = t.unsqueeze(0)
+        return inputs_gpu
 
     # ----- inference ----------------------------------------------------
     def infer(self, obs: dict) -> dict:
@@ -1245,10 +1345,9 @@ class BimanualPolicy:
             agent0_video=agent0_video,
             agent1_video=agent1_video,
         )
+        sess["last_video_pred_observed_debug"] = sess["last_observed_video_debug"]
+        sess["last_video_pred_wrist_window_mode"] = self.shared_global_wrist_window_mode
 
-        # Per-arm state slices (T_s=1, current step only).
-        T_s = 1
-        T_a = self.action_horizon
         prompt = self._effective_prompt(sess.get("prompt", ""))
 
         # ``action.*`` keys are required by ``StateActionTransform`` /
@@ -1257,99 +1356,16 @@ class BimanualPolicy:
         # (see ``WANPolicyHead._get_action_multi_agent``). Zeros are
         # safe placeholders here; they only have to satisfy the
         # downstream shape contract.
-        batch = {
-            "video.global_camera-images-rgb": global_video,
-            "video.agent0_camera-images-rgb": agent0_video,
-            "video.agent1_camera-images-rgb": agent1_video,
-            "state.panda0_joint_pos":    qpos[0:7].reshape(T_s, 7).copy(),
-            "state.panda0_gripper_pos":  qpos[7:8].reshape(T_s, 1).copy(),
-            "state.panda1_joint_pos":    qpos[8:15].reshape(T_s, 7).copy(),
-            "state.panda1_gripper_pos":  qpos[15:16].reshape(T_s, 1).copy(),
-            "action.panda0_joint_pos":   np.zeros((T_a, 7), dtype=np.float32),
-            "action.panda0_gripper_pos": np.zeros((T_a, 1), dtype=np.float32),
-            "action.panda1_joint_pos":   np.zeros((T_a, 7), dtype=np.float32),
-            "action.panda1_gripper_pos": np.zeros((T_a, 1), dtype=np.float32),
-            "annotation.task": prompt,
-        }
+        batch = self._make_infer_batch(
+            qpos=qpos,
+            prompt=prompt,
+            global_video=global_video,
+            agent0_video=agent0_video,
+            agent1_video=agent1_video,
+        )
 
         with torch.inference_mode():
-            # DreamTransform.apply_single has a ``if self.training:`` gate
-            # that drops ``action`` / ``action_mask`` / ``has_real_action``
-            # in eval mode, but the multi-agent inference path needs those
-            # tensors for shape. Keep video/state preprocessing deterministic
-            # by only enabling training mode on the model-specific transform;
-            # leave random crop, color jitter, perturb/dropout transforms off.
-            saved_transform_modes = self._set_eval_inference_transform_modes()
-            try:
-                normalized_inputs = self._transform.apply(batch)
-            finally:
-                self._restore_transform_modes(saved_transform_modes)
-
-            # ``text`` and ``text_negative`` come out as raw Python strings
-            # (the collator usually tokenizes; we don't use a collator).
-            # Tokenize manually with the BimanualDreamTransform's tokenizer
-            # (the outer ComposedModalityTransform doesn't expose it; we
-            # find it on the inner model_specific_transform).
-            tok = None
-            for t in getattr(self._transform, "transforms", []):
-                if hasattr(t, "tokenizer"):
-                    tok = t.tokenizer
-                    break
-            if tok is None:
-                raise RuntimeError(
-                    "No tokenizer found on any sub-transform; cannot "
-                    "tokenize text for inference."
-                )
-            for str_key, ids_key, mask_key in [
-                ("text", "text", "text_attention_mask"),
-                ("text_negative", "text_negative", "text_attention_mask_negative"),
-            ]:
-                if str_key in normalized_inputs and isinstance(
-                    normalized_inputs[str_key], str
-                ):
-                    text_val = normalized_inputs[str_key]
-                    ids, mask = tok(
-                        text_val, return_mask=True, add_special_tokens=True
-                    )
-                    # HuggingfaceTokenizer wraps the single string into a
-                    # 1-element list, so ids/mask come out as (1, seq_len)
-                    # with a leading batch dim. Drop it so the generic
-                    # ``.unsqueeze(0)`` below adds it back uniformly.
-                    if ids.dim() == 2 and ids.shape[0] == 1:
-                        ids = ids.squeeze(0)
-                        mask = mask.squeeze(0)
-                    normalized_inputs[ids_key] = ids
-                    normalized_inputs[mask_key] = mask
-            # ``transform.apply`` runs unbatched (single-sample mode).
-            # Add a leading B=1 dim and move tensors to device. The dict
-            # also contains scalar/numpy ints (e.g. ``num_agents`` set by
-            # BimanualDreamTransform as np.int64) -- wrap those as 1-D
-            # tensors so ``prepare_input``'s tree.map_structure can
-            # ``torch.is_floating_point`` them without crashing.
-            inputs_gpu = {}
-            for k, v in normalized_inputs.items():
-                if isinstance(v, torch.Tensor):
-                    t = v
-                elif isinstance(v, np.ndarray):
-                    t = torch.from_numpy(v)
-                elif isinstance(
-                    v, (int, float, bool, np.integer, np.floating, np.bool_)
-                ):
-                    t = torch.as_tensor(v)
-                else:
-                    # Drop strings / unknown types: ``annotation.task`` is
-                    # left in the post-transform dict as a raw str, but
-                    # the model's ``prepare_input`` does
-                    # ``tree.map_structure(torch.is_floating_point, ...)``
-                    # which only accepts Tensors. Tokenized output already
-                    # lives under ``text`` / ``text_attention_mask``.
-                    continue
-                if t.is_floating_point():
-                    t = t.to(self._device, dtype=self._dtype)
-                else:
-                    t = t.to(self._device)
-                inputs_gpu[k] = t.unsqueeze(0)
-
+            inputs_gpu = self._prepare_inputs_gpu(batch)
             outputs = self._model.get_action(inputs_gpu)
 
         flat_action = self._denorm_action(outputs, qpos)
@@ -1361,9 +1377,33 @@ class BimanualPolicy:
 
         if self.save_video_pred:
             try:
+                video_pred_inputs_gpu = inputs_gpu
                 if self.video_pred_rollout_mode == "noncausal":
+                    pred_window_mode = self.video_pred_wrist_window_mode
+                    if pred_window_mode != "action":
+                        (
+                            pred_global_video,
+                            pred_agent0_video,
+                            pred_agent1_video,
+                        ) = self._build_video_windows(history, mode=pred_window_mode)
+                        pred_batch = self._make_infer_batch(
+                            qpos=qpos,
+                            prompt=prompt,
+                            global_video=pred_global_video,
+                            agent0_video=pred_agent0_video,
+                            agent1_video=pred_agent1_video,
+                        )
+                        video_pred_inputs_gpu = self._prepare_inputs_gpu(pred_batch)
+                        sess["last_video_pred_observed_debug"] = {
+                            "global": np.asarray(pred_global_video, dtype=np.uint8),
+                            "agent0": np.asarray(pred_agent0_video, dtype=np.uint8),
+                            "agent1": np.asarray(pred_agent1_video, dtype=np.uint8),
+                        }
+                        sess["last_video_pred_wrist_window_mode"] = pred_window_mode
+                    else:
+                        sess["last_video_pred_wrist_window_mode"] = "action"
                     try:
-                        self._run_noncausal_video_pred_rollout(inputs_gpu)
+                        self._run_noncausal_video_pred_rollout(video_pred_inputs_gpu)
                     finally:
                         self._last_action_debug = control_action_debug
                 self._dump_video_pred(sess, sid)
@@ -1467,7 +1507,10 @@ class BimanualPolicy:
         pred_files = self._write_decoded_video_set(frames, out_dir, prefix)
         observed_files: list[str] = []
         comparison_files: list[str] = []
-        observed_videos = sess.get("last_observed_video_debug")
+        observed_videos = (
+            sess.get("last_video_pred_observed_debug")
+            or sess.get("last_observed_video_debug")
+        )
         if isinstance(observed_videos, dict):
             observed_dir = out_dir / "observed"
             observed_files = [
@@ -1526,6 +1569,10 @@ class BimanualPolicy:
                 "replan_every": sess.get("last_replan_every"),
                 "chunk_start_index": sess.get("last_chunk_start_index"),
                 "shared_global_wrist_window_mode": self.shared_global_wrist_window_mode,
+                "video_pred_wrist_window_mode": sess.get(
+                    "last_video_pred_wrist_window_mode",
+                    self.video_pred_wrist_window_mode,
+                ),
                 "reset_causal_state_each_infer": self.reset_causal_state_each_infer,
                 "video_pred_rollout_mode": self.video_pred_rollout_mode,
                 "last_video_pred_rollout_mode": getattr(
@@ -2185,6 +2232,7 @@ class BimanualWebsocketServer:
             mai_num_inference_steps=_optional_env_int("MAI_NUM_INFERENCE_STEPS"),
             mai_rolling_noise=policy._env_bool_default("MAI_ROLLING_NOISE", True),
             shared_global_wrist_window_mode=policy.shared_global_wrist_window_mode,
+            video_pred_wrist_window_mode=policy.video_pred_wrist_window_mode,
             reset_causal_state_each_infer=policy.reset_causal_state_each_infer,
             video_pred_rollout_mode=policy.video_pred_rollout_mode,
         )
@@ -2458,6 +2506,19 @@ def main():
              "repeat-current matches the historical server behavior.",
     )
     parser.add_argument(
+        "--video-pred-wrist-window-mode",
+        default=os.environ.get(
+            "DREAMZERO_VIDEO_PRED_WRIST_WINDOW_MODE",
+            _DEFAULT_VIDEO_PRED_WRIST_WINDOW_MODE,
+        ),
+        choices=_VIDEO_PRED_WRIST_WINDOW_MODES,
+        help="Wrist-window layout used only by the optional noncausal "
+             "predicted-video diagnostic rollout. 'action' reuses the "
+             "--shared-global-wrist-window-mode control input; the explicit "
+             "history modes rebuild diagnostic inputs without changing the "
+             "control action.",
+    )
+    parser.add_argument(
         "--reset-causal-state-each-infer",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -2506,6 +2567,7 @@ def main():
         gripper_force_open_until_infer=args.gripper_force_open_until_infer,
         gripper_convention=args.gripper_convention,
         shared_global_wrist_window_mode=args.shared_global_wrist_window_mode,
+        video_pred_wrist_window_mode=args.video_pred_wrist_window_mode,
         reset_causal_state_each_infer=args.reset_causal_state_each_infer,
         device=dist_ctx.device,
         device_mesh=dist_ctx.device_mesh,

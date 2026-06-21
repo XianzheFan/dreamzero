@@ -51,6 +51,7 @@ workflow:
           INFERENCE_MODES="${INFERENCE_MODES:-causal_flowmatch}"
           RESET_CAUSAL_STATE_EACH_INFERS="${RESET_CAUSAL_STATE_EACH_INFERS:-0 1}"
           VIDEO_PRED_ROLLOUT_MODE="${VIDEO_PRED_ROLLOUT_MODE:-noncausal}"
+          VIDEO_PRED_WRIST_WINDOW_MODE="${VIDEO_PRED_WRIST_WINDOW_MODE:-history-chronological}"
           SHARED_GLOBAL_WRIST_WINDOW_MODE="${SHARED_GLOBAL_WRIST_WINDOW_MODE:-history-current-first}"
           export MAI_WRITE_DENOISED_CONTEXT_CACHE="${MAI_WRITE_DENOISED_CONTEXT_CACHE:-1}"
           export MAI_ROLLING_NOISE="${MAI_ROLLING_NOISE:-1}"
@@ -693,7 +694,7 @@ workflow:
               ;;
           esac
           SERVER_LOG="/tmp/server_${INFERENCE_MODE}_${RESET_TAG}.log"
-          echo "Launching DreamZero policy server for closed-loop eval (${CKPT_SETTING}) inference_mode=${INFERENCE_MODE} reset_mode=${RESET_TAG} server_cuda=${SERVER_CUDA_VISIBLE_DEVICES} MAI_USE_CAUSAL_INFERENCE=${MAI_USE_CAUSAL_INFERENCE} MAI_CAUSAL_SCHEDULER=${MAI_CAUSAL_SCHEDULER} MAI_WRITE_DENOISED_CONTEXT_CACHE=${MAI_WRITE_DENOISED_CONTEXT_CACHE} MAI_ROLLING_NOISE=${MAI_ROLLING_NOISE} VIDEO_PRED_ROLLOUT_MODE=${VIDEO_PRED_ROLLOUT_MODE} SHARED_GLOBAL_WRIST_WINDOW_MODE=${SHARED_GLOBAL_WRIST_WINDOW_MODE}"
+          echo "Launching DreamZero policy server for closed-loop eval (${CKPT_SETTING}) inference_mode=${INFERENCE_MODE} reset_mode=${RESET_TAG} server_cuda=${SERVER_CUDA_VISIBLE_DEVICES} MAI_USE_CAUSAL_INFERENCE=${MAI_USE_CAUSAL_INFERENCE} MAI_CAUSAL_SCHEDULER=${MAI_CAUSAL_SCHEDULER} MAI_WRITE_DENOISED_CONTEXT_CACHE=${MAI_WRITE_DENOISED_CONTEXT_CACHE} MAI_ROLLING_NOISE=${MAI_ROLLING_NOISE} VIDEO_PRED_ROLLOUT_MODE=${VIDEO_PRED_ROLLOUT_MODE} VIDEO_PRED_WRIST_WINDOW_MODE=${VIDEO_PRED_WRIST_WINDOW_MODE} SHARED_GLOBAL_WRIST_WINDOW_MODE=${SHARED_GLOBAL_WRIST_WINDOW_MODE}"
           CUDA_VISIBLE_DEVICES="${SERVER_CUDA_VISIBLE_DEVICES}" python -m eval_utils.bimanual_policy_server \
             --ckpt-dir "$LOCAL_EVAL_CKPT_ROOT" \
             --ckpt-setting "$CKPT_SETTING" \
@@ -709,6 +710,7 @@ workflow:
             --save-video-pred \
             --video-pred-dir "/workspace/eval_outputs/video_pred/${INFERENCE_MODE}_${RESET_TAG}" \
             --video-pred-rollout-mode "$VIDEO_PRED_ROLLOUT_MODE" \
+            --video-pred-wrist-window-mode "$VIDEO_PRED_WRIST_WINDOW_MODE" \
             "$RESET_ARG" \
             > "$SERVER_LOG" 2>&1 &
           SERVER_PID=$!
@@ -851,6 +853,7 @@ workflow:
                       "write_denoised_context_cache": server_meta.get("write_denoised_context_cache"),
                       "mai_rolling_noise": server_meta.get("mai_rolling_noise"),
                       "video_pred_rollout_mode": server_meta.get("video_pred_rollout_mode"),
+                      "video_pred_wrist_window_mode": server_meta.get("video_pred_wrist_window_mode"),
                       "shared_global_wrist_window_mode": server_meta.get("shared_global_wrist_window_mode"),
                       "replan_every": cfg.get("replan_every"),
                       "gripper_override": cfg.get("gripper_override"),

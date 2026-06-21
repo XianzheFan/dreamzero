@@ -56,6 +56,7 @@ def test_video_quality_summary_names_condition_window_metric(tmp_path):
                 "current_start_frame_after_infer": 5,
                 "cached_until_frame": 5,
                 "shared_global_wrist_window_mode": "history-current-first",
+                "video_pred_wrist_window_mode": "history-chronological",
                 "reset_causal_state_each_infer": True,
                 "video_pred_rollout_mode": "noncausal",
                 "last_video_pred_rollout_mode": "noncausal",
@@ -80,14 +81,19 @@ def test_video_quality_summary_names_condition_window_metric(tmp_path):
     assert payload["summary"]["shared_global_wrist_window_mode_counts"] == {
         "history-current-first": 1
     }
+    assert payload["summary"]["video_pred_wrist_window_mode_counts"] == {
+        "history-chronological": 1
+    }
 
     report = tmp_path / "report.txt"
     write_text_report(payload, report)
     text = report.read_text(encoding="utf-8")
     assert "video_pred_rollout_mode_counts: {'noncausal': 1}" in text
     assert "shared_global_wrist_window_mode_counts" in text
+    assert "video_pred_wrist_window_mode_counts" in text
     assert "rollout=noncausal/noncausal" in text
-    assert "wrist_window=history-current-first" in text
+    assert "action_wrist_window=history-current-first" in text
+    assert "video_wrist_window=history-chronological" in text
     assert "pred_vs_condition_window_mae_rgb_mean" in text
     assert "condition_window_mae=12.5" in text
     assert "latent_frames=0:5" in text
