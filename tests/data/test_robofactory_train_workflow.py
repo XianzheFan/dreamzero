@@ -5,7 +5,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW_PATH = REPO_ROOT / "osmo_workflows/robofactory/train_liftbarrier_shared_global.yaml"
-CODE_CACHE_URI = "swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_gripperconv_evalshape_20260604"
+CODE_CACHE_URI = "swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_gamma_conditioning_20260621"
 
 
 def _task_by_name(workflow, name):
@@ -34,9 +34,9 @@ def test_liftbarrier_train_workflow_defaults_to_cached_code_and_500_episode_data
         workflow = yaml.safe_load(f)
 
     defaults = workflow["default-values"]
-    assert defaults["workflow_name"] == "dz-rf-sg-bingrip-liftbarrier500-xianzhef-20260604"
-    assert defaults["run_name"] == "dz-rf-sg-bingrip-liftbarrier500-xianzhef-20260604"
-    assert defaults["restore_run_name"] == "dz-rf-sg-gripperfix-500data-fullsample-v2-xianzhef-20260603"
+    assert defaults["workflow_name"] == "dz-rf-sg-gammactx-lb500-50k-scratch-xianzhef-20260621"
+    assert defaults["run_name"] == "dz-rf-sg-gammactx-lb500-50k-scratch-xianzhef-20260621"
+    assert defaults["restore_run_name"] == ""
     assert defaults["code_s3_uri"] == CODE_CACHE_URI
     assert defaults["expected_code_commit"] == ""
     assert defaults["data_variant"] == "LiftBarrier-rf-500"
@@ -66,6 +66,7 @@ def test_liftbarrier_train_workflow_verifies_code_cache_and_robofactory_dataset(
     assert 'EXPECTED_CODE_COMMIT="${EXPECTED_CODE_COMMIT:-{{expected_code_commit}}}"' in script
     assert "swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/*" in script
     assert "Refusing non-xianzhef data URI" in script
+    assert '[ -n "$uri" ] || continue' in script
     assert "DreamZero code cache commit" in script
     assert "OSMO_CODE_COMMIT" in script
     assert "code cache is missing OSMO_CODE_COMMIT marker" in script
@@ -172,6 +173,7 @@ def test_liftbarrier_train_workflow_restores_and_uploads_run_and_s3cache_checkpo
     assert "Skipping incomplete restored checkpoint" in script
     assert "No usable complete checkpoint-* directories found under ${src_uri}/." in script
     assert "No previous checkpoints restored; training will start fresh." in script
+    assert "No restore run configured; training will start fresh." in script
     assert '[ -f "${ckpt_dir}/trainer_state.json" ]' in script
 
 
