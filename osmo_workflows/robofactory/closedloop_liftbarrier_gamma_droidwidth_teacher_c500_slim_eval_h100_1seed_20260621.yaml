@@ -69,6 +69,11 @@ workflow:
           JOINT_TARGET_SLEW_RATES="0.35"
           REPLAN_BOUNDARY_BLEND_STEPS="${REPLAN_BOUNDARY_BLEND_STEPS:-0 4}"
           TEMPORAL_ACTION_ENSEMBLE_DECAY="${TEMPORAL_ACTION_ENSEMBLE_DECAY:-0}"
+          DUMP_RGB_TRACE="${DUMP_RGB_TRACE:-1}"
+          DUMP_RGB_TRACE_FLAG=""
+          if [ "${DUMP_RGB_TRACE}" = "1" ]; then
+            DUMP_RGB_TRACE_FLAG="--dump-rgb-trace"
+          fi
           SERVER_CUDA_VISIBLE_DEVICES="4"
           CLIENT_CUDA_VISIBLE_DEVICES="0"
           export ROBOFACTORY_RENDER_BACKEND="${ROBOFACTORY_RENDER_BACKEND:-sapien_cuda:0}"
@@ -841,6 +846,7 @@ workflow:
               --success-mode "$SUCCESS_MODE" \
               --strict-success-min-grasp-count "$STRICT_SUCCESS_MIN_GRASP_COUNT" \
               --dump-actions "${out_dir}/action_dump" \
+              ${DUMP_RGB_TRACE_FLAG} \
               --video-dir "${out_dir}/videos" \
               2>&1 | tee "/tmp/client_${INFERENCE_MODE}_${RESET_TAG}_rp${REPLAN_EVERY}_${GRIPPER_OVERRIDE}_close${close_tag}_jscale_${scale_tag}_clip_${clip_tag}_slew_${slew_tag}_blend_${blend_tag}_ensemble_${ensemble_tag}_${SUCCESS_MODE}.log"
             client_status=${PIPESTATUS[0]}
@@ -889,6 +895,7 @@ workflow:
               --output-json /workspace/eval_outputs/video_pred_quality.json \
               --output-txt /workspace/eval_outputs/video_pred_quality.txt \
               --contact-sheet /workspace/eval_outputs/video_pred_quality_contact.jpg \
+              --future-rgb-trace-dir /workspace/eval_outputs \
               2>&1 | tee /workspace/eval_outputs/video_pred_quality.log || true
           else
             echo "No predicted video mp4 files found for video quality analysis"

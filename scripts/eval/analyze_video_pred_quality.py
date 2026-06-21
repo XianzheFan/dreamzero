@@ -14,6 +14,8 @@ The metrics are intentionally model-agnostic:
 * optional pred-vs-condition-window MAE compares each predicted agent video with
   the matching observed wrist conditioning window when available. This is a
   time-alignment diagnostic, not ground-truth future-video error.
+* optional pred-vs-future MAE compares predicted wrist video with realized
+  closed-loop RGB frames from ``eval_robofactory_ws.py --dump-rgb-trace``.
 """
 
 from __future__ import annotations
@@ -186,6 +188,108 @@ def compare_videos(
     }
 
 
+def _npz_string(value: Any) -> str:
+    arr = np.asarray(value)
+    if arr.shape == ():
+        return str(arr.item())
+    if arr.size == 1:
+        return str(arr.reshape(-1)[0])
+    return ""
+
+
+def _load_future_traces(root: Path | None) -> list[dict[str, Any]]:
+    if root is None:
+        return []
+    root = Path(root)
+    traces: list[dict[str, Any]] = []
+    for path in sorted(root.rglob("episode_*.npz")):
+        try:
+            with np.load(path, allow_pickle=False) as data:
+                required = {"rgb_trace_step", "left_rgb", "right_rgb"}
+                if not required.issubset(set(data.files)):
+                    continue
+                session_id = _npz_string(data["session_id"]) if "session_id" in data else ""
+                trace = {
+                    "path": path,
+                    "session_id": session_id,
+                    "session_id_prefix": session_id[:12] if session_id else None,
+                    "rgb_trace_step": data["rgb_trace_step"].astype(np.int32).copy(),
+                    "left_rgb": data["left_rgb"].astype(np.uint8).copy(),
+                    "right_rgb": data["right_rgb"].astype(np.uint8).copy(),
+                }
+                if "head_rgb" in data:
+                    trace["head_rgb"] = data["head_rgb"].astype(np.uint8).copy()
+                traces.append(trace)
+        except Exception:
+            continue
+    return traces
+
+
+def _select_future_trace(
+    traces: list[dict[str, Any]],
+    session_id_prefix: str | None,
+) -> dict[str, Any] | None:
+    if not traces:
+        return None
+    if session_id_prefix:
+        for trace in traces:
+            if trace.get("session_id_prefix") == session_id_prefix:
+                return trace
+    return traces[0] if len(traces) == 1 else None
+
+
+def _future_view_key(agent_id: int | None) -> str | None:
+    if agent_id == 0:
+        return "left_rgb"
+    if agent_id == 1:
+        return "right_rgb"
+    return None
+
+
+def compare_pred_to_future_trace(
+    pred_frames: np.ndarray,
+    trace: dict[str, Any],
+    *,
+    agent_id: int | None,
+    env_step: int | None,
+    includes_conditioning_frame: bool | None,
+) -> dict[str, Any] | None:
+    """Compare predicted wrist frames with realized future RGB trace frames."""
+    view_key = _future_view_key(agent_id)
+    if view_key is None or env_step is None or view_key not in trace:
+        return None
+    steps = np.asarray(trace["rgb_trace_step"], dtype=np.int32)
+    frames = np.asarray(trace[view_key], dtype=np.uint8)
+    if steps.size == 0 or frames.shape[0] != steps.size:
+        return None
+    step_to_index = {int(step): idx for idx, step in enumerate(steps.tolist())}
+    first_offset = 0 if includes_conditioning_frame else 1
+    pred_frames = np.asarray(pred_frames, dtype=np.uint8)
+    future_frames = []
+    matched_steps = []
+    for pred_idx in range(pred_frames.shape[0]):
+        target_step = int(env_step) + first_offset + pred_idx
+        trace_idx = step_to_index.get(target_step)
+        if trace_idx is None:
+            continue
+        future_frames.append(frames[trace_idx])
+        matched_steps.append(target_step)
+    if not future_frames:
+        return None
+    comparison = compare_videos(pred_frames[: len(future_frames)], np.stack(future_frames))
+    comparison.update(
+        {
+            "trace_path": str(trace.get("path", "")),
+            "view_key": view_key,
+            "first_offset": int(first_offset),
+            "matched_frame_count": int(len(future_frames)),
+            "first_matched_step": int(matched_steps[0]),
+            "last_matched_step": int(matched_steps[-1]),
+        }
+    )
+    return comparison
+
+
 def read_video(path: Path, *, max_frames: int | None = None) -> np.ndarray:
     path = Path(path)
     frames = []
@@ -294,11 +398,15 @@ def _risk_flags(metrics: dict[str, Any]) -> list[str]:
 
 
 def analyze_video_tree(
-    root: Path, *, max_frames: int | None = None
+    root: Path,
+    *,
+    max_frames: int | None = None,
+    future_trace_dir: Path | None = None,
 ) -> dict[str, Any]:
     root = Path(root)
     manifest_rows = _load_manifest_rows(root)
     rows = manifest_rows if manifest_rows else _fallback_video_rows(root)
+    future_traces = _load_future_traces(future_trace_dir)
     videos = []
     failures = []
     for session_dir, entry in rows:
@@ -319,12 +427,30 @@ def analyze_video_tree(
                 if observed_path is not None and observed_path.exists():
                     observed_frames = read_video(observed_path, max_frames=max_frames)
                     comparison = compare_videos(pred_frames, observed_frames)
+                future_trace = _select_future_trace(
+                    future_traces,
+                    entry.get("session_id_prefix"),
+                )
+                future_comparison = (
+                    compare_pred_to_future_trace(
+                        pred_frames,
+                        future_trace,
+                        agent_id=agent_id,
+                        env_step=entry.get("env_step"),
+                        includes_conditioning_frame=entry.get(
+                            "pred_latent_includes_conditioning_frame"
+                        ),
+                    )
+                    if future_trace is not None
+                    else None
+                )
                 row = {
                     "path": pred_path.relative_to(root).as_posix(),
                     "session_dir": session_dir.relative_to(root).as_posix(),
                     "agent_id": agent_id,
                     "infer_idx": entry.get("infer_idx"),
                     "env_step": entry.get("env_step"),
+                    "session_id_prefix": entry.get("session_id_prefix"),
                     "pred_latent_start_frame": entry.get(
                         "pred_latent_start_frame"
                     ),
@@ -365,6 +491,7 @@ def analyze_video_tree(
                     "pred_vs_condition_window": comparison,
                     # Backward-compatible alias for older analysis readers.
                     "pred_vs_observed": comparison,
+                    "pred_vs_future": future_comparison,
                     "risk_flags": _risk_flags(metrics),
                 }
                 videos.append(row)
@@ -449,6 +576,21 @@ def _aggregate(videos: list[dict[str, Any]]) -> dict[str, Any]:
         "pred_vs_observed_mae_rgb_mean": _mean_or_none(
             collect(("pred_vs_condition_window", "mae_rgb"))
         ),
+        "pred_vs_future_mae_rgb_mean": _mean_or_none(
+            collect(("pred_vs_future", "mae_rgb"))
+        ),
+        "pred_vs_future_mae_luma_mean": _mean_or_none(
+            collect(("pred_vs_future", "mae_luma"))
+        ),
+        "pred_vs_future_first_frame_mae_rgb_mean": _mean_or_none(
+            collect(("pred_vs_future", "first_frame_mae_rgb"))
+        ),
+        "pred_vs_future_last_frame_mae_rgb_mean": _mean_or_none(
+            collect(("pred_vs_future", "last_frame_mae_rgb"))
+        ),
+        "pred_vs_future_matched_frame_count_mean": _mean_or_none(
+            collect(("pred_vs_future", "matched_frame_count"))
+        ),
     }
 
 
@@ -480,12 +622,19 @@ def write_text_report(payload: dict[str, Any], path: Path) -> None:
         f"{summary.get('pred_vs_condition_window_mae_rgb_mean')}",
         "  pred_vs_observed_mae_rgb_mean: "
         f"{summary.get('pred_vs_observed_mae_rgb_mean')}  # compatibility alias",
+        "  pred_vs_future_mae_rgb_mean: "
+        f"{summary.get('pred_vs_future_mae_rgb_mean')}",
+        "  pred_vs_future_mae_luma_mean: "
+        f"{summary.get('pred_vs_future_mae_luma_mean')}",
+        "  pred_vs_future_matched_frame_count_mean: "
+        f"{summary.get('pred_vs_future_matched_frame_count_mean')}",
         "",
         "per video:",
     ]
     for row in payload["videos"]:
         metrics = row["metrics"]
         comparison = row.get("pred_vs_condition_window") or {}
+        future = row.get("pred_vs_future") or {}
         lines.append(
             "  "
             f"{row['path']} agent={row.get('agent_id')} env_step={row.get('env_step')} "
@@ -502,6 +651,8 @@ def write_text_report(payload: dict[str, Any], path: Path) -> None:
             f"lap_mean={metrics['laplacian_var']['mean']} "
             f"sat_mean={metrics['saturation_frac']['mean']} "
             f"condition_window_mae={comparison.get('mae_rgb')} "
+            f"future_mae={future.get('mae_rgb')} "
+            f"future_steps={future.get('first_matched_step')}:{future.get('last_matched_step')} "
             f"flags={row['risk_flags']}"
         )
     if payload["failures"]:
@@ -548,9 +699,26 @@ def main() -> None:
     ap.add_argument("--output-txt", default=None)
     ap.add_argument("--contact-sheet", default=None)
     ap.add_argument("--max-frames", type=int, default=None)
+    ap.add_argument(
+        "--future-rgb-trace-dir",
+        default=None,
+        help=(
+            "Optional directory containing eval_robofactory_ws.py "
+            "--dump-rgb-trace episode_*.npz files. When provided, report "
+            "predicted wrist video vs realized future RGB-frame MAE."
+        ),
+    )
     args = ap.parse_args()
 
-    payload = analyze_video_tree(Path(args.root), max_frames=args.max_frames)
+    payload = analyze_video_tree(
+        Path(args.root),
+        max_frames=args.max_frames,
+        future_trace_dir=(
+            Path(args.future_rgb_trace_dir)
+            if args.future_rgb_trace_dir
+            else None
+        ),
+    )
     print(json.dumps(payload["summary"], indent=2, sort_keys=True))
     if args.output_json:
         Path(args.output_json).write_text(

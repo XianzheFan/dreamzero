@@ -3,6 +3,7 @@ import numpy as np
 from scripts.eval.analyze_video_pred_quality import (
     _aggregate,
     _risk_flags,
+    compare_pred_to_future_trace,
     compare_videos,
     video_metrics,
     write_text_report,
@@ -43,6 +44,41 @@ def test_compare_videos_reports_rgb_mae():
     assert metrics["last_frame_mae_rgb"] == 10.0
 
 
+def test_compare_pred_to_future_trace_aligns_after_conditioning_frame():
+    pred = np.zeros((3, 4, 4, 3), dtype=np.uint8)
+    future = np.stack(
+        [
+            np.full((4, 4, 3), 99, dtype=np.uint8),
+            np.full((4, 4, 3), 10, dtype=np.uint8),
+            np.full((4, 4, 3), 20, dtype=np.uint8),
+            np.full((4, 4, 3), 30, dtype=np.uint8),
+        ],
+        axis=0,
+    )
+    trace = {
+        "path": "episode_1000.npz",
+        "rgb_trace_step": np.asarray([10, 11, 12, 13], dtype=np.int32),
+        "left_rgb": future,
+        "right_rgb": future + 1,
+    }
+
+    metrics = compare_pred_to_future_trace(
+        pred,
+        trace,
+        agent_id=0,
+        env_step=10,
+        includes_conditioning_frame=False,
+    )
+
+    assert metrics["matched_frame_count"] == 3
+    assert metrics["first_matched_step"] == 11
+    assert metrics["last_matched_step"] == 13
+    assert metrics["view_key"] == "left_rgb"
+    assert metrics["mae_rgb"] == 20.0
+    assert metrics["first_frame_mae_rgb"] == 10.0
+    assert metrics["last_frame_mae_rgb"] == 30.0
+
+
 def test_video_quality_summary_names_condition_window_metric(tmp_path):
     payload = {
         "root": str(tmp_path),
@@ -68,6 +104,15 @@ def test_video_quality_summary_names_condition_window_metric(tmp_path):
                 },
                 "pred_vs_condition_window": {"mae_rgb": 12.5},
                 "pred_vs_observed": {"mae_rgb": 12.5},
+                "pred_vs_future": {
+                    "mae_rgb": 8.5,
+                    "mae_luma": 7.5,
+                    "first_frame_mae_rgb": 5.0,
+                    "last_frame_mae_rgb": 11.0,
+                    "matched_frame_count": 4,
+                    "first_matched_step": 1,
+                    "last_matched_step": 4,
+                },
                 "risk_flags": [],
             }
         ],
@@ -77,6 +122,9 @@ def test_video_quality_summary_names_condition_window_metric(tmp_path):
 
     assert payload["summary"]["pred_vs_condition_window_mae_rgb_mean"] == 12.5
     assert payload["summary"]["pred_vs_observed_mae_rgb_mean"] == 12.5
+    assert payload["summary"]["pred_vs_future_mae_rgb_mean"] == 8.5
+    assert payload["summary"]["pred_vs_future_mae_luma_mean"] == 7.5
+    assert payload["summary"]["pred_vs_future_matched_frame_count_mean"] == 4.0
     assert payload["summary"]["video_pred_rollout_mode_counts"] == {"noncausal": 1}
     assert payload["summary"]["shared_global_wrist_window_mode_counts"] == {
         "history-current-first": 1
@@ -95,5 +143,8 @@ def test_video_quality_summary_names_condition_window_metric(tmp_path):
     assert "action_wrist_window=history-current-first" in text
     assert "video_wrist_window=history-chronological" in text
     assert "pred_vs_condition_window_mae_rgb_mean" in text
+    assert "pred_vs_future_mae_rgb_mean" in text
     assert "condition_window_mae=12.5" in text
+    assert "future_mae=8.5" in text
+    assert "future_steps=1:4" in text
     assert "latent_frames=0:5" in text

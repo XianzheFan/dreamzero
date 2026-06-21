@@ -46,6 +46,33 @@ def test_eval_renderer_knobs_are_configurable():
     assert "shader_pack=args.shader_pack" in source
 
 
+def test_rgb_trace_dump_is_explicit_opt_in_and_deduped(monkeypatch):
+    mod = _load_eval_module(monkeypatch)
+    source = EVAL_SCRIPT.read_text()
+
+    assert "--dump-rgb-trace" in source
+    assert "dump_rgb_trace=bool(args.dump_rgb_trace)" in source
+
+    dump = {
+        "rgb_trace_step": [],
+        "head_rgb": [],
+        "left_rgb": [],
+        "right_rgb": [],
+    }
+    head = np.zeros((2, 2, 3), dtype=np.uint8)
+    left = np.ones((2, 2, 3), dtype=np.uint8)
+    right = np.full((2, 2, 3), 2, dtype=np.uint8)
+
+    mod.append_rgb_trace(dump, 5, head, left, right)
+    mod.append_rgb_trace(dump, 5, head + 9, left + 9, right + 9)
+    mod.append_rgb_trace(dump, 6, head + 1, left + 1, right + 1)
+
+    assert dump["rgb_trace_step"] == [5, 6]
+    assert len(dump["head_rgb"]) == 2
+    np.testing.assert_array_equal(dump["left_rgb"][0], left)
+    np.testing.assert_array_equal(dump["right_rgb"][1], right + 1)
+
+
 def test_close_after_step_does_not_force_open_before_threshold(monkeypatch):
     mod = _load_eval_module(monkeypatch)
     action = np.zeros(16, dtype=np.float32)

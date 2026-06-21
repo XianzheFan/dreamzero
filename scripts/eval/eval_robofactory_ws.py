@@ -269,6 +269,25 @@ def extract_obs(obs):
     return head, left, right, qpos
 
 
+def append_rgb_trace(
+    dump: dict | None,
+    step: int,
+    head: np.ndarray,
+    left: np.ndarray,
+    right: np.ndarray,
+) -> None:
+    """Optionally record observed RGB frames for future-video diagnostics."""
+    if dump is None or "rgb_trace_step" not in dump:
+        return
+    step = int(step)
+    if dump["rgb_trace_step"] and int(dump["rgb_trace_step"][-1]) == step:
+        return
+    dump["rgb_trace_step"].append(step)
+    dump["head_rgb"].append(np.asarray(head, dtype=np.uint8).copy())
+    dump["left_rgb"].append(np.asarray(left, dtype=np.uint8).copy())
+    dump["right_rgb"].append(np.asarray(right, dtype=np.uint8).copy())
+
+
 def integrate_action(
     action16: np.ndarray,
     qpos16: np.ndarray,
@@ -633,6 +652,7 @@ def run_episode(
     success_mode: str,
     strict_success_min_grasp_count: int,
     dump: dict | None = None,
+    dump_rgb_trace: bool = False,
 ):
     # RoboFactory's RFSceneBuilder samples object poses with global np.random
     # rather than ManiSkill's episode RNG. Seed it explicitly so seed labels
@@ -642,6 +662,8 @@ def run_episode(
     if dump is not None:
         dump["env_trace"].append(collect_env_trace(env, 0, None, None))
     session_id = uuid.uuid4().hex
+    if dump is not None:
+        dump["session_id"] = session_id
     ws.send(
         msgpack.packb(
             {"endpoint": "reset", "session_id": session_id, "prompt": prompt},
@@ -658,6 +680,8 @@ def run_episode(
     )
     while steps < max_steps:
         head, left, right, qpos = extract_obs(raw_obs)
+        if dump_rgb_trace:
+            append_rgb_trace(dump, steps, head, left, right)
         chunk_start_step = int(steps)
         ws.send(
             msgpack.packb(
@@ -772,6 +796,15 @@ def run_episode(
                 dump["exec_action_pre_slew"].append(pre_slew_abs16.copy())
                 dump["exec_action"].append(abs16.copy())
                 dump["env_trace"].append(collect_env_trace(env, steps, abs16, info))
+                if dump_rgb_trace:
+                    post_head, post_left, post_right, _ = extract_obs(raw_obs)
+                    append_rgb_trace(
+                        dump,
+                        steps,
+                        post_head,
+                        post_left,
+                        post_right,
+                    )
             if episode_success(
                 env,
                 info,
@@ -1009,6 +1042,15 @@ def main():
         "Gripper dims are 7 (left) and 15 (right): >0=open, <0=close.",
     )
     ap.add_argument(
+        "--dump-rgb-trace",
+        action="store_true",
+        help=(
+            "When --dump-actions is set, also store observed head/left/right RGB "
+            "frames for every env step. This is large and intended only for "
+            "future-video quality diagnostics."
+        ),
+    )
+    ap.add_argument(
         "--success-mode",
         choices=("env", "default", "strict-lift"),
         default="env",
@@ -1218,6 +1260,7 @@ def main():
         payload = {
             "seed": seed,
             "success": bool(success),
+            "session_id": np.asarray(dump.get("session_id", ""), dtype="<U64"),
             "infer_step": np.asarray(dump["infer_step"], dtype=np.int32),
             "pred_chunk": np.stack(dump["pred_chunk"]),       # denorm [n_infer, chunk_len, 16]
             "obs_qpos": np.stack(dump["obs_qpos"]),           # [n_infer, 16]
@@ -1232,6 +1275,14 @@ def main():
             payload["action_norm_raw"] = np.stack(dump["action_norm_raw"])
         if dump.get("action_norm_clipped"):
             payload["action_norm_clipped"] = np.stack(dump["action_norm_clipped"])
+        if dump.get("rgb_trace_step"):
+            payload["rgb_trace_step"] = np.asarray(
+                dump["rgb_trace_step"],
+                dtype=np.int32,
+            )
+            payload["head_rgb"] = np.stack(dump["head_rgb"])
+            payload["left_rgb"] = np.stack(dump["left_rgb"])
+            payload["right_rgb"] = np.stack(dump["right_rgb"])
         np.savez_compressed(path, **payload)
 
     for i in range(args.num_episodes):
@@ -1253,6 +1304,15 @@ def main():
             if args.dump_actions
             else None
         )
+        if dump is not None and args.dump_rgb_trace:
+            dump.update(
+                {
+                    "rgb_trace_step": [],
+                    "head_rgb": [],
+                    "left_rgb": [],
+                    "right_rgb": [],
+                }
+            )
         try:
             success, steps = run_episode(
                 env, ws, seed, args.prompt, args.replan_every, args.max_steps,
@@ -1276,6 +1336,7 @@ def main():
                 success_mode=args.success_mode,
                 strict_success_min_grasp_count=args.strict_success_min_grasp_count,
                 dump=dump,
+                dump_rgb_trace=bool(args.dump_rgb_trace),
             )
         except Exception as e:
             print(f"seed={seed} ERROR: {type(e).__name__}: {e}", flush=True)

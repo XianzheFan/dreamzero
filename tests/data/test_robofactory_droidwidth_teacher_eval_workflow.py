@@ -136,6 +136,10 @@ def test_droidwidth_teacher_h100_eval_targets_h100_pool_resources():
     assert 'ROBOFACTORY_ENABLE_SHADOW="${ROBOFACTORY_ENABLE_SHADOW:-0}"' in script
     assert 'ROBOFACTORY_SHADER_PACK="${ROBOFACTORY_SHADER_PACK:-default}"' in script
     assert 'ROBOFACTORY_RENDER_PREFLIGHT="${ROBOFACTORY_RENDER_PREFLIGHT:-1}"' in script
+    assert 'DUMP_RGB_TRACE="${DUMP_RGB_TRACE:-1}"' in script
+    assert 'DUMP_RGB_TRACE_FLAG="--dump-rgb-trace"' in script
+    assert "--dump-rgb-trace" in script
+    assert "--future-rgb-trace-dir /workspace/eval_outputs" in script
     assert "Preflighting RoboFactory renderer before loading policy server" in script
     assert "ROBOFACTORY_RENDER_PREFLIGHT_OK" in script
     assert "render_backend=${ROBOFACTORY_RENDER_BACKEND}" in script
