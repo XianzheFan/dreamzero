@@ -83,7 +83,9 @@ The H100 droidwidth eval template saves both action-path and noncausal
 diagnostic predicted videos by default (`VIDEO_PRED_ROLLOUT_MODES="action
 noncausal"`). Override `VIDEO_PRED_ROLLOUT_MODE=action` or
 `VIDEO_PRED_ROLLOUT_MODES=action` when you only want the control-path video
-diagnostic and need to cut runtime.
+diagnostic and need to cut runtime. The video-quality analyzer keeps these
+rollout modes separated in `by_video_pred_rollout_mode`, and the checkpoint
+grid summary exposes action/noncausal future-MAE columns directly.
 
 After downloading eval artifacts, summarize the checkpoint grid:
 

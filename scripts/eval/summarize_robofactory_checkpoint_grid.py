@@ -131,6 +131,16 @@ def _video_summary(root: Path) -> dict[str, Any]:
     return summary
 
 
+def _video_mode_metric(video_summary: dict[str, Any], mode: str, key: str) -> Any:
+    by_mode = video_summary.get("by_video_pred_rollout_mode")
+    if not isinstance(by_mode, dict):
+        return None
+    mode_summary = by_mode.get(mode)
+    if not isinstance(mode_summary, dict):
+        return None
+    return mode_summary.get(key)
+
+
 def _sweep_rows(root: Path) -> list[dict[str, Any]]:
     path = root / "scale_sweep_summary.json"
     if not path.is_file():
@@ -263,6 +273,46 @@ def summarize_eval_root(root: Path) -> dict[str, Any]:
         "pred_vs_future_best_alignment_improvement_rgb_mean": video.get(
             "pred_vs_future_best_alignment_improvement_rgb_mean"
         ),
+        "action_pred_vs_future_mae_rgb_mean": _video_mode_metric(
+            video,
+            "action",
+            "pred_vs_future_mae_rgb_mean",
+        ),
+        "noncausal_pred_vs_future_mae_rgb_mean": _video_mode_metric(
+            video,
+            "noncausal",
+            "pred_vs_future_mae_rgb_mean",
+        ),
+        "action_pred_vs_future_best_alignment_mae_rgb_mean": _video_mode_metric(
+            video,
+            "action",
+            "pred_vs_future_best_alignment_mae_rgb_mean",
+        ),
+        "noncausal_pred_vs_future_best_alignment_mae_rgb_mean": _video_mode_metric(
+            video,
+            "noncausal",
+            "pred_vs_future_best_alignment_mae_rgb_mean",
+        ),
+        "action_temporal_absdiff_mean": _video_mode_metric(
+            video,
+            "action",
+            "temporal_absdiff_mean",
+        ),
+        "noncausal_temporal_absdiff_mean": _video_mode_metric(
+            video,
+            "noncausal",
+            "temporal_absdiff_mean",
+        ),
+        "action_laplacian_var_mean": _video_mode_metric(
+            video,
+            "action",
+            "laplacian_var_mean",
+        ),
+        "noncausal_laplacian_var_mean": _video_mode_metric(
+            video,
+            "noncausal",
+            "laplacian_var_mean",
+        ),
         "temporal_absdiff_mean": video.get("temporal_absdiff_mean"),
         "temporal_freeze_frac_mean": video.get("temporal_freeze_frac_mean"),
         "laplacian_var_mean": video.get("laplacian_var_mean"),
@@ -328,7 +378,13 @@ TABLE_COLUMNS = [
     ("future_best_off", "pred_vs_future_best_alignment_offset_counts"),
     ("future_best_mae", "pred_vs_future_best_alignment_mae_rgb_mean"),
     ("future_best_gain", "pred_vs_future_best_alignment_improvement_rgb_mean"),
+    ("act_future", "action_pred_vs_future_mae_rgb_mean"),
+    ("noncausal_future", "noncausal_pred_vs_future_mae_rgb_mean"),
+    ("act_best", "action_pred_vs_future_best_alignment_mae_rgb_mean"),
+    ("noncausal_best", "noncausal_pred_vs_future_best_alignment_mae_rgb_mean"),
     ("tempdiff", "temporal_absdiff_mean"),
+    ("act_temp", "action_temporal_absdiff_mean"),
+    ("noncausal_temp", "noncausal_temporal_absdiff_mean"),
 ]
 
 

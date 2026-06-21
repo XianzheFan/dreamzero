@@ -309,6 +309,9 @@ def test_video_quality_summary_names_condition_window_metric(tmp_path):
     assert "pred_vs_future_mae_rgb_mean" in text
     assert "pred_vs_future_mae_rgb_by_frame_mean" in text
     assert "pred_vs_future_best_alignment_offset_counts" in text
+    assert "by video_pred_rollout_mode:" in text
+    assert "  noncausal: videos=1" in text
+    assert "    pred_vs_future_mae_rgb_mean: 8.5" in text
     assert "condition_window_mae=12.5" in text
     assert "conditioning_t0_mae=4.5" in text
     assert "conditioning_t0_obs_idx=0" in text
@@ -319,3 +322,56 @@ def test_video_quality_summary_names_condition_window_metric(tmp_path):
     assert "future_delta=6.0" in text
     assert "future_steps=1:4" in text
     assert "latent_frames=0:5" in text
+
+
+def test_video_quality_summary_groups_metrics_by_rollout_mode():
+    def row(mode, future_mae, best_mae, temporal_mean, lap_mean):
+        return {
+            "video_pred_rollout_mode": mode,
+            "last_video_pred_rollout_mode": mode,
+            "pred_latent_includes_conditioning_frame": False,
+            "shared_global_wrist_window_mode": "history-current-first",
+            "video_pred_wrist_window_mode": "action",
+            "reset_causal_state_each_infer": True,
+            "metrics": {
+                "temporal_absdiff": {"mean": temporal_mean, "p95": temporal_mean + 1.0},
+                "temporal_freeze_frac": 0.0,
+                "laplacian_var": {"mean": lap_mean},
+                "saturation_frac": {"mean": 0.0},
+            },
+            "pred_vs_future": {
+                "mae_rgb": future_mae,
+                "mae_luma": future_mae + 1.0,
+                "first_frame_mae_rgb": future_mae - 1.0,
+                "last_frame_mae_rgb": future_mae + 1.0,
+                "mae_rgb_first_to_last_delta": 2.0,
+                "matched_frame_count": 3,
+                "best_alignment_offset": 0,
+                "best_alignment_mae_rgb": best_mae,
+                "best_alignment_improvement_rgb": future_mae - best_mae,
+            },
+            "risk_flags": [],
+        }
+
+    summary = _aggregate(
+        [
+            row("action", 30.0, 25.0, 12.0, 20.0),
+            row("action", 10.0, 8.0, 8.0, 40.0),
+            row("noncausal", 6.0, 4.0, 3.0, 70.0),
+        ]
+    )
+
+    assert np.isclose(
+        summary["pred_vs_future_mae_rgb_mean"],
+        (30.0 + 10.0 + 6.0) / 3.0,
+    )
+    by_mode = summary["by_video_pred_rollout_mode"]
+    assert by_mode["action"]["video_count"] == 2
+    assert by_mode["action"]["pred_vs_future_mae_rgb_mean"] == 20.0
+    assert by_mode["action"]["pred_vs_future_best_alignment_mae_rgb_mean"] == 16.5
+    assert by_mode["action"]["temporal_absdiff_mean"] == 10.0
+    assert by_mode["action"]["laplacian_var_mean"] == 30.0
+    assert by_mode["noncausal"]["video_count"] == 1
+    assert by_mode["noncausal"]["pred_vs_future_mae_rgb_mean"] == 6.0
+    assert by_mode["noncausal"]["pred_vs_future_best_alignment_mae_rgb_mean"] == 4.0
+    assert "by_video_pred_rollout_mode" not in by_mode["action"]

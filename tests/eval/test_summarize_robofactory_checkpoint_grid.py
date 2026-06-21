@@ -116,6 +116,22 @@ def _make_eval(
                 "pred_vs_future_best_alignment_offset_abs_mean": 1.0,
                 "pred_vs_future_best_alignment_mae_rgb_mean": 10.0,
                 "pred_vs_future_best_alignment_improvement_rgb_mean": 4.0,
+                "by_video_pred_rollout_mode": {
+                    "action": {
+                        "video_count": 4,
+                        "pred_vs_future_mae_rgb_mean": 30.0,
+                        "pred_vs_future_best_alignment_mae_rgb_mean": 18.0,
+                        "temporal_absdiff_mean": 22.0,
+                        "laplacian_var_mean": 35.0,
+                    },
+                    "noncausal": {
+                        "video_count": 4,
+                        "pred_vs_future_mae_rgb_mean": 10.0,
+                        "pred_vs_future_best_alignment_mae_rgb_mean": 6.0,
+                        "temporal_absdiff_mean": 14.0,
+                        "laplacian_var_mean": 45.0,
+                    },
+                },
                 "temporal_absdiff_mean": 18.0,
                 "temporal_freeze_frac_mean": 0.0,
                 "laplacian_var_mean": 40.0,
@@ -167,6 +183,14 @@ def test_summarize_roots_orders_by_checkpoint_and_selects_best_setting(tmp_path)
     assert rows[0]["pred_vs_future_best_alignment_offset_counts"] == {"1": 2}
     assert rows[0]["pred_vs_future_best_alignment_mae_rgb_mean"] == 10.0
     assert rows[0]["pred_vs_future_best_alignment_improvement_rgb_mean"] == 4.0
+    assert rows[0]["action_pred_vs_future_mae_rgb_mean"] == 30.0
+    assert rows[0]["noncausal_pred_vs_future_mae_rgb_mean"] == 10.0
+    assert rows[0]["action_pred_vs_future_best_alignment_mae_rgb_mean"] == 18.0
+    assert rows[0]["noncausal_pred_vs_future_best_alignment_mae_rgb_mean"] == 6.0
+    assert rows[0]["action_temporal_absdiff_mean"] == 22.0
+    assert rows[0]["noncausal_temporal_absdiff_mean"] == 14.0
+    assert rows[0]["action_laplacian_var_mean"] == 35.0
+    assert rows[0]["noncausal_laplacian_var_mean"] == 45.0
     assert rows[1]["success_count"] == 1
     assert rows[1]["raw_joint_saturation_frac_left"] == 0.21000000000000002
     assert rows[1]["pred_vs_future_mae_rgb_first_to_last_delta_mean"] == 3.0

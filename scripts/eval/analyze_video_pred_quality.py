@@ -646,7 +646,26 @@ def analyze_video_tree(
     }
 
 
-def _aggregate(videos: list[dict[str, Any]]) -> dict[str, Any]:
+def _aggregate_by(
+    videos: list[dict[str, Any]],
+    key: str,
+) -> dict[str, dict[str, Any]]:
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for row in videos:
+        value = row.get(key)
+        label = "missing" if value is None else str(value)
+        groups.setdefault(label, []).append(row)
+    return {
+        label: _aggregate(rows, include_breakdowns=False)
+        for label, rows in sorted(groups.items())
+    }
+
+
+def _aggregate(
+    videos: list[dict[str, Any]],
+    *,
+    include_breakdowns: bool = True,
+) -> dict[str, Any]:
     if not videos:
         return {"video_count": 0}
 
@@ -718,7 +737,7 @@ def _aggregate(videos: list[dict[str, Any]]) -> dict[str, Any]:
     for row in videos:
         for flag in row["risk_flags"]:
             flag_counts[flag] = flag_counts.get(flag, 0) + 1
-    return {
+    summary = {
         "video_count": len(videos),
         "videos_with_flags": sum(1 for row in videos if row["risk_flags"]),
         "flag_counts": flag_counts,
@@ -805,6 +824,16 @@ def _aggregate(videos: list[dict[str, Any]]) -> dict[str, Any]:
             collect(("pred_vs_future", "best_alignment_improvement_rgb"))
         ),
     }
+    if include_breakdowns:
+        summary["by_video_pred_rollout_mode"] = _aggregate_by(
+            videos,
+            "video_pred_rollout_mode",
+        )
+        summary["by_last_video_pred_rollout_mode"] = _aggregate_by(
+            videos,
+            "last_video_pred_rollout_mode",
+        )
+    return summary
 
 
 def write_text_report(payload: dict[str, Any], path: Path) -> None:
@@ -861,9 +890,31 @@ def write_text_report(payload: dict[str, Any], path: Path) -> None:
         f"{summary.get('pred_vs_future_best_alignment_mae_rgb_mean')}",
         "  pred_vs_future_best_alignment_improvement_rgb_mean: "
         f"{summary.get('pred_vs_future_best_alignment_improvement_rgb_mean')}",
-        "",
-        "per video:",
     ]
+    by_rollout = summary.get("by_video_pred_rollout_mode")
+    if isinstance(by_rollout, dict) and by_rollout:
+        lines.extend(["", "by video_pred_rollout_mode:"])
+        for mode, mode_summary in sorted(by_rollout.items()):
+            if not isinstance(mode_summary, dict):
+                continue
+            lines.extend(
+                [
+                    f"  {mode}: videos={mode_summary.get('video_count', 0)}",
+                    "    pred_vs_future_mae_rgb_mean: "
+                    f"{mode_summary.get('pred_vs_future_mae_rgb_mean')}",
+                    "    pred_vs_future_best_alignment_mae_rgb_mean: "
+                    f"{mode_summary.get('pred_vs_future_best_alignment_mae_rgb_mean')}",
+                    "    pred_vs_future_mae_rgb_first_to_last_delta_mean: "
+                    f"{mode_summary.get('pred_vs_future_mae_rgb_first_to_last_delta_mean')}",
+                    "    temporal_absdiff_mean: "
+                    f"{mode_summary.get('temporal_absdiff_mean')}",
+                    "    temporal_freeze_frac_mean: "
+                    f"{mode_summary.get('temporal_freeze_frac_mean')}",
+                    "    laplacian_var_mean: "
+                    f"{mode_summary.get('laplacian_var_mean')}",
+                ]
+            )
+    lines.extend(["", "per video:"])
     for row in payload["videos"]:
         metrics = row["metrics"]
         comparison = row.get("pred_vs_condition_window") or {}
