@@ -6,8 +6,8 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW_PATH = REPO_ROOT / "osmo_workflows/robofactory/train_liftbarrier_shared_global.yaml"
 STAGED_WORKFLOW_PATH = REPO_ROOT / "osmo_workflows/robofactory/train_liftbarrier_gamma_staged.yaml"
-CODE_CACHE_URI = "swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_gamma_lossbalance_20260621"
-EXPECTED_CODE_COMMIT = "81a4a5df79aa5dcdd5ae50ef02a89f219a740ee8"
+CODE_CACHE_URI = "swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_gamma_ropefix_flat_58a9fef_20260621"
+EXPECTED_CODE_COMMIT = "58a9fef94800e2d13fde0e23a592bc643e253ed8"
 
 
 def _task_by_name(workflow, name):
