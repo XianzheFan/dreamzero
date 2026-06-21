@@ -107,10 +107,83 @@ workflow:
             fi
           }
 
+          write_eval_manifest() {
+            local status="${1:-unknown}"
+            mkdir -p /workspace/eval_outputs
+            env \
+              ARTIFACT_SCHEMA="robofactory_droidwidth_eval_manifest_v1" \
+              EVAL_STATUS="$status" \
+              RUN_NAME="$RUN_NAME" \
+              CKPT_SETTING="$CKPT_SETTING" \
+              LOCAL_EVAL_CKPT_ROOT="$LOCAL_EVAL_CKPT_ROOT" \
+              DREAMZERO_GIT_REF="$DREAMZERO_GIT_REF" \
+              DREAMZERO_GIT_COMMIT="${DREAMZERO_GIT_COMMIT:-}" \
+              ROBOFACTORY_GIT_COMMIT="$ROBOFACTORY_GIT_COMMIT" \
+              CKPT_S3_BASE="$CKPT_S3_BASE" \
+              CKPT_AMLFS_BASE="$CKPT_AMLFS_BASE" \
+              RUN_S3_ROOT="$RUN_S3_ROOT" \
+              VIDEO_PRED_ROLLOUT_MODE="$VIDEO_PRED_ROLLOUT_MODE" \
+              VIDEO_PRED_WRIST_WINDOW_MODE="$VIDEO_PRED_WRIST_WINDOW_MODE" \
+              SHARED_GLOBAL_WRIST_WINDOW_MODE="$SHARED_GLOBAL_WRIST_WINDOW_MODE" \
+              REPLAN_EVERYS="$REPLAN_EVERYS" \
+              TEMPORAL_ACTION_ENSEMBLE_DECAY="$TEMPORAL_ACTION_ENSEMBLE_DECAY" \
+              JOINT_DELTA_SCALES="$JOINT_DELTA_SCALES" \
+              JOINT_DELTA_OUTPUT_CLIP="$JOINT_DELTA_OUTPUT_CLIP" \
+              JOINT_DELTA_SCALE_REFERENCE="$JOINT_DELTA_SCALE_REFERENCE" \
+              JOINT_TARGET_SLEW_RATES="$JOINT_TARGET_SLEW_RATES" \
+              REPLAN_BOUNDARY_BLEND_STEPS="$REPLAN_BOUNDARY_BLEND_STEPS" \
+              MODEL_ONLY_DIAG="$MODEL_ONLY_DIAG" \
+              SUCCESS_MODE="$SUCCESS_MODE" \
+              NUM_EPISODES="$NUM_EPISODES" \
+              SEED_START="$SEED_START" \
+              MAX_STEPS="$MAX_STEPS" \
+              python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          fields = [
+              "ARTIFACT_SCHEMA",
+              "EVAL_STATUS",
+              "RUN_NAME",
+              "CKPT_SETTING",
+              "LOCAL_EVAL_CKPT_ROOT",
+              "DREAMZERO_GIT_REF",
+              "DREAMZERO_GIT_COMMIT",
+              "ROBOFACTORY_GIT_COMMIT",
+              "CKPT_S3_BASE",
+              "CKPT_AMLFS_BASE",
+              "RUN_S3_ROOT",
+              "VIDEO_PRED_ROLLOUT_MODE",
+              "VIDEO_PRED_WRIST_WINDOW_MODE",
+              "SHARED_GLOBAL_WRIST_WINDOW_MODE",
+              "REPLAN_EVERYS",
+              "TEMPORAL_ACTION_ENSEMBLE_DECAY",
+              "JOINT_DELTA_SCALES",
+              "JOINT_DELTA_OUTPUT_CLIP",
+              "JOINT_DELTA_SCALE_REFERENCE",
+              "JOINT_TARGET_SLEW_RATES",
+              "REPLAN_BOUNDARY_BLEND_STEPS",
+              "MODEL_ONLY_DIAG",
+              "SUCCESS_MODE",
+              "NUM_EPISODES",
+              "SEED_START",
+              "MAX_STEPS",
+          ]
+          manifest = {field.lower(): os.environ.get(field, "") for field in fields}
+          out = Path("/workspace/eval_outputs/checkpoint_eval_manifest.json")
+          out.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+          txt = Path("/workspace/eval_outputs/checkpoint_eval_manifest.txt")
+          txt.write_text("".join(f"{key}={manifest[key]}\n" for key in sorted(manifest)))
+          print(f"Wrote eval manifest to {out}")
+          PY
+          }
+
           upload_artifacts() {
             local status="${1:-$?}"
             set +e
             mkdir -p /workspace/eval_outputs
+            write_eval_manifest "$status" || true
             cp -f /tmp/closedloop_gamma_droidwidth_teacher_c500_slim_eval_1seed_gb200.log /workspace/eval_outputs/closedloop_gamma_droidwidth_teacher_c500_slim_eval_1seed_gb200.log
             if [ -f /tmp/server.log ]; then cp -f /tmp/server.log /workspace/eval_outputs/server.log; fi
             if [ -f /tmp/client.log ]; then cp -f /tmp/client.log /workspace/eval_outputs/client.log; fi

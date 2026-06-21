@@ -103,6 +103,21 @@ def test_droidwidth_teacher_eval_publishes_artifacts_to_osmo_output():
     assert 'cp -a /workspace/eval_outputs/. "${OSMO_OUTPUT_DIR}/eval_outputs/"' in script
 
 
+def test_droidwidth_teacher_eval_writes_checkpoint_manifest():
+    _, _, script = _workflow_and_script()
+
+    assert "write_eval_manifest" in script
+    assert "robofactory_droidwidth_eval_manifest_v1" in script
+    assert "checkpoint_eval_manifest.json" in script
+    assert "checkpoint_eval_manifest.txt" in script
+    assert "DREAMZERO_GIT_COMMIT" in script
+    assert "CKPT_SETTING" in script
+    assert "VIDEO_PRED_ROLLOUT_MODE" in script
+    assert "REPLAN_EVERYS" in script
+    assert "TEMPORAL_ACTION_ENSEMBLE_DECAY" in script
+    assert 'write_eval_manifest "$status" || true' in script
+
+
 def test_droidwidth_teacher_eval_embedded_script_is_valid_bash():
     _, _, script = _workflow_and_script()
 
@@ -154,6 +169,11 @@ def test_droidwidth_teacher_h100_eval_targets_h100_pool_resources():
     )
     assert 'TEMPORAL_ACTION_ENSEMBLE_DECAYS="${TEMPORAL_ACTION_ENSEMBLE_DECAY}"' in script
     assert "for TEMPORAL_ACTION_ENSEMBLE_DECAY in ${TEMPORAL_ACTION_ENSEMBLE_DECAYS}; do" in script
+    assert "write_eval_manifest" in script
+    assert "checkpoint_eval_manifest.json" in script
+    assert "DREAMZERO_GIT_COMMIT" in script
+    assert "TEMPORAL_ACTION_ENSEMBLE_DECAYS" in script
+    assert 'write_eval_manifest "$status" || true' in script
     assert "Preflighting RoboFactory renderer before loading policy server" in script
     assert "ROBOFACTORY_RENDER_PREFLIGHT_OK" in script
     assert "render_backend=${ROBOFACTORY_RENDER_BACKEND}" in script
