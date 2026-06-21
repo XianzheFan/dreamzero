@@ -122,6 +122,7 @@ def test_droidwidth_teacher_h100_eval_targets_h100_pool_resources():
     )
     assert defaults["ckpt_setting"] == "checkpoint-500"
     assert defaults["local_eval_ckpt_root"] == "gamma_droidwidth_teacher_50kfrom0_c500_slim_eval_h100_1seed1000"
+    assert defaults["temporal_action_ensemble_decays"] == "0"
     assert task["image"].startswith("nvcr.io/nvidian/groot-ci-base-eval:")
     assert 'RUN_NAME="{{run_name}}"' in script
     assert (
@@ -140,6 +141,12 @@ def test_droidwidth_teacher_h100_eval_targets_h100_pool_resources():
     assert 'DUMP_RGB_TRACE_FLAG="--dump-rgb-trace"' in script
     assert "--dump-rgb-trace" in script
     assert "--future-rgb-trace-dir /workspace/eval_outputs" in script
+    assert (
+        'TEMPORAL_ACTION_ENSEMBLE_DECAYS="${TEMPORAL_ACTION_ENSEMBLE_DECAYS:-{{temporal_action_ensemble_decays}}}"'
+        in script
+    )
+    assert 'TEMPORAL_ACTION_ENSEMBLE_DECAYS="${TEMPORAL_ACTION_ENSEMBLE_DECAY}"' in script
+    assert "for TEMPORAL_ACTION_ENSEMBLE_DECAY in ${TEMPORAL_ACTION_ENSEMBLE_DECAYS}; do" in script
     assert "Preflighting RoboFactory renderer before loading policy server" in script
     assert "ROBOFACTORY_RENDER_PREFLIGHT_OK" in script
     assert "render_backend=${ROBOFACTORY_RENDER_BACKEND}" in script

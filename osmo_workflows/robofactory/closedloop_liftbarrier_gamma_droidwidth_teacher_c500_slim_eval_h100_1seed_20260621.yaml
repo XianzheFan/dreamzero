@@ -68,7 +68,10 @@ workflow:
           JOINT_DELTA_SCALE_REFERENCE="observed"
           JOINT_TARGET_SLEW_RATES="0.35"
           REPLAN_BOUNDARY_BLEND_STEPS="${REPLAN_BOUNDARY_BLEND_STEPS:-0 4}"
-          TEMPORAL_ACTION_ENSEMBLE_DECAY="${TEMPORAL_ACTION_ENSEMBLE_DECAY:-0}"
+          TEMPORAL_ACTION_ENSEMBLE_DECAYS="${TEMPORAL_ACTION_ENSEMBLE_DECAYS:-{{temporal_action_ensemble_decays}}}"
+          if [ -n "${TEMPORAL_ACTION_ENSEMBLE_DECAY:-}" ]; then
+            TEMPORAL_ACTION_ENSEMBLE_DECAYS="${TEMPORAL_ACTION_ENSEMBLE_DECAY}"
+          fi
           DUMP_RGB_TRACE="${DUMP_RGB_TRACE:-1}"
           DUMP_RGB_TRACE_FLAG=""
           if [ "${DUMP_RGB_TRACE}" = "1" ]; then
@@ -809,6 +812,7 @@ workflow:
             for JOINT_DELTA_SCALE in ${JOINT_DELTA_SCALES}; do
             for JOINT_TARGET_SLEW_RATE in ${JOINT_TARGET_SLEW_RATES}; do
             for REPLAN_BOUNDARY_BLEND_STEP in ${REPLAN_BOUNDARY_BLEND_STEPS}; do
+            for TEMPORAL_ACTION_ENSEMBLE_DECAY in ${TEMPORAL_ACTION_ENSEMBLE_DECAYS}; do
             scale_tag="$(echo "${JOINT_DELTA_SCALE}" | tr . p)"
             slew_tag="$(echo "${JOINT_TARGET_SLEW_RATE}" | tr . p)"
             clip_tag="$(echo "${JOINT_DELTA_OUTPUT_CLIP}" | tr . p)"
@@ -869,6 +873,7 @@ workflow:
             else
               echo "No action dump episode files found for replan=${REPLAN_EVERY} scale=${JOINT_DELTA_SCALE} slew_rate=${JOINT_TARGET_SLEW_RATE} blend_steps=${REPLAN_BOUNDARY_BLEND_STEP}"
             fi
+            done
             done
             done
             done
@@ -1008,3 +1013,4 @@ default-values:
   run_name: dz-rf-sg-gamma-dwteacher-50kfrom0-c500-slim-eval-h100-1seed1000-xz-20260621
   ckpt_setting: checkpoint-500
   local_eval_ckpt_root: gamma_droidwidth_teacher_50kfrom0_c500_slim_eval_h100_1seed1000
+  temporal_action_ensemble_decays: "0"
