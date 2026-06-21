@@ -58,7 +58,7 @@ workflow:
           SHARED_GLOBAL_WRIST_WINDOW_MODE="${SHARED_GLOBAL_WRIST_WINDOW_MODE:-history-current-first}"
           export MAI_WRITE_DENOISED_CONTEXT_CACHE="${MAI_WRITE_DENOISED_CONTEXT_CACHE:-1}"
           export MAI_ROLLING_NOISE="${MAI_ROLLING_NOISE:-1}"
-          REPLAN_EVERYS="${REPLAN_EVERYS:-24 12}"
+          REPLAN_EVERYS="${REPLAN_EVERYS:-{{replan_everys}}}"
           PROMPT="the two robot arms lift the steel barrier together off the table"
           GRIPPER_BINARIZE_THRESHOLD="-0.2"
           GRIPPER_OVERRIDE="open-then-close-after-step"
@@ -66,12 +66,12 @@ workflow:
           GRIPPER_POLICY_CLOSE_MIN_STEP=0
           GRIPPER_CLOSE_AFTER_STEP=52
           GRIPPER_CLOSE_PAIRS="52:52"
-          JOINT_DELTA_SCALES="1.0 2.0"
+          JOINT_DELTA_SCALES="${JOINT_DELTA_SCALES:-{{joint_delta_scales}}}"
           JOINT_DELTA_OUTPUT_CLIP="0.35"
           JOINT_DELTA_SCALE_REFERENCE="observed"
           JOINT_TARGET_SLEW_RATES="0.35"
-          JOINT_TARGET_ACCEL_LIMITS="${JOINT_TARGET_ACCEL_LIMITS:-0 0.08}"
-          REPLAN_BOUNDARY_BLEND_STEPS="${REPLAN_BOUNDARY_BLEND_STEPS:-0 4}"
+          JOINT_TARGET_ACCEL_LIMITS="${JOINT_TARGET_ACCEL_LIMITS:-{{joint_target_accel_limits}}}"
+          REPLAN_BOUNDARY_BLEND_STEPS="${REPLAN_BOUNDARY_BLEND_STEPS:-{{replan_boundary_blend_steps}}}"
           TEMPORAL_ACTION_ENSEMBLE_DECAYS="${TEMPORAL_ACTION_ENSEMBLE_DECAYS:-{{temporal_action_ensemble_decays}}}"
           if [ -n "${TEMPORAL_ACTION_ENSEMBLE_DECAY:-}" ]; then
             TEMPORAL_ACTION_ENSEMBLE_DECAYS="${TEMPORAL_ACTION_ENSEMBLE_DECAY}"
@@ -1187,4 +1187,8 @@ default-values:
   run_name: dz-rf-sg-gamma-dwteacher-50kfrom0-c2000-slim-eval-h100-1seed1000-xz-20260621
   ckpt_setting: checkpoint-2000
   local_eval_ckpt_root: gamma_droidwidth_teacher_50kfrom0_c2000_slim_eval_h100_1seed1000
-  temporal_action_ensemble_decays: "0 0.6"
+  replan_everys: "24 12"
+  joint_delta_scales: "1.0 2.0"
+  joint_target_accel_limits: "0 0.08"
+  replan_boundary_blend_steps: "4"
+  temporal_action_ensemble_decays: "0.6"

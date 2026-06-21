@@ -142,7 +142,11 @@ def test_droidwidth_teacher_h100_eval_targets_h100_pool_resources():
     )
     assert defaults["ckpt_setting"] == "checkpoint-2000"
     assert defaults["local_eval_ckpt_root"] == "gamma_droidwidth_teacher_50kfrom0_c2000_slim_eval_h100_1seed1000"
-    assert defaults["temporal_action_ensemble_decays"] == "0 0.6"
+    assert defaults["replan_everys"] == "24 12"
+    assert defaults["joint_delta_scales"] == "1.0 2.0"
+    assert defaults["joint_target_accel_limits"] == "0 0.08"
+    assert defaults["replan_boundary_blend_steps"] == "4"
+    assert defaults["temporal_action_ensemble_decays"] == "0.6"
     assert task["image"].startswith("nvcr.io/nvidian/groot-ci-base-eval:")
     assert 'RUN_NAME="{{run_name}}"' in script
     assert (
@@ -161,7 +165,7 @@ def test_droidwidth_teacher_h100_eval_targets_h100_pool_resources():
         in script
     )
     assert "_vpred_${rollout_tag}_rp${REPLAN_EVERY}" in script
-    assert 'REPLAN_EVERYS="${REPLAN_EVERYS:-24 12}"' in script
+    assert 'REPLAN_EVERYS="${REPLAN_EVERYS:-{{replan_everys}}}"' in script
     assert 'CKPT_SETTING="{{ckpt_setting}}"' in script
     assert 'LOCAL_EVAL_CKPT_ROOT="/workspace/eval_ckpts/{{local_eval_ckpt_root}}"' in script
     assert 'ROBOFACTORY_RENDER_BACKEND="${ROBOFACTORY_RENDER_BACKEND:-sapien_cuda:0}"' in script
@@ -183,8 +187,13 @@ def test_droidwidth_teacher_h100_eval_targets_h100_pool_resources():
     )
     assert 'TEMPORAL_ACTION_ENSEMBLE_DECAYS="${TEMPORAL_ACTION_ENSEMBLE_DECAY}"' in script
     assert "for TEMPORAL_ACTION_ENSEMBLE_DECAY in ${TEMPORAL_ACTION_ENSEMBLE_DECAYS}; do" in script
-    assert 'JOINT_TARGET_ACCEL_LIMITS="${JOINT_TARGET_ACCEL_LIMITS:-0 0.08}"' in script
+    assert 'JOINT_DELTA_SCALES="${JOINT_DELTA_SCALES:-{{joint_delta_scales}}}"' in script
+    assert 'JOINT_TARGET_ACCEL_LIMITS="${JOINT_TARGET_ACCEL_LIMITS:-{{joint_target_accel_limits}}}"' in script
     assert "for JOINT_TARGET_ACCEL_LIMIT in ${JOINT_TARGET_ACCEL_LIMITS}; do" in script
+    assert (
+        'REPLAN_BOUNDARY_BLEND_STEPS="${REPLAN_BOUNDARY_BLEND_STEPS:-{{replan_boundary_blend_steps}}}"'
+        in script
+    )
     assert '--joint-target-accel-limit "$JOINT_TARGET_ACCEL_LIMIT"' in script
     assert '"target_accel_limit": cfg.get("joint_target_accel_limit")' in script
     assert "write_eval_manifest" in script

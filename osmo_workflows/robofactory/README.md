@@ -81,13 +81,21 @@ cleaner.
 
 The H100 droidwidth eval template saves both action-path and noncausal
 diagnostic predicted videos by default (`VIDEO_PRED_ROLLOUT_MODES="action
-noncausal"`). Override `VIDEO_PRED_ROLLOUT_MODE=action` or
+noncausal"`). The default physical sweep is intentionally bounded so a
+per-checkpoint H100 job can finish under the 5h timeout: `replan=24/12`,
+`scale=1.0/2.0`, `accel_limit=0/0.08`, `blend=4`, and
+`temporal_ensemble=0.6` for 16 total settings across the two video rollout
+modes. Override `VIDEO_PRED_ROLLOUT_MODE=action` or
 `VIDEO_PRED_ROLLOUT_MODES=action` when you only want the control-path video
-diagnostic and need to cut runtime. The video-quality analyzer keeps these
-rollout modes separated in `by_video_pred_rollout_mode`, and the checkpoint
-grid summary exposes action/noncausal future-MAE columns directly. Physical
-best-setting selection uses the action-path row when both modes are present,
-because noncausal rollout mode is a video-only diagnostic.
+diagnostic and need to cut runtime. Override the sweep defaults with
+`--set-string replan_everys=... joint_delta_scales=...
+joint_target_accel_limits=... replan_boundary_blend_steps=...
+temporal_action_ensemble_decays=...` for deeper one-off diagnostics. The
+video-quality analyzer keeps these rollout modes separated in
+`by_video_pred_rollout_mode`, and the checkpoint grid summary exposes
+action/noncausal future-MAE columns directly. Physical best-setting selection
+uses the action-path row when both modes are present, because noncausal rollout
+mode is a video-only diagnostic.
 
 After downloading eval artifacts, summarize the checkpoint grid:
 
@@ -114,11 +122,13 @@ The H100 droidwidth eval template also sweeps `--joint-target-accel-limit`
 over `0` and `0.08` by default. This is eval-only second-order smoothing for
 testing whether action amplification is causing high-frequency target reversals;
 the action dump summary reports both acceleration/delta ratios and the
-acceleration-limiter correction magnitude. The analyzer also separates raw
-model-output jitter from execution smoothing: `pred_accel_ratio` and
-`pred_flip` are computed inside predicted chunks, while `model_boundary`
-compares each new chunk's first joint target to the last command from the
-previous chunk.
+acceleration-limiter correction magnitude. The default keeps boundary blending
+and temporal ensembling enabled so the 2k checkpoint grid measures a practical
+low-jitter execution setting; raw model-output jitter is still reported
+separately. The analyzer separates raw model-output jitter from execution
+smoothing: `pred_accel_ratio` and `pred_flip` are computed inside predicted
+chunks, while `model_boundary` compares each new chunk's first joint target to
+the last command from the previous chunk.
 
 The RoboFactory client now requires the policy server to declare
 `action_representation` (`absolute_qpos` or `robotwin_delta`) in its handshake.
