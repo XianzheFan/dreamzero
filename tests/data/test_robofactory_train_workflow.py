@@ -6,8 +6,8 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW_PATH = REPO_ROOT / "osmo_workflows/robofactory/train_liftbarrier_shared_global.yaml"
 STAGED_WORKFLOW_PATH = REPO_ROOT / "osmo_workflows/robofactory/train_liftbarrier_gamma_staged.yaml"
-CODE_CACHE_URI = "swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_gamma_ropefix_flat_58a9fef_20260621"
-EXPECTED_CODE_COMMIT = "58a9fef94800e2d13fde0e23a592bc643e253ed8"
+CODE_CACHE_URI = "swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_gamma_actiondelta_flatroot_7b40d5d_20260621"
+EXPECTED_CODE_COMMIT = "7b40d5d2f82e91ff0aaac78003114659748839a3"
 
 
 def _task_by_name(workflow, name):
@@ -228,7 +228,7 @@ def test_liftbarrier_gamma_staged_workflow_runs_dense_teacher_then_sparse_studen
     assert defaults["code_s3_uri"] == CODE_CACHE_URI
     assert defaults["expected_code_commit"] == EXPECTED_CODE_COMMIT
     assert defaults["stage1_max_steps"] == "10000"
-    assert defaults["stage2_max_steps"] == "50000"
+    assert defaults["stage2_max_steps"] == "40000"
 
     script = _task_by_name(workflow, "train")["files"][0]["contents"]
     for marker in (
