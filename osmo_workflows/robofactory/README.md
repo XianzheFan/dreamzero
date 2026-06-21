@@ -47,6 +47,22 @@ actual training stage saved under the `-teacher` suffix. The H100 slim eval
 templates and 2k checkpoint grid point at that stage run, so the default train
 workflow must produce checkpoints through `checkpoint-50000`.
 
+Gamma-World's released bidirectional teacher trains on a much longer video
+window than the current DreamZero RoboFactory default. The current droidwidth
+teacher keeps the DreamZero-DROID-compatible short window
+(`train_num_frames=33`, `train_max_chunk_size=4`) so it can start from the
+released DROID backbone without changing the window contract mid-run. For an
+explicit long-window pred-video ablation, override these OSMO template values
+together:
+
+```bash
+--set-string train_num_frames=65 train_max_chunk_size=8
+```
+
+In this loader, `train_num_frames` should remain `8 * train_max_chunk_size + 1`;
+larger values such as `97/12` are closer to the Gamma-World teacher objective
+but should be treated as a separate memory/runtime ablation.
+
 ## 2k Checkpoint Eval Grid
 
 The gamma training workflows save checkpoints every 2000 optimizer steps by

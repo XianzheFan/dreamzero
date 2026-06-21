@@ -93,6 +93,37 @@ def test_robofactory_training_script_uses_full_dataset_sampling_by_default():
     assert "dataset_shard_sampling_rate=$DATASET_SHARD_SAMPLING_RATE \\" in script
 
 
+def test_robofactory_training_script_exposes_gamma_window_ablation_knobs():
+    script = SCRIPT_PATH.read_text()
+
+    for marker in (
+        "TRAIN_NUM_FRAMES=${TRAIN_NUM_FRAMES:-33}",
+        "TRAIN_ACTION_HORIZON=${TRAIN_ACTION_HORIZON:-24}",
+        "TRAIN_NUM_FRAME_PER_BLOCK=${TRAIN_NUM_FRAME_PER_BLOCK:-2}",
+        "TRAIN_NUM_ACTION_PER_BLOCK=${TRAIN_NUM_ACTION_PER_BLOCK:-24}",
+        "TRAIN_WARMUP_RATIO=${TRAIN_WARMUP_RATIO:-0.0}",
+        "TRAIN_WEIGHT_DECAY=${TRAIN_WEIGHT_DECAY:-1e-5}",
+        "TRAIN_MAX_CHUNK_SIZE=${TRAIN_MAX_CHUNK_SIZE:-4}",
+        "TRAIN_MAX_GRAD_NORM=${TRAIN_MAX_GRAD_NORM:-}",
+        "train_num_frames=$TRAIN_NUM_FRAMES",
+        "train_warmup_ratio=$TRAIN_WARMUP_RATIO",
+        'EXTRA_TRAINING_ARGS+=(training_args.max_grad_norm="$TRAIN_MAX_GRAD_NORM")',
+        "num_frames=$TRAIN_NUM_FRAMES",
+        "action_horizon=$TRAIN_ACTION_HORIZON",
+        "num_frame_per_block=$TRAIN_NUM_FRAME_PER_BLOCK",
+        "num_action_per_block=$TRAIN_NUM_ACTION_PER_BLOCK",
+        '"${EXTRA_TRAINING_ARGS[@]}"',
+        "training_args.warmup_ratio=$TRAIN_WARMUP_RATIO",
+        "weight_decay=$TRAIN_WEIGHT_DECAY",
+        "max_chunk_size=$TRAIN_MAX_CHUNK_SIZE",
+    ):
+        assert marker in script
+
+    assert "num_frames=33 \\" not in script
+    assert "num_frame_per_block=2 \\" not in script
+    assert "max_chunk_size=4 \\" not in script
+
+
 def test_robofactory_training_script_preserves_droid_i2v_patch_embedding_by_default():
     script = SCRIPT_PATH.read_text()
 

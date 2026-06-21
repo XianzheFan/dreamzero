@@ -440,6 +440,14 @@ def test_liftbarrier_gamma_droidwidth_teacher_workflow_preserves_droid_base_head
     assert defaults["save_steps"] == "2000"
     assert defaults["action_jerk_loss_weight"] == "0.0"
     assert defaults["strict_resume_run_name"] == ""
+    assert defaults["train_num_frames"] == "33"
+    assert defaults["train_action_horizon"] == "24"
+    assert defaults["train_num_frame_per_block"] == "2"
+    assert defaults["train_num_action_per_block"] == "24"
+    assert defaults["train_warmup_ratio"] == "0.0"
+    assert defaults["train_weight_decay"] == "1e-5"
+    assert defaults["train_max_chunk_size"] == "4"
+    assert defaults["train_max_grad_norm"] == ""
 
     train_task = _task_by_name(workflow, "train")
     assert train_task["args"] == ["/tmp/train_liftbarrier_gamma_droidwidth_teacher.sh"]
@@ -460,6 +468,14 @@ def test_liftbarrier_gamma_droidwidth_teacher_workflow_preserves_droid_base_head
         'export MODEL_ACTION_DIM="${MODEL_ACTION_DIM:-32}"',
         'export AGENT_STATE_PAD_DIM="${AGENT_STATE_PAD_DIM:-64}"',
         'export AGENT_ACTION_PAD_DIM="${AGENT_ACTION_PAD_DIM:-32}"',
+        'export TRAIN_NUM_FRAMES="${TRAIN_NUM_FRAMES:-{{train_num_frames}}}"',
+        'export TRAIN_ACTION_HORIZON="${TRAIN_ACTION_HORIZON:-{{train_action_horizon}}}"',
+        'export TRAIN_NUM_FRAME_PER_BLOCK="${TRAIN_NUM_FRAME_PER_BLOCK:-{{train_num_frame_per_block}}}"',
+        'export TRAIN_NUM_ACTION_PER_BLOCK="${TRAIN_NUM_ACTION_PER_BLOCK:-{{train_num_action_per_block}}}"',
+        'export TRAIN_WARMUP_RATIO="${TRAIN_WARMUP_RATIO:-{{train_warmup_ratio}}}"',
+        'export TRAIN_WEIGHT_DECAY="${TRAIN_WEIGHT_DECAY:-{{train_weight_decay}}}"',
+        'export TRAIN_MAX_CHUNK_SIZE="${TRAIN_MAX_CHUNK_SIZE:-{{train_max_chunk_size}}}"',
+        'export TRAIN_MAX_GRAD_NORM="${TRAIN_MAX_GRAD_NORM:-{{train_max_grad_norm}}}"',
         'export BASE_ACTION_JERK_LOSS_WEIGHT="${ACTION_JERK_LOSS_WEIGHT:-{{action_jerk_loss_weight}}}"',
         'export GLOBAL_VIDEO_DROPOUT_PROB="${GLOBAL_VIDEO_DROPOUT_PROB:-0.0}"',
         'export GLOBAL_VIDEO_ATTENTION_MODE="${GLOBAL_VIDEO_ATTENTION_MODE:-bidirectional}"',
@@ -481,6 +497,14 @@ def test_liftbarrier_gamma_droidwidth_teacher_workflow_preserves_droid_base_head
         'echo "MODEL_ACTION_DIM=$MODEL_ACTION_DIM"',
         'echo "AGENT_STATE_PAD_DIM=$AGENT_STATE_PAD_DIM"',
         'echo "AGENT_ACTION_PAD_DIM=$AGENT_ACTION_PAD_DIM"',
+        'echo "TRAIN_NUM_FRAMES=$TRAIN_NUM_FRAMES"',
+        'echo "TRAIN_ACTION_HORIZON=$TRAIN_ACTION_HORIZON"',
+        'echo "TRAIN_NUM_FRAME_PER_BLOCK=$TRAIN_NUM_FRAME_PER_BLOCK"',
+        'echo "TRAIN_NUM_ACTION_PER_BLOCK=$TRAIN_NUM_ACTION_PER_BLOCK"',
+        'echo "TRAIN_WARMUP_RATIO=$TRAIN_WARMUP_RATIO"',
+        'echo "TRAIN_WEIGHT_DECAY=$TRAIN_WEIGHT_DECAY"',
+        'echo "TRAIN_MAX_CHUNK_SIZE=$TRAIN_MAX_CHUNK_SIZE"',
+        'echo "TRAIN_MAX_GRAD_NORM=${TRAIN_MAX_GRAD_NORM:-unset}"',
         "DREAMZERO_DROID_PRETRAINED_DIR=\"$PRETRAINED_DIR\"",
         "restore_stage1_lora_from_s3()",
         "restore_stage1_lora_checkpoint()",

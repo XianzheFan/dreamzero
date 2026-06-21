@@ -109,6 +109,14 @@ BATCH_SIZE=${BATCH_SIZE:-1}
 SAVE_STEPS=${SAVE_STEPS:-$MAX_STEPS}
 SAVE_TOTAL_LIMIT=${SAVE_TOTAL_LIMIT:-4}
 LEARNING_RATE=${LEARNING_RATE:-1e-5}
+TRAIN_NUM_FRAMES=${TRAIN_NUM_FRAMES:-33}
+TRAIN_ACTION_HORIZON=${TRAIN_ACTION_HORIZON:-24}
+TRAIN_NUM_FRAME_PER_BLOCK=${TRAIN_NUM_FRAME_PER_BLOCK:-2}
+TRAIN_NUM_ACTION_PER_BLOCK=${TRAIN_NUM_ACTION_PER_BLOCK:-24}
+TRAIN_WARMUP_RATIO=${TRAIN_WARMUP_RATIO:-0.0}
+TRAIN_WEIGHT_DECAY=${TRAIN_WEIGHT_DECAY:-1e-5}
+TRAIN_MAX_CHUNK_SIZE=${TRAIN_MAX_CHUNK_SIZE:-4}
+TRAIN_MAX_GRAD_NORM=${TRAIN_MAX_GRAD_NORM:-}
 REPORT_TO=${REPORT_TO:-none}
 WANDB_PROJECT=${WANDB_PROJECT:-dreamzero_robofactory_smoke}
 WANDB_RUN_NAME=${WANDB_RUN_NAME:-robofactory_bimanual_smoke}
@@ -156,6 +164,8 @@ SELF_FORCING_WARMUP_STEPS=${SELF_FORCING_WARMUP_STEPS:-0}
 SELF_FORCING_FAST_WRITEBACK=${SELF_FORCING_FAST_WRITEBACK:-false}
 
 echo "save_steps=$SAVE_STEPS  save_total_limit=$SAVE_TOTAL_LIMIT"
+echo "train_num_frames=$TRAIN_NUM_FRAMES  train_action_horizon=$TRAIN_ACTION_HORIZON  train_num_frame_per_block=$TRAIN_NUM_FRAME_PER_BLOCK  train_num_action_per_block=$TRAIN_NUM_ACTION_PER_BLOCK  train_max_chunk_size=$TRAIN_MAX_CHUNK_SIZE"
+echo "train_warmup_ratio=$TRAIN_WARMUP_RATIO  train_weight_decay=$TRAIN_WEIGHT_DECAY  train_max_grad_norm=${TRAIN_MAX_GRAD_NORM:-unset}"
 echo "dataset_shard_sampling_rate=$DATASET_SHARD_SAMPLING_RATE"
 echo "dynamics_loss_weight=$DYNAMICS_LOSS_WEIGHT  action_loss_weight=$ACTION_LOSS_WEIGHT  gripper_action_loss_weight=$GRIPPER_ACTION_LOSS_WEIGHT  gripper_close_action_loss_weight=$GRIPPER_CLOSE_ACTION_LOSS_WEIGHT  gripper_close_threshold=$GRIPPER_CLOSE_THRESHOLD  gripper_action_dims=[$GRIPPER_ACTION_DIMS]  gripper_clean_action_loss_weight=$GRIPPER_CLEAN_ACTION_LOSS_WEIGHT  gripper_clean_close_action_loss_weight=$GRIPPER_CLEAN_CLOSE_ACTION_LOSS_WEIGHT  gripper_clean_max_sigma=$GRIPPER_CLEAN_MAX_SIGMA  action_prefix_loss_weight=$ACTION_PREFIX_LOSS_WEIGHT  action_prefix_loss_len=$ACTION_PREFIX_LOSS_LEN  action_delta_loss_weight=$ACTION_DELTA_LOSS_WEIGHT  action_jerk_loss_weight=$ACTION_JERK_LOSS_WEIGHT  action_delta_max_sigma=$ACTION_DELTA_MAX_SIGMA  action_delta_exclude_gripper=$ACTION_DELTA_EXCLUDE_GRIPPER"
 echo "gripper_binary_action_loss_weight=$GRIPPER_BINARY_ACTION_LOSS_WEIGHT  gripper_binary_close_action_loss_weight=$GRIPPER_BINARY_CLOSE_ACTION_LOSS_WEIGHT  gripper_binary_logit_scale=$GRIPPER_BINARY_LOGIT_SCALE  gripper_binary_max_sigma=$GRIPPER_BINARY_MAX_SIGMA"
@@ -184,31 +194,37 @@ if [ ! -d "$ROBOFACTORY_DATA_ROOT" ]; then
     exit 1
 fi
 
+EXTRA_TRAINING_ARGS=()
+if [ -n "$TRAIN_MAX_GRAD_NORM" ]; then
+    EXTRA_TRAINING_ARGS+=(training_args.max_grad_norm="$TRAIN_MAX_GRAD_NORM")
+fi
+
 torchrun --nproc_per_node $NUM_GPUS --standalone groot/vla/experiment/experiment.py \
     report_to=$REPORT_TO \
     wandb_project=$WANDB_PROJECT \
     +training_args.run_name=$WANDB_RUN_NAME \
     data=$DATA_CFG \
     train_architecture=lora \
-    num_frames=33 \
-    action_horizon=24 \
+    num_frames=$TRAIN_NUM_FRAMES \
+    action_horizon=$TRAIN_ACTION_HORIZON \
     num_views=3 \
     model=dreamzero/vla \
     model/dreamzero/action_head=wan_flow_matching_action_tf \
     model/dreamzero/transform=bimanual_cotrain \
-    num_frame_per_block=2 \
-    num_action_per_block=24 \
+    num_frame_per_block=$TRAIN_NUM_FRAME_PER_BLOCK \
+    num_action_per_block=$TRAIN_NUM_ACTION_PER_BLOCK \
     num_state_per_block=1 \
     seed=42 \
     training_args.learning_rate=$LEARNING_RATE \
+    "${EXTRA_TRAINING_ARGS[@]}" \
     training_args.deepspeed="$DEEPSPEED_CFG" \
     ++training_args.gradient_checkpointing=$GRAD_CKPT \
     save_steps=$SAVE_STEPS \
-    training_args.warmup_ratio=0.0 \
+    training_args.warmup_ratio=$TRAIN_WARMUP_RATIO \
     output_dir=$OUTPUT_DIR \
     per_device_train_batch_size=$BATCH_SIZE \
     max_steps=$MAX_STEPS \
-    weight_decay=1e-5 \
+    weight_decay=$TRAIN_WEIGHT_DECAY \
     save_total_limit=$SAVE_TOTAL_LIMIT \
     upload_checkpoints=false \
     bf16=true \
@@ -219,7 +235,7 @@ torchrun --nproc_per_node $NUM_GPUS --standalone groot/vla/experiment/experiment
     image_resolution_width=320 \
     image_resolution_height=176 \
     save_lora_only=true \
-    max_chunk_size=4 \
+    max_chunk_size=$TRAIN_MAX_CHUNK_SIZE \
     frame_seqlen=880 \
     save_strategy=steps \
     robofactory_data_root=$ROBOFACTORY_DATA_ROOT \
