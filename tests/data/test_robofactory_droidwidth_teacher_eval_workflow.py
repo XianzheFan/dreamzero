@@ -141,6 +141,10 @@ def test_droidwidth_teacher_h100_eval_targets_h100_pool_resources():
     assert 'DUMP_RGB_TRACE_FLAG="--dump-rgb-trace"' in script
     assert "--dump-rgb-trace" in script
     assert "--future-rgb-trace-dir /workspace/eval_outputs" in script
+    assert 'SERVE_HTTP_ARTIFACTS="${SERVE_HTTP_ARTIFACTS:-0}"' in script
+    assert 'if [ "${SERVE_HTTP_ARTIFACTS}" = "1" ]; then' in script
+    assert "HTTP artifact serving disabled; uploaded artifacts and exiting to release H100 resources." in script
+    assert 'osmo data upload "${RUN_S3_ROOT}/eval_outputs_http/" /workspace/eval_outputs_http || true' in script
     assert (
         'TEMPORAL_ACTION_ENSEMBLE_DECAYS="${TEMPORAL_ACTION_ENSEMBLE_DECAYS:-{{temporal_action_ensemble_decays}}}"'
         in script

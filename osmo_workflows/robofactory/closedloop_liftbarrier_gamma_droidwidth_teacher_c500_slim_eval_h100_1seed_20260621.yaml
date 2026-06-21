@@ -77,6 +77,7 @@ workflow:
           if [ "${DUMP_RGB_TRACE}" = "1" ]; then
             DUMP_RGB_TRACE_FLAG="--dump-rgb-trace"
           fi
+          SERVE_HTTP_ARTIFACTS="${SERVE_HTTP_ARTIFACTS:-0}"
           SERVER_CUDA_VISIBLE_DEVICES="4"
           CLIENT_CUDA_VISIBLE_DEVICES="0"
           export ROBOFACTORY_RENDER_BACKEND="${ROBOFACTORY_RENDER_BACKEND:-sapien_cuda:0}"
@@ -125,6 +126,10 @@ workflow:
             find /tmp -maxdepth 1 -type f \( -name "server_*.log" -o -name "client_*.log" \) -exec cp -f {} /workspace/eval_outputs/ \; || true
             echo "Uploading eval outputs to ${RUN_S3_ROOT}/"
             osmo data upload "${RUN_S3_ROOT}/" /workspace/eval_outputs
+            if [ -d /workspace/eval_outputs_http ]; then
+              echo "Uploading split HTTP artifacts to ${RUN_S3_ROOT}/eval_outputs_http/"
+              osmo data upload "${RUN_S3_ROOT}/eval_outputs_http/" /workspace/eval_outputs_http || true
+            fi
             exit "$status"
           }
 
@@ -976,8 +981,12 @@ workflow:
           split -b 1m -d -a 4 "$ARCHIVE" "${ARCHIVE}.part."
           find "$SERVE_ROOT" -maxdepth 1 -type f -print -exec ls -lh {} \; | sort
           echo "Gamma droidwidth teacher ${CKPT_SETTING} H100 slim eval seed1000 strict-lift noncausal pred-video eval complete"
-          echo "Serving split artifacts from ${SERVE_ROOT} on 0.0.0.0:8765"
-          python -m http.server 8765 --bind 0.0.0.0 --directory "$SERVE_ROOT"
+          if [ "${SERVE_HTTP_ARTIFACTS}" = "1" ]; then
+            echo "Serving split artifacts from ${SERVE_ROOT} on 0.0.0.0:8765"
+            python -m http.server 8765 --bind 0.0.0.0 --directory "$SERVE_ROOT"
+          else
+            echo "HTTP artifact serving disabled; uploaded artifacts and exiting to release H100 resources."
+          fi
         path: /tmp/run_closedloop_gamma_droidwidth_teacher_c500_slim_eval_1seed_h100.sh
       image: nvcr.io/nvidian/groot-ci-base-eval:latest@sha256:de6e59614be213f06f95c8c1e8311f0b700c963aed6c39eeec1fb56cd40c6ee7
       lead: true
