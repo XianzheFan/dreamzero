@@ -71,6 +71,8 @@ def test_analyze_episode_reports_joint_jitter_metrics(tmp_path):
     assert episode["mean_joint_step_delta"] > 0.0
     assert episode["action_representation"] == "absolute_qpos"
     assert episode["max_joint_step_accel"] > 0.0
+    assert episode["max_joint_step_jerk"] > 0.0
+    assert episode["mean_joint_step_jerk"] > 0.0
     assert episode["mean_joint_accel_to_delta_ratio"] > 0.0
     assert episode["max_joint_accel_to_delta_ratio"] > 0.0
     assert episode["joint_delta_sign_flip_frac"] == 0.0
@@ -80,15 +82,18 @@ def test_analyze_episode_reports_joint_jitter_metrics(tmp_path):
     assert np.isclose(episode["max_model_replan_boundary_joint_jump"], 0.2)
     assert episode["mean_pred_chunk_joint_step_delta"] > 0.0
     assert episode["max_pred_chunk_joint_step_accel"] > 0.0
+    assert episode["max_pred_chunk_joint_step_jerk"] == 0.0
     assert episode["mean_pred_chunk_joint_accel_to_delta_ratio"] > 0.0
     assert episode["pred_chunk_joint_delta_sign_flip_frac"] == 1.0
     assert episode["pred_chunk_joint_delta_sign_flip_count"] == 28
     assert episode["pred_chunk_joint_delta_active_pair_count"] == 28
     assert "exec_joint_step_accel" in episode["joint_debug"]
+    assert "exec_joint_step_jerk" in episode["joint_debug"]
     assert "replan_boundary_joint_jump" in episode["joint_debug"]
     assert "model_replan_boundary_joint_jump" in episode["joint_debug"]
     assert "pred_chunk_joint_step_delta" in episode["joint_debug"]
     assert "pred_chunk_joint_step_accel" in episode["joint_debug"]
+    assert "pred_chunk_joint_step_jerk" in episode["joint_debug"]
     assert "pre_blend_replan_boundary_joint_jump" in episode["joint_debug"]
     assert "pre_ensemble_replan_boundary_joint_jump" in episode["joint_debug"]
     assert "temporal_ensemble_correction_joint" in episode["joint_debug"]
@@ -136,6 +141,9 @@ def test_analyze_episode_reports_joint_jitter_metrics(tmp_path):
 
     summary = _aggregate([episode])
     assert summary["action_representation_counts"] == {"absolute_qpos": 1}
+    assert summary["max_joint_step_jerk"] == episode["max_joint_step_jerk"]
+    assert summary["mean_joint_step_jerk"] == episode["mean_joint_step_jerk"]
+    assert summary["max_pred_chunk_joint_step_jerk"] == 0.0
 
 
 def test_analyze_episode_reports_joint_delta_sign_flips(tmp_path):

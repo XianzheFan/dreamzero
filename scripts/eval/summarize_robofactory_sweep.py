@@ -237,6 +237,12 @@ def summarize_setting(setting_dir: str) -> dict[str, Any]:
                 "max_joint_step_accel": _float_or_none(
                     summary.get("max_joint_step_accel")
                 ),
+                "mean_joint_step_jerk": _float_or_none(
+                    summary.get("mean_joint_step_jerk")
+                ),
+                "max_joint_step_jerk": _float_or_none(
+                    summary.get("max_joint_step_jerk")
+                ),
                 "mean_joint_accel_to_delta_ratio": _float_or_none(
                     summary.get("mean_joint_accel_to_delta_ratio")
                 ),
@@ -266,6 +272,12 @@ def summarize_setting(setting_dir: str) -> dict[str, Any]:
                 ),
                 "max_pred_chunk_joint_step_accel": _float_or_none(
                     summary.get("max_pred_chunk_joint_step_accel")
+                ),
+                "mean_pred_chunk_joint_step_jerk": _float_or_none(
+                    summary.get("mean_pred_chunk_joint_step_jerk")
+                ),
+                "max_pred_chunk_joint_step_jerk": _float_or_none(
+                    summary.get("max_pred_chunk_joint_step_jerk")
                 ),
                 "mean_pred_chunk_joint_accel_to_delta_ratio": _float_or_none(
                     summary.get("mean_pred_chunk_joint_accel_to_delta_ratio")
@@ -491,8 +503,10 @@ def print_table(rows: list[dict[str, Any]]) -> None:
         ("joint_max", "max_joint_step_delta"),
         ("pred_joint", "mean_pred_chunk_joint_step_delta"),
         ("accel_mean", "mean_joint_step_accel"),
+        ("jerk_mean", "mean_joint_step_jerk"),
         ("accel_ratio", "mean_joint_accel_to_delta_ratio"),
         ("pred_accel_ratio", "mean_pred_chunk_joint_accel_to_delta_ratio"),
+        ("pred_jerk", "mean_pred_chunk_joint_step_jerk"),
         ("flip_frac", "joint_delta_sign_flip_frac"),
         ("pred_flip", "pred_chunk_joint_delta_sign_flip_frac"),
         ("boundary_max", "max_replan_boundary_joint_jump"),

@@ -610,6 +610,11 @@ def analyze_episode(
         if joint_step_delta.shape[0] > 1
         else np.zeros((0, len(joint_dims)))
     )
+    joint_step_jerk = (
+        np.diff(joint_step_accel, axis=0)
+        if joint_step_accel.shape[0] > 1
+        else np.zeros((0, len(joint_dims)))
+    )
     joint_delta_sign_flip = _joint_delta_sign_flip_stats(joint_step_delta)
     replan_boundary_jump = _joint_boundary_jumps(
         exec_action,
@@ -633,6 +638,11 @@ def analyze_episode(
         if pred_chunk_joint_delta.size and pred_chunk_joint_delta.shape[1] > 1
         else np.zeros((0, 0, len(joint_dims)), dtype=np.float32)
     )
+    pred_chunk_joint_jerk = (
+        np.diff(pred_chunk_joint_accel, axis=1)
+        if pred_chunk_joint_accel.size and pred_chunk_joint_accel.shape[1] > 1
+        else np.zeros((0, 0, len(joint_dims)), dtype=np.float32)
+    )
     pred_chunk_delta_sign_flip = _joint_delta_sign_flip_stats_chunked(
         pred_chunk_joint_delta
     )
@@ -640,6 +650,8 @@ def analyze_episode(
     mean_joint_step_delta = float(np.mean(np.abs(joint_step_delta))) if joint_step_delta.size else 0.0
     max_joint_step_accel = float(np.max(np.abs(joint_step_accel))) if joint_step_accel.size else 0.0
     mean_joint_step_accel = float(np.mean(np.abs(joint_step_accel))) if joint_step_accel.size else 0.0
+    max_joint_step_jerk = float(np.max(np.abs(joint_step_jerk))) if joint_step_jerk.size else 0.0
+    mean_joint_step_jerk = float(np.mean(np.abs(joint_step_jerk))) if joint_step_jerk.size else 0.0
     mean_pred_chunk_joint_step_delta = (
         float(np.mean(np.abs(pred_chunk_joint_delta)))
         if pred_chunk_joint_delta.size
@@ -658,6 +670,16 @@ def analyze_episode(
     max_pred_chunk_joint_step_accel = (
         float(np.max(np.abs(pred_chunk_joint_accel)))
         if pred_chunk_joint_accel.size
+        else 0.0
+    )
+    mean_pred_chunk_joint_step_jerk = (
+        float(np.mean(np.abs(pred_chunk_joint_jerk)))
+        if pred_chunk_joint_jerk.size
+        else 0.0
+    )
+    max_pred_chunk_joint_step_jerk = (
+        float(np.max(np.abs(pred_chunk_joint_jerk)))
+        if pred_chunk_joint_jerk.size
         else 0.0
     )
     mean_pred_chunk_joint_accel_to_delta_ratio = _safe_ratio(
@@ -703,11 +725,13 @@ def analyze_episode(
         "exec_joint": _range_stats(exec_action[:, joint_dims]) if joint_dims else None,
         "exec_joint_step_delta": _abs_stats(joint_step_delta),
         "exec_joint_step_accel": _abs_stats(joint_step_accel),
+        "exec_joint_step_jerk": _abs_stats(joint_step_jerk),
         "replan_boundary_joint_jump": _abs_stats(replan_boundary_jump),
         "model_replan_boundary_joint_jump": _abs_stats(model_replan_boundary_jump),
         "pred_chunk_joint": _range_stats(pred_chunk[..., joint_dims]) if joint_dims else None,
         "pred_chunk_joint_step_delta": _abs_stats(pred_chunk_joint_delta),
         "pred_chunk_joint_step_accel": _abs_stats(pred_chunk_joint_accel),
+        "pred_chunk_joint_step_jerk": _abs_stats(pred_chunk_joint_jerk),
     }
     if (
         joint_dims
@@ -965,6 +989,8 @@ def analyze_episode(
         "mean_joint_step_delta": mean_joint_step_delta,
         "max_joint_step_accel": max_joint_step_accel,
         "mean_joint_step_accel": mean_joint_step_accel,
+        "max_joint_step_jerk": max_joint_step_jerk,
+        "mean_joint_step_jerk": mean_joint_step_jerk,
         "mean_joint_accel_to_delta_ratio": mean_joint_accel_to_delta_ratio,
         "max_joint_accel_to_delta_ratio": max_joint_accel_to_delta_ratio,
         "joint_delta_sign_flip_frac": joint_delta_sign_flip["flip_frac"],
@@ -978,6 +1004,8 @@ def analyze_episode(
         "max_pred_chunk_joint_step_delta": max_pred_chunk_joint_step_delta,
         "mean_pred_chunk_joint_step_accel": mean_pred_chunk_joint_step_accel,
         "max_pred_chunk_joint_step_accel": max_pred_chunk_joint_step_accel,
+        "mean_pred_chunk_joint_step_jerk": mean_pred_chunk_joint_step_jerk,
+        "max_pred_chunk_joint_step_jerk": max_pred_chunk_joint_step_jerk,
         "mean_pred_chunk_joint_accel_to_delta_ratio": (
             mean_pred_chunk_joint_accel_to_delta_ratio
         ),
@@ -1056,6 +1084,10 @@ def analyze_episode(
             f"{_fmt_abs(joint_debug['pred_chunk_joint_step_accel'])}"
         )
         print(
+            "  pred chunk joint jerk: "
+            f"{_fmt_abs(joint_debug['pred_chunk_joint_step_jerk'])}"
+        )
+        print(
             "  pred chunk high-frequency: "
             f"accel/delta mean={mean_pred_chunk_joint_accel_to_delta_ratio:.3f} "
             f"max={max_pred_chunk_joint_accel_to_delta_ratio:.3f} "
@@ -1064,6 +1096,7 @@ def analyze_episode(
             f"{pred_chunk_delta_sign_flip['active_pair_count']}"
         )
         print(f"  joint acceleration: {_fmt_abs(joint_debug['exec_joint_step_accel'])}")
+        print(f"  joint jerk: {_fmt_abs(joint_debug['exec_joint_step_jerk'])}")
         print(
             "  joint high-frequency: "
             f"accel/delta mean={mean_joint_accel_to_delta_ratio:.3f} "
@@ -1261,6 +1294,8 @@ def _aggregate(episodes: list[dict[str, Any]]) -> dict[str, Any]:
         "mean_joint_step_delta": float(np.mean([e["mean_joint_step_delta"] for e in episodes])) if episodes else 0.0,
         "max_joint_step_accel": max(e["max_joint_step_accel"] for e in episodes) if episodes else 0.0,
         "mean_joint_step_accel": float(np.mean([e["mean_joint_step_accel"] for e in episodes])) if episodes else 0.0,
+        "max_joint_step_jerk": max(e["max_joint_step_jerk"] for e in episodes) if episodes else 0.0,
+        "mean_joint_step_jerk": float(np.mean([e["mean_joint_step_jerk"] for e in episodes])) if episodes else 0.0,
         "mean_joint_accel_to_delta_ratio": float(
             np.mean([e["mean_joint_accel_to_delta_ratio"] for e in episodes])
         ) if episodes else 0.0,
@@ -1305,6 +1340,12 @@ def _aggregate(episodes: list[dict[str, Any]]) -> dict[str, Any]:
         ) if episodes else 0.0,
         "mean_pred_chunk_joint_step_accel": float(
             np.mean([e["mean_pred_chunk_joint_step_accel"] for e in episodes])
+        ) if episodes else 0.0,
+        "max_pred_chunk_joint_step_jerk": max(
+            e["max_pred_chunk_joint_step_jerk"] for e in episodes
+        ) if episodes else 0.0,
+        "mean_pred_chunk_joint_step_jerk": float(
+            np.mean([e["mean_pred_chunk_joint_step_jerk"] for e in episodes])
         ) if episodes else 0.0,
         "mean_pred_chunk_joint_accel_to_delta_ratio": float(
             np.mean([e["mean_pred_chunk_joint_accel_to_delta_ratio"] for e in episodes])
@@ -1539,6 +1580,16 @@ def main() -> None:
         "  pred chunk joint acceleration: "
         f"mean_abs={summary['mean_pred_chunk_joint_step_accel']:.3f} "
         f"max_abs={summary['max_pred_chunk_joint_step_accel']:.3f}"
+    )
+    print(
+        "  joint jerk: "
+        f"mean_abs={summary['mean_joint_step_jerk']:.3f} "
+        f"max_abs={summary['max_joint_step_jerk']:.3f}"
+    )
+    print(
+        "  pred chunk joint jerk: "
+        f"mean_abs={summary['mean_pred_chunk_joint_step_jerk']:.3f} "
+        f"max_abs={summary['max_pred_chunk_joint_step_jerk']:.3f}"
     )
     print(
         "  joint high-frequency: "

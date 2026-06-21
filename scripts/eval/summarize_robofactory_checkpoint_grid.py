@@ -234,6 +234,7 @@ def summarize_eval_root(root: Path) -> dict[str, Any]:
         "mean_joint_step_delta": best.get("mean_joint_step_delta"),
         "max_joint_step_delta": best.get("max_joint_step_delta"),
         "mean_joint_step_accel": best.get("mean_joint_step_accel"),
+        "mean_joint_step_jerk": best.get("mean_joint_step_jerk"),
         "mean_joint_accel_to_delta_ratio": best.get(
             "mean_joint_accel_to_delta_ratio"
         ),
@@ -249,6 +250,9 @@ def summarize_eval_root(root: Path) -> dict[str, Any]:
         ),
         "mean_pred_chunk_joint_step_accel": best.get(
             "mean_pred_chunk_joint_step_accel"
+        ),
+        "mean_pred_chunk_joint_step_jerk": best.get(
+            "mean_pred_chunk_joint_step_jerk"
         ),
         "mean_pred_chunk_joint_accel_to_delta_ratio": best.get(
             "mean_pred_chunk_joint_accel_to_delta_ratio"
@@ -387,7 +391,9 @@ TABLE_COLUMNS = [
     ("joint_mean", "mean_joint_step_delta"),
     ("joint_max", "max_joint_step_delta"),
     ("accel_ratio", "mean_joint_accel_to_delta_ratio"),
+    ("jerk", "mean_joint_step_jerk"),
     ("pred_accel", "mean_pred_chunk_joint_accel_to_delta_ratio"),
+    ("pred_jerk", "mean_pred_chunk_joint_step_jerk"),
     ("flip_frac", "joint_delta_sign_flip_frac"),
     ("pred_flip", "pred_chunk_joint_delta_sign_flip_frac"),
     ("accel_corr", "mean_accel_limiter_correction_joint"),

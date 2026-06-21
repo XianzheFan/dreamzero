@@ -78,12 +78,14 @@ def _make_eval(
                     "mean_joint_step_delta": 0.03,
                     "max_joint_step_delta": 0.14,
                     "mean_joint_step_accel": 0.02,
+                    "mean_joint_step_jerk": 0.018,
                     "mean_joint_accel_to_delta_ratio": 0.67,
                     "max_joint_accel_to_delta_ratio": 0.5,
                     "joint_delta_sign_flip_frac": 0.25,
                     "mean_joint_delta_sign_flip_frac": 0.2,
                     "mean_pred_chunk_joint_step_delta": 0.04,
                     "mean_pred_chunk_joint_step_accel": 0.03,
+                    "mean_pred_chunk_joint_step_jerk": 0.026,
                     "mean_pred_chunk_joint_accel_to_delta_ratio": 0.75,
                     "pred_chunk_joint_delta_sign_flip_frac": 0.35,
                     "max_model_replan_boundary_joint_jump": 0.07,
@@ -185,11 +187,13 @@ def test_summarize_roots_orders_by_checkpoint_and_selects_best_setting(tmp_path)
     assert rows[0]["best_video_pred_rollout_mode"] == "action"
     assert rows[0]["best_action_representation"] == "absolute_qpos"
     assert rows[0]["raw_joint_saturation_frac"] == 0.7
+    assert rows[0]["mean_joint_step_jerk"] == 0.018
     assert rows[0]["mean_joint_accel_to_delta_ratio"] == 0.67
     assert rows[0]["max_joint_accel_to_delta_ratio"] == 0.5
     assert rows[0]["joint_delta_sign_flip_frac"] == 0.25
     assert rows[0]["mean_joint_delta_sign_flip_frac"] == 0.2
     assert rows[0]["mean_pred_chunk_joint_accel_to_delta_ratio"] == 0.75
+    assert rows[0]["mean_pred_chunk_joint_step_jerk"] == 0.026
     assert rows[0]["pred_chunk_joint_delta_sign_flip_frac"] == 0.35
     assert rows[0]["max_model_replan_boundary_joint_jump"] == 0.07
     assert rows[0]["best_accel_limit"] == 0.08
