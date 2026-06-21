@@ -368,6 +368,7 @@ workflow:
               "GLOBAL_VIDEO_DROPOUT_PROB" \
               "GLOBAL_VIDEO_TIMESTEP_MODE" \
               "GLOBAL_VIDEO_ATTENTION_MODE" \
+              "ATTENTION_BACKEND" \
               "USE_SPARSE_HUB_ATTENTION"
             require_code_marker \
               groot/vla/model/dreamzero/action_head/wan_flow_matching_action_tf.py \
@@ -481,6 +482,7 @@ workflow:
             export GLOBAL_VIDEO_DROPOUT_PROB="${GLOBAL_VIDEO_DROPOUT_PROB:-0.1}"
             export GLOBAL_VIDEO_TIMESTEP_MODE="${GLOBAL_VIDEO_TIMESTEP_MODE:-clean}"
             export GLOBAL_VIDEO_ATTENTION_MODE="${GLOBAL_VIDEO_ATTENTION_MODE:-read_only}"
+            export ATTENTION_BACKEND="${ATTENTION_BACKEND:-flex}"
             export REPORT_TO=wandb
             export WANDB_PROJECT=dreamzero_robofactory
             export DATALOADER_NUM_WORKERS=4
@@ -701,6 +703,7 @@ workflow:
               echo "GLOBAL_VIDEO_DROPOUT_PROB=$GLOBAL_VIDEO_DROPOUT_PROB"
               echo "GLOBAL_VIDEO_TIMESTEP_MODE=$GLOBAL_VIDEO_TIMESTEP_MODE"
               echo "GLOBAL_VIDEO_ATTENTION_MODE=$GLOBAL_VIDEO_ATTENTION_MODE"
+              echo "ATTENTION_BACKEND=$ATTENTION_BACKEND"
               echo "USE_SPARSE_HUB_ATTENTION=$USE_SPARSE_HUB_ATTENTION"
               echo "Checkpoints available before ${stage_label}:"
               find "$OUTPUT_DIR" -maxdepth 1 -type d -name 'checkpoint-*' -print | sort -V || true

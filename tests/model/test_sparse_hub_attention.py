@@ -328,6 +328,90 @@ def test_dense_global_read_only_mask_allows_cross_agent_attention():
     assert mask[2].tolist() == [False, False, False, False, True]
 
 
+def test_dense_no_hub_mask_keeps_clean_context_read_only():
+    pytest.importorskip("einops")
+    from groot.vla.model.dreamzero.modules.wan_video_dit_action_casual_chunk import (
+        CausalWanModel,
+    )
+
+    # Token order mirrors _forward_multi_agent_body:
+    # clean agent0, clean agent1, noisy agent0, noisy agent1, shared global,
+    # register agent0, register agent1.
+    query_agent = torch.tensor([0, 1, 0, 1, 2, 0, 1], dtype=torch.long)
+    key_agent = query_agent.clone()
+    clean_kind = 0
+    video_kind = 1
+    global_kind = 2
+    register_kind = 3
+    token_kind = torch.tensor(
+        [
+            clean_kind,
+            clean_kind,
+            video_kind,
+            video_kind,
+            global_kind,
+            register_kind,
+            register_kind,
+        ],
+        dtype=torch.long,
+    )
+
+    mask = CausalWanModel._dense_no_hub_token_mask(
+        query_agent,
+        key_agent,
+        query_token_kind=token_kind,
+        key_token_kind=token_kind,
+        shared_id=2,
+        clean_kind=clean_kind,
+        shared_global_attention_mode="read_only",
+    )
+
+    # Clean queries cannot read noisy/global/register tokens, preventing clean
+    # context hidden states from leaking future information across layers.
+    assert mask[0].tolist() == [True, True, False, False, False, False, False]
+    assert mask[1].tolist() == [True, True, False, False, False, False, False]
+
+    # Dense no-hub baseline: regular agent video/register queries can attend
+    # across agents and to the shared-global context.
+    assert mask[2].all()
+    assert mask[3].all()
+    assert mask[5].all()
+    assert mask[6].all()
+
+    # read_only shared-global query only reads shared-global keys.
+    assert mask[4].tolist() == [False, False, False, False, True, False, False]
+
+
+def test_dense_no_hub_mask_keeps_legacy_bidirectional_global():
+    pytest.importorskip("einops")
+    from groot.vla.model.dreamzero.modules.wan_video_dit_action_casual_chunk import (
+        CausalWanModel,
+    )
+
+    query_agent = torch.tensor([0, 2], dtype=torch.long)
+    key_agent = torch.tensor([0, 1, 2], dtype=torch.long)
+    clean_kind = 0
+    video_kind = 1
+    global_kind = 2
+    query_kind = torch.tensor([video_kind, global_kind], dtype=torch.long)
+    key_kind = torch.tensor([video_kind, video_kind, global_kind], dtype=torch.long)
+
+    mask = CausalWanModel._dense_no_hub_token_mask(
+        query_agent,
+        key_agent,
+        query_token_kind=query_kind,
+        key_token_kind=key_kind,
+        shared_id=2,
+        clean_kind=clean_kind,
+        shared_global_attention_mode="bidirectional",
+    )
+
+    assert mask.tolist() == [
+        [True, True, True],
+        [True, True, True],
+    ]
+
+
 def test_multi_agent_register_block_ids_align_with_future_video_blocks():
     """Video chunk i must be able to read action/state register chunk i.
 

@@ -80,6 +80,7 @@ def test_liftbarrier_train_workflow_verifies_code_cache_and_robofactory_dataset(
         "ROPE_AGENT_DIM",
         "GLOBAL_VIDEO_DROPOUT_PROB",
         "GLOBAL_VIDEO_TIMESTEP_MODE",
+        "ATTENTION_BACKEND",
         "USE_SPARSE_HUB_ATTENTION",
         "multi_agent_shuffle_agents",
         "global_video_dropout_prob",
@@ -137,6 +138,7 @@ def test_liftbarrier_train_workflow_passes_shared_global_binary_gripper_training
         'export GLOBAL_VIDEO_DROPOUT_PROB="${GLOBAL_VIDEO_DROPOUT_PROB:-0.1}"',
         'export GLOBAL_VIDEO_TIMESTEP_MODE="${GLOBAL_VIDEO_TIMESTEP_MODE:-clean}"',
         'export GLOBAL_VIDEO_ATTENTION_MODE="${GLOBAL_VIDEO_ATTENTION_MODE:-read_only}"',
+        'export ATTENTION_BACKEND="${ATTENTION_BACKEND:-flex}"',
         'export USE_SPARSE_HUB_ATTENTION="${USE_SPARSE_HUB_ATTENTION:-true}"',
         "bash scripts/train/robofactory_bimanual_training.sh",
     ):
@@ -158,6 +160,7 @@ def test_liftbarrier_train_workflow_passes_shared_global_binary_gripper_training
         "GLOBAL_VIDEO_DROPOUT_PROB=$GLOBAL_VIDEO_DROPOUT_PROB",
         "GLOBAL_VIDEO_TIMESTEP_MODE=$GLOBAL_VIDEO_TIMESTEP_MODE",
         "GLOBAL_VIDEO_ATTENTION_MODE=$GLOBAL_VIDEO_ATTENTION_MODE",
+        "ATTENTION_BACKEND=$ATTENTION_BACKEND",
         "USE_SPARSE_HUB_ATTENTION=$USE_SPARSE_HUB_ATTENTION",
     ):
         assert marker in script
@@ -234,6 +237,7 @@ def test_liftbarrier_gamma_staged_workflow_runs_dense_teacher_then_sparse_studen
         'export STAGE2_ACTION_LOSS_WEIGHT="${STAGE2_ACTION_LOSS_WEIGHT:-$BASE_ACTION_LOSS_WEIGHT}"',
         'export STAGE1_OUTPUT_DIR="${STAGE1_OUTPUT_DIR:-${BASE_OUTPUT_DIR}/dense_teacher}"',
         'export STAGE2_OUTPUT_DIR="${STAGE2_OUTPUT_DIR:-${BASE_OUTPUT_DIR}/sparse_student}"',
+        'export ATTENTION_BACKEND="${ATTENTION_BACKEND:-flex}"',
         "latest_complete_checkpoint()",
         'sort -V',
         'export PRETRAINED_DIR="$stage_pretrained_dir"',
@@ -242,6 +246,7 @@ def test_liftbarrier_gamma_staged_workflow_runs_dense_teacher_then_sparse_studen
         'export DYNAMICS_LOSS_WEIGHT="$STAGE2_DYNAMICS_LOSS_WEIGHT"',
         'echo "DYNAMICS_LOSS_WEIGHT=$DYNAMICS_LOSS_WEIGHT"',
         'echo "ACTION_LOSS_WEIGHT=$ACTION_LOSS_WEIGHT"',
+        'echo "ATTENTION_BACKEND=$ATTENTION_BACKEND"',
         '"dense-teacher-style"',
         '"false"',
         '"sparse-causal-student-style"',
