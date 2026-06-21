@@ -104,5 +104,30 @@ def test_robofactory_training_script_preserves_droid_i2v_patch_embedding_by_defa
     assert "++action_head_cfg.config.diffusion_model_cfg.in_dim=16" not in script
 
 
+def test_robofactory_training_script_uses_droid_base_head_width_by_default():
+    script = SCRIPT_PATH.read_text()
+
+    for marker in (
+        "MODEL_MAX_STATE_DIM=${MODEL_MAX_STATE_DIM:-64}",
+        "MODEL_ACTION_DIM=${MODEL_ACTION_DIM:-32}",
+        "AGENT_STATE_PAD_DIM=${AGENT_STATE_PAD_DIM:-64}",
+        "AGENT_ACTION_PAD_DIM=${AGENT_ACTION_PAD_DIM:-32}",
+        "model_max_state_dim=$MODEL_MAX_STATE_DIM",
+        "agent_action_pad_dim=$AGENT_ACTION_PAD_DIM",
+        "++agent_state_pad_dim=$AGENT_STATE_PAD_DIM",
+        "++agent_action_pad_dim=$AGENT_ACTION_PAD_DIM",
+        "++action_head_cfg.config.max_state_dim=$MODEL_MAX_STATE_DIM",
+        "++action_head_cfg.config.action_dim=$MODEL_ACTION_DIM",
+        "++action_head_cfg.config.diffusion_model_cfg.max_state_dim=$MODEL_MAX_STATE_DIM",
+        "++action_head_cfg.config.diffusion_model_cfg.action_dim=$MODEL_ACTION_DIM",
+    ):
+        assert marker in script
+
+    assert "MODEL_MAX_STATE_DIM=${MODEL_MAX_STATE_DIM:-8}" not in script
+    assert "MODEL_ACTION_DIM=${MODEL_ACTION_DIM:-8}" not in script
+    assert "AGENT_STATE_PAD_DIM=${AGENT_STATE_PAD_DIM:-null}" not in script
+    assert "AGENT_ACTION_PAD_DIM=${AGENT_ACTION_PAD_DIM:-null}" not in script
+
+
 def test_robofactory_training_script_is_valid_bash():
     subprocess.run(["bash", "-n", str(SCRIPT_PATH)], check=True)

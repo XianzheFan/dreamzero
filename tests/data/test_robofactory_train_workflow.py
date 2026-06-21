@@ -6,6 +6,9 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW_PATH = REPO_ROOT / "osmo_workflows/robofactory/train_liftbarrier_shared_global.yaml"
 STAGED_WORKFLOW_PATH = REPO_ROOT / "osmo_workflows/robofactory/train_liftbarrier_gamma_staged.yaml"
+DROIDWIDTH_TEACHER_WORKFLOW_PATH = (
+    REPO_ROOT / "osmo_workflows/robofactory/train_liftbarrier_gamma_droidwidth_teacher.yaml"
+)
 CODE_CACHE_URI = "swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_gamma_actiondelta_flatroot_7b40d5d_20260621"
 EXPECTED_CODE_COMMIT = "7b40d5d2f82e91ff0aaac78003114659748839a3"
 
@@ -302,3 +305,55 @@ def test_liftbarrier_gamma_staged_workflow_embedded_python_blocks_compile():
     assert len(heredocs) == 3
     for block in heredocs:
         compile(block, f"{STAGED_WORKFLOW_PATH}:embedded-python", "exec")
+
+
+def test_liftbarrier_gamma_droidwidth_teacher_workflow_preserves_droid_base_head_width():
+    with DROIDWIDTH_TEACHER_WORKFLOW_PATH.open() as f:
+        workflow = yaml.safe_load(f)
+
+    defaults = workflow["default-values"]
+    assert defaults["workflow_name"] == "dz-rf-sg-gamma-droidwidth-teacher-lb500-xianzhef-20260621"
+    assert defaults["run_name"] == "dz-rf-sg-gamma-droidwidth-teacher-lb500-xianzhef-20260621"
+    assert defaults["code_s3_uri"] == CODE_CACHE_URI
+    assert defaults["expected_code_commit"] == EXPECTED_CODE_COMMIT
+    assert defaults["stage1_max_steps"] == "10000"
+
+    train_task = _task_by_name(workflow, "train")
+    assert train_task["args"] == ["/tmp/train_liftbarrier_gamma_droidwidth_teacher.sh"]
+    script = train_task["files"][0]["contents"]
+
+    for marker in (
+        'exec > >(tee /tmp/train_liftbarrier_gamma_droidwidth_teacher.log) 2>&1',
+        'STAGE1_RUN_NAME="${STAGE1_RUN_NAME:-${BASE_RUN_NAME}-teacher}"',
+        'export MODEL_MAX_STATE_DIM="${MODEL_MAX_STATE_DIM:-64}"',
+        'export MODEL_ACTION_DIM="${MODEL_ACTION_DIM:-32}"',
+        'export AGENT_STATE_PAD_DIM="${AGENT_STATE_PAD_DIM:-64}"',
+        'export AGENT_ACTION_PAD_DIM="${AGENT_ACTION_PAD_DIM:-32}"',
+        'export STAGE1_OUTPUT_DIR="${STAGE1_OUTPUT_DIR:-${BASE_OUTPUT_DIR}/teacher}"',
+        'echo "MODEL_MAX_STATE_DIM=$MODEL_MAX_STATE_DIM"',
+        'echo "MODEL_ACTION_DIM=$MODEL_ACTION_DIM"',
+        'echo "AGENT_STATE_PAD_DIM=$AGENT_STATE_PAD_DIM"',
+        'echo "AGENT_ACTION_PAD_DIM=$AGENT_ACTION_PAD_DIM"',
+        "DREAMZERO_DROID_PRETRAINED_DIR=\"$PRETRAINED_DIR\"",
+        '"droidwidth-teacher-style"',
+        'TEACHER_CKPT="$(latest_complete_checkpoint "$STAGE1_OUTPUT_DIR" || true)"',
+        "Teacher complete checkpoint selected",
+        "Droidwidth Gamma teacher training complete.",
+        'osmo data upload "${BASE_LOG_S3_URI}/" /tmp/train_liftbarrier_gamma_droidwidth_teacher.log',
+        "bash scripts/train/robofactory_bimanual_training.sh",
+    ):
+        assert marker in script
+
+    assert '"sparse-causal-student-style"' not in script
+    assert "Stage1 complete checkpoint selected for stage2 warm-start" not in script
+
+
+def test_liftbarrier_gamma_droidwidth_teacher_workflow_embedded_python_blocks_compile():
+    with DROIDWIDTH_TEACHER_WORKFLOW_PATH.open() as f:
+        workflow = yaml.safe_load(f)
+
+    script = _task_by_name(workflow, "train")["files"][0]["contents"]
+    heredocs = _python_heredocs(script)
+    assert len(heredocs) == 3
+    for block in heredocs:
+        compile(block, f"{DROIDWIDTH_TEACHER_WORKFLOW_PATH}:embedded-python", "exec")
