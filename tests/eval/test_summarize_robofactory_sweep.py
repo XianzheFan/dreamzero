@@ -58,6 +58,16 @@ def test_summarize_sweep_extracts_trace_metrics(tmp_path):
                         "raw_gripper_saturation_frac": 0.5,
                         "joint_clamp_delta_mean": 0.03,
                         "joint_clamp_delta_max": 0.12,
+                        "raw_joint_saturation_frac_first_step": 0.02,
+                        "raw_joint_saturation_frac_late_steps": 0.05,
+                        "raw_joint_saturation_frac_by_arm": {
+                            "left": 0.06,
+                            "right": 0.02,
+                        },
+                        "joint_clamp_delta_mean_by_arm": {
+                            "left": 0.04,
+                            "right": 0.02,
+                        },
                     },
                     "joint_debug": {
                         "pre_blend_replan_boundary_joint_jump": {
@@ -131,6 +141,16 @@ def test_summarize_sweep_extracts_trace_metrics(tmp_path):
                         "raw_gripper_saturation_frac": 0.0,
                         "joint_clamp_delta_mean": 0.0,
                         "joint_clamp_delta_max": 0.0,
+                        "raw_joint_saturation_frac_first_step": 0.0,
+                        "raw_joint_saturation_frac_late_steps": 0.0,
+                        "raw_joint_saturation_frac_by_arm": {
+                            "left": 0.0,
+                            "right": 0.0,
+                        },
+                        "joint_clamp_delta_mean_by_arm": {
+                            "left": 0.0,
+                            "right": 0.0,
+                        },
                     },
                     "joint_debug": {
                         "pre_blend_replan_boundary_joint_jump": {
@@ -171,8 +191,14 @@ def test_summarize_sweep_extracts_trace_metrics(tmp_path):
     assert rows[0]["first_cmd_delta_max"] == 0.06
     assert rows[0]["target_min_mean_left"] == 0.13
     assert rows[0]["raw_joint_saturation_frac"] == 0.0
+    assert rows[0]["raw_joint_saturation_frac_left"] == 0.0
+    assert rows[0]["raw_joint_saturation_frac_right"] == 0.0
+    assert rows[0]["raw_joint_saturation_frac_first_step"] == 0.0
+    assert rows[0]["raw_joint_saturation_frac_late_steps"] == 0.0
     assert rows[0]["raw_gripper_saturation_frac"] == 0.0
     assert rows[0]["joint_clamp_delta_mean"] == 0.0
+    assert rows[0]["joint_clamp_delta_mean_left"] == 0.0
+    assert rows[0]["joint_clamp_delta_mean_right"] == 0.0
     assert rows[0]["joint_clamp_delta_max"] == 0.0
     assert rows[0]["max_pre_blend_replan_boundary_joint_jump"] == 0.05
     assert rows[0]["max_pre_ensemble_replan_boundary_joint_jump"] == 0.05
@@ -202,6 +228,12 @@ def test_summarize_sweep_extracts_trace_metrics(tmp_path):
     assert rows[1]["first_cmd_delta_mean"] == 0.08
     assert rows[1]["first_cmd_delta_max"] == 0.18
     assert rows[1]["raw_joint_saturation_frac"] == 0.04
+    assert rows[1]["raw_joint_saturation_frac_left"] == 0.06
+    assert rows[1]["raw_joint_saturation_frac_right"] == 0.02
+    assert rows[1]["raw_joint_saturation_frac_first_step"] == 0.02
+    assert rows[1]["raw_joint_saturation_frac_late_steps"] == 0.05
     assert rows[1]["raw_gripper_saturation_frac"] == 0.5
     assert rows[1]["joint_clamp_delta_mean"] == 0.03
+    assert rows[1]["joint_clamp_delta_mean_left"] == 0.04
+    assert rows[1]["joint_clamp_delta_mean_right"] == 0.02
     assert rows[1]["joint_clamp_delta_max"] == 0.12

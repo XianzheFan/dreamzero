@@ -111,6 +111,26 @@ def _joint_debug_stat(
     raise ValueError(f"unsupported reducer: {reducer}")
 
 
+def _norm_debug_nested_stat(
+    norm_debugs: list[Any],
+    debug_key: str,
+    nested_key: str,
+    reducer: str,
+) -> float | None:
+    values = []
+    for debug in norm_debugs:
+        if not isinstance(debug, dict):
+            continue
+        nested = debug.get(debug_key)
+        if isinstance(nested, dict):
+            values.append(nested.get(nested_key))
+    if reducer == "mean":
+        return _mean_finite(values)
+    if reducer == "max":
+        return _max_finite(values)
+    raise ValueError(f"unsupported reducer: {reducer}")
+
+
 def summarize_setting(setting_dir: str) -> dict[str, Any]:
     results_path = os.path.join(setting_dir, "results.json")
     dump_summary_path = os.path.join(setting_dir, "action_dump_summary.json")
@@ -226,6 +246,44 @@ def summarize_setting(setting_dir: str) -> dict[str, Any]:
                         for debug in norm_debugs
                         if isinstance(debug, dict)
                     ]
+                ),
+                "raw_joint_saturation_frac_first_step": _mean_finite(
+                    [
+                        debug.get("raw_joint_saturation_frac_first_step")
+                        for debug in norm_debugs
+                        if isinstance(debug, dict)
+                    ]
+                ),
+                "raw_joint_saturation_frac_late_steps": _mean_finite(
+                    [
+                        debug.get("raw_joint_saturation_frac_late_steps")
+                        for debug in norm_debugs
+                        if isinstance(debug, dict)
+                    ]
+                ),
+                "raw_joint_saturation_frac_left": _norm_debug_nested_stat(
+                    norm_debugs,
+                    "raw_joint_saturation_frac_by_arm",
+                    "left",
+                    "mean",
+                ),
+                "raw_joint_saturation_frac_right": _norm_debug_nested_stat(
+                    norm_debugs,
+                    "raw_joint_saturation_frac_by_arm",
+                    "right",
+                    "mean",
+                ),
+                "joint_clamp_delta_mean_left": _norm_debug_nested_stat(
+                    norm_debugs,
+                    "joint_clamp_delta_mean_by_arm",
+                    "left",
+                    "mean",
+                ),
+                "joint_clamp_delta_mean_right": _norm_debug_nested_stat(
+                    norm_debugs,
+                    "joint_clamp_delta_mean_by_arm",
+                    "right",
+                    "mean",
                 ),
                 "mean_pre_blend_replan_boundary_joint_jump": _joint_debug_stat(
                     dump_episodes,
@@ -354,8 +412,14 @@ def print_table(rows: list[dict[str, Any]]) -> None:
         ("ens_corr", "mean_temporal_ensemble_correction_joint"),
         ("slew_corr", "mean_slew_correction_joint"),
         ("raw_sat", "raw_joint_saturation_frac"),
+        ("raw_sat_L", "raw_joint_saturation_frac_left"),
+        ("raw_sat_R", "raw_joint_saturation_frac_right"),
+        ("raw_sat_t0", "raw_joint_saturation_frac_first_step"),
+        ("raw_sat_late", "raw_joint_saturation_frac_late_steps"),
         ("raw_grip_sat", "raw_gripper_saturation_frac"),
         ("clamp_mean", "joint_clamp_delta_mean"),
+        ("clamp_L", "joint_clamp_delta_mean_left"),
+        ("clamp_R", "joint_clamp_delta_mean_right"),
         ("clamp_max", "joint_clamp_delta_max"),
         ("never_close", "any_gripper_never_closes"),
     ]

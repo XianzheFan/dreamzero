@@ -146,6 +146,62 @@ def _joint_dims(action_dim: int, gripper_dims: tuple[int, ...]) -> tuple[int, ..
     return tuple(dim for dim in range(action_dim) if dim not in gripper_set)
 
 
+def _arm_joint_positions(
+    action_dim: int,
+    *,
+    arm_dim: int,
+    gripper_dims: tuple[int, ...],
+    joint_dims: tuple[int, ...],
+    arm_labels: tuple[str, ...],
+) -> dict[str, list[int]]:
+    joint_pos_by_dim = {dim: idx for idx, dim in enumerate(joint_dims)}
+    gripper_set = set(gripper_dims)
+    positions: dict[str, list[int]] = {}
+    for arm_idx, label in enumerate(arm_labels):
+        start = arm_idx * arm_dim
+        end = min(start + arm_dim, action_dim)
+        arm_dims = [
+            dim
+            for dim in range(start, end)
+            if dim not in gripper_set and dim in joint_pos_by_dim
+        ]
+        positions[label] = [joint_pos_by_dim[dim] for dim in arm_dims]
+    return positions
+
+
+def _joint_saturation_rows(
+    joint_dims: tuple[int, ...],
+    saturation_frac: np.ndarray,
+    pos_saturation_frac: np.ndarray,
+    neg_saturation_frac: np.ndarray,
+    clamp_delta_mean: np.ndarray,
+    clamp_delta_max: np.ndarray,
+    *,
+    limit: int = 5,
+) -> list[dict[str, float | int]]:
+    rows = []
+    for idx, dim in enumerate(joint_dims):
+        rows.append(
+            {
+                "dim": int(dim),
+                "saturation_frac": float(saturation_frac[idx]),
+                "pos_saturation_frac": float(pos_saturation_frac[idx]),
+                "neg_saturation_frac": float(neg_saturation_frac[idx]),
+                "clamp_delta_mean": float(clamp_delta_mean[idx]),
+                "clamp_delta_max": float(clamp_delta_max[idx]),
+            }
+        )
+    rows.sort(
+        key=lambda row: (
+            row["saturation_frac"],
+            row["clamp_delta_mean"],
+            row["clamp_delta_max"],
+        ),
+        reverse=True,
+    )
+    return rows[:limit]
+
+
 def _gripper_metrics(
     values: np.ndarray,
     close_threshold: float,
@@ -610,6 +666,47 @@ def analyze_episode(
             "clamp_delta_max": float(clamp_delta.max()),
         }
         if raw_joint.size:
+            joint_saturation_mask = np.abs(raw_joint) >= 0.999
+            joint_pos_saturation_mask = raw_joint >= 0.999
+            joint_neg_saturation_mask = raw_joint <= -0.999
+            reduce_axes = tuple(range(joint_saturation_mask.ndim - 1))
+            joint_saturation_frac_per_dim = joint_saturation_mask.mean(axis=reduce_axes)
+            joint_pos_saturation_frac_per_dim = joint_pos_saturation_mask.mean(axis=reduce_axes)
+            joint_neg_saturation_frac_per_dim = joint_neg_saturation_mask.mean(axis=reduce_axes)
+            joint_clamp_delta_mean_per_dim = joint_clamp_delta.mean(axis=reduce_axes)
+            joint_clamp_delta_max_per_dim = joint_clamp_delta.max(axis=reduce_axes)
+            arm_positions = _arm_joint_positions(
+                action_dim,
+                arm_dim=arm_dim,
+                gripper_dims=gripper_dims,
+                joint_dims=joint_dims,
+                arm_labels=arm_labels,
+            )
+            raw_joint_saturation_by_arm = {
+                label: float(joint_saturation_mask[..., positions].mean())
+                for label, positions in arm_positions.items()
+                if positions
+            }
+            joint_clamp_delta_mean_by_arm = {
+                label: float(joint_clamp_delta[..., positions].mean())
+                for label, positions in arm_positions.items()
+                if positions
+            }
+            joint_clamp_delta_max_by_arm = {
+                label: float(joint_clamp_delta[..., positions].max())
+                for label, positions in arm_positions.items()
+                if positions
+            }
+            if joint_saturation_mask.ndim >= 3 and joint_saturation_mask.shape[1] > 0:
+                first_step_sat = float(joint_saturation_mask[:, 0, :].mean())
+                late_step_sat = (
+                    float(joint_saturation_mask[:, 1:, :].mean())
+                    if joint_saturation_mask.shape[1] > 1
+                    else 0.0
+                )
+            else:
+                first_step_sat = float(joint_saturation_mask.mean())
+                late_step_sat = 0.0
             norm_debug.update(
                 {
                     "raw_joint": _range_stats(raw_joint),
@@ -617,6 +714,34 @@ def analyze_episode(
                     "raw_joint_saturation_frac": float((np.abs(raw_joint) >= 0.999).mean()),
                     "joint_clamp_delta_mean": float(joint_clamp_delta.mean()),
                     "joint_clamp_delta_max": float(joint_clamp_delta.max()),
+                    "raw_joint_saturation_frac_by_arm": raw_joint_saturation_by_arm,
+                    "joint_clamp_delta_mean_by_arm": joint_clamp_delta_mean_by_arm,
+                    "joint_clamp_delta_max_by_arm": joint_clamp_delta_max_by_arm,
+                    "raw_joint_saturation_frac_first_step": first_step_sat,
+                    "raw_joint_saturation_frac_late_steps": late_step_sat,
+                    "raw_joint_saturation_frac_per_dim": _round_list(
+                        joint_saturation_frac_per_dim
+                    ),
+                    "raw_joint_pos_saturation_frac_per_dim": _round_list(
+                        joint_pos_saturation_frac_per_dim
+                    ),
+                    "raw_joint_neg_saturation_frac_per_dim": _round_list(
+                        joint_neg_saturation_frac_per_dim
+                    ),
+                    "joint_clamp_delta_mean_per_dim": _round_list(
+                        joint_clamp_delta_mean_per_dim
+                    ),
+                    "joint_clamp_delta_max_per_dim": _round_list(
+                        joint_clamp_delta_max_per_dim
+                    ),
+                    "raw_joint_top_saturated_dims": _joint_saturation_rows(
+                        joint_dims,
+                        joint_saturation_frac_per_dim,
+                        joint_pos_saturation_frac_per_dim,
+                        joint_neg_saturation_frac_per_dim,
+                        joint_clamp_delta_mean_per_dim,
+                        joint_clamp_delta_max_per_dim,
+                    ),
                 }
             )
 
@@ -755,6 +880,35 @@ def analyze_episode(
                 f"joint_clamp_delta_mean={norm_debug['joint_clamp_delta_mean']:.3f} "
                 f"joint_clamp_delta_max={norm_debug['joint_clamp_delta_max']:.3f}"
             )
+            if "raw_joint_saturation_frac_by_arm" in norm_debug:
+                sat_by_arm = " ".join(
+                    f"{label}={value:.2f}"
+                    for label, value in norm_debug["raw_joint_saturation_frac_by_arm"].items()
+                )
+                clamp_by_arm = " ".join(
+                    f"{label}={value:.3f}"
+                    for label, value in norm_debug["joint_clamp_delta_mean_by_arm"].items()
+                )
+                print(
+                    "  raw normalized joint sat by arm: "
+                    f"{sat_by_arm} | clamp_delta_mean_by_arm: {clamp_by_arm}"
+                )
+            if "raw_joint_saturation_frac_first_step" in norm_debug:
+                print(
+                    "  raw normalized joint sat first/late: "
+                    f"first={norm_debug['raw_joint_saturation_frac_first_step']:.2f} "
+                    f"late={norm_debug['raw_joint_saturation_frac_late_steps']:.2f}"
+                )
+            if norm_debug.get("raw_joint_top_saturated_dims"):
+                top = "; ".join(
+                    "dim {dim}: sat={saturation_frac:.2f} "
+                    "pos={pos_saturation_frac:.2f} neg={neg_saturation_frac:.2f} "
+                    "clamp_mean={clamp_delta_mean:.3f} clamp_max={clamp_delta_max:.3f}".format(
+                        **row
+                    )
+                    for row in norm_debug["raw_joint_top_saturated_dims"]
+                )
+                print(f"  top saturated joint dims: {top}")
 
     if trace_debug is not None:
         print(
@@ -851,6 +1005,61 @@ def _aggregate(episodes: list[dict[str, Any]]) -> dict[str, Any]:
             np.mean([e["mean_replan_boundary_joint_jump"] for e in episodes])
         ) if episodes else 0.0,
     }
+    norm_debugs = [
+        e.get("norm_debug")
+        for e in episodes
+        if isinstance(e.get("norm_debug"), dict)
+    ]
+    if norm_debugs:
+        def _mean_debug(key: str) -> float | None:
+            values = [
+                d.get(key)
+                for d in norm_debugs
+                if isinstance(d.get(key), (int, float))
+            ]
+            return _safe_float(np.mean(values)) if values else None
+
+        def _max_debug(key: str) -> float | None:
+            values = [
+                d.get(key)
+                for d in norm_debugs
+                if isinstance(d.get(key), (int, float))
+            ]
+            return _safe_float(np.max(values)) if values else None
+
+        def _mean_nested(key: str, label: str) -> float | None:
+            values = []
+            for d in norm_debugs:
+                nested = d.get(key)
+                if isinstance(nested, dict) and isinstance(nested.get(label), (int, float)):
+                    values.append(nested[label])
+            return _safe_float(np.mean(values)) if values else None
+
+        summary["norm_debug"] = {
+            "episodes": len(norm_debugs),
+            "raw_joint_saturation_frac": _mean_debug("raw_joint_saturation_frac"),
+            "raw_gripper_saturation_frac": _mean_debug("raw_gripper_saturation_frac"),
+            "joint_clamp_delta_mean": _mean_debug("joint_clamp_delta_mean"),
+            "joint_clamp_delta_max": _max_debug("joint_clamp_delta_max"),
+            "raw_joint_saturation_frac_first_step": _mean_debug(
+                "raw_joint_saturation_frac_first_step"
+            ),
+            "raw_joint_saturation_frac_late_steps": _mean_debug(
+                "raw_joint_saturation_frac_late_steps"
+            ),
+            "raw_joint_saturation_frac_by_arm": {
+                label: _mean_nested("raw_joint_saturation_frac_by_arm", label)
+                for label in labels
+            },
+            "joint_clamp_delta_mean_by_arm": {
+                label: _mean_nested("joint_clamp_delta_mean_by_arm", label)
+                for label in labels
+            },
+            "joint_clamp_delta_max_by_arm": {
+                label: _mean_nested("joint_clamp_delta_max_by_arm", label)
+                for label in labels
+            },
+        }
     trace_episodes = [e["env_trace_debug"] for e in episodes if e.get("env_trace_debug") is not None]
     if trace_episodes:
         margin_max = [
@@ -999,6 +1208,29 @@ def main() -> None:
         f"mean_abs={summary['mean_replan_boundary_joint_jump']:.3f} "
         f"max_abs={summary['max_replan_boundary_joint_jump']:.3f}"
     )
+    if "norm_debug" in summary:
+        norm = summary["norm_debug"]
+        sat_by_arm = norm.get("raw_joint_saturation_frac_by_arm", {})
+        clamp_by_arm = norm.get("joint_clamp_delta_mean_by_arm", {})
+        print(
+            "  normalized action saturation: "
+            f"joint_sat={norm['raw_joint_saturation_frac']} "
+            f"gripper_sat={norm['raw_gripper_saturation_frac']} "
+            f"first_step={norm['raw_joint_saturation_frac_first_step']} "
+            f"late_steps={norm['raw_joint_saturation_frac_late_steps']} "
+            f"joint_clamp_mean={norm['joint_clamp_delta_mean']} "
+            f"joint_clamp_max={norm['joint_clamp_delta_max']}"
+        )
+        if isinstance(sat_by_arm, dict) and sat_by_arm:
+            print(
+                "  normalized joint saturation by arm: "
+                + " ".join(f"{label}={value}" for label, value in sat_by_arm.items())
+            )
+        if isinstance(clamp_by_arm, dict) and clamp_by_arm:
+            print(
+                "  normalized joint clamp mean by arm: "
+                + " ".join(f"{label}={value}" for label, value in clamp_by_arm.items())
+            )
     if "env_trace" in summary:
         trace = summary["env_trace"]
         print(

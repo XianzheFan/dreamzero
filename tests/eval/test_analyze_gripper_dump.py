@@ -28,6 +28,10 @@ def test_analyze_episode_reports_joint_jitter_metrics(tmp_path):
     exec_action_pre_slew[3, 8:15] = 1.0
     pred_chunk = np.zeros((2, 3, 16), dtype=np.float32)
     obs_qpos = np.zeros((2, 16), dtype=np.float32)
+    action_norm_raw = np.zeros((2, 3, 16), dtype=np.float32)
+    action_norm_raw[:, :, 0] = 1.5
+    action_norm_raw[:, 1:, 8] = -2.0
+    action_norm_clipped = np.clip(action_norm_raw, -1.0, 1.0)
     np.savez(
         path,
         seed=np.asarray(1000),
@@ -37,6 +41,8 @@ def test_analyze_episode_reports_joint_jitter_metrics(tmp_path):
         exec_action_pre_ensemble=exec_action_pre_ensemble,
         exec_action_pre_slew=exec_action_pre_slew,
         pred_chunk=pred_chunk,
+        action_norm_raw=action_norm_raw,
+        action_norm_clipped=action_norm_clipped,
         infer_step=np.asarray([0, 3], dtype=np.int64),
         obs_qpos=obs_qpos,
     )
@@ -68,3 +74,32 @@ def test_analyze_episode_reports_joint_jitter_metrics(tmp_path):
     assert "pre_slew_joint_step_delta" in episode["joint_debug"]
     assert "boundary_blend_correction_joint" in episode["joint_debug"]
     assert "slew_correction_joint" in episode["joint_debug"]
+    assert episode["norm_debug"] is not None
+    norm_debug = episode["norm_debug"]
+    assert len(norm_debug["raw_joint_saturation_frac_per_dim"]) == 14
+    assert norm_debug["raw_joint_pos_saturation_frac_per_dim"][0] == 1.0
+    assert np.isclose(
+        norm_debug["raw_joint_neg_saturation_frac_per_dim"][7],
+        2 / 3,
+        atol=1e-4,
+    )
+    assert np.isclose(
+        norm_debug["raw_joint_saturation_frac_by_arm"]["left"],
+        1 / 7,
+    )
+    assert np.isclose(
+        norm_debug["raw_joint_saturation_frac_by_arm"]["right"],
+        2 / 21,
+    )
+    assert np.isclose(
+        norm_debug["raw_joint_saturation_frac_first_step"],
+        1 / 14,
+    )
+    assert np.isclose(
+        norm_debug["raw_joint_saturation_frac_late_steps"],
+        1 / 7,
+    )
+    assert norm_debug["joint_clamp_delta_mean_by_arm"]["left"] > 0.0
+    assert norm_debug["joint_clamp_delta_mean_by_arm"]["right"] > 0.0
+    assert norm_debug["raw_joint_top_saturated_dims"][0]["dim"] == 0
+    assert norm_debug["raw_joint_top_saturated_dims"][1]["dim"] == 8
