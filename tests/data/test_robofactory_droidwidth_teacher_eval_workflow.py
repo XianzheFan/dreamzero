@@ -78,16 +78,13 @@ def test_droidwidth_teacher_gb200_model_only_uses_pyav_video_reader_fallback():
 def test_droidwidth_teacher_gb200_s3_model_cache_downloads_are_throttled():
     _, _, script = _workflow_and_script()
 
-    assert (
-        "wan_regex='.*(\\.cache_complete|models_t5_umt5-xxl-enc-bf16\\.pth|"
-        "models_clip_open-clip-xlm-roberta-large-vit-huge-14\\.pth|Wan2\\.1_VAE\\.pth)$'"
-        in script
-    )
-    assert (
-        'osmo data download --resume --regex "$wan_regex" --processes 1 --threads 1 '
-        '"${MODEL_CACHE_S3_URI}/Wan2.1-I2V-14B-480P/" "$WAN_IMPORT"'
-        in script
-    )
+    assert "Wan2.1-I2V-14B-480P-minimal-eval" in script
+    assert 'repo_id = "Wan-AI/Wan2.1-I2V-14B-480P"' in script
+    assert "hf_hub_download" in script
+    assert '"models_t5_umt5-xxl-enc-bf16.pth"' in script
+    assert '"models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth"' in script
+    assert '"Wan2.1_VAE.pth"' in script
+    assert '"${MODEL_CACHE_S3_URI}/Wan2.1-I2V-14B-480P/"' not in script
     assert (
         'osmo data download --resume --processes 1 --threads 4 '
         '"${MODEL_CACHE_S3_URI}/DreamZero-DROID/" "$DROID_IMPORT"'

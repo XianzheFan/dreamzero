@@ -254,24 +254,38 @@ workflow:
           echo "Restoring Wan/UMT5 model caches"
           WAN_EXPECTED="/workspace/checkpoints/Wan2.1-I2V-14B-480P"
           WAN_AMLFS="${AMLFS_MODEL_CACHE_DIR}/Wan2.1-I2V-14B-480P"
+          WAN_MINIMAL_AMLFS="${AMLFS_MODEL_CACHE_DIR}/Wan2.1-I2V-14B-480P-minimal-eval"
           if [ -f "${WAN_AMLFS}/.cache_complete" ]; then
             echo "Using Wan2.1-I2V-14B-480P from AMLFS cache"
             ln -sfn "$WAN_AMLFS" "$WAN_EXPECTED"
+          elif [ -f "${WAN_MINIMAL_AMLFS}/.cache_complete" ]; then
+            echo "Using minimal Wan2.1 eval components from AMLFS cache"
+            ln -sfn "$WAN_MINIMAL_AMLFS" "$WAN_EXPECTED"
           else
-            echo "AMLFS Wan cache unavailable; restoring from xianzhef S3 model cache"
-            WAN_IMPORT="/workspace/model_import/Wan2.1-I2V-14B-480P"
-            mkdir -p "$WAN_IMPORT"
-            wan_regex='.*(\.cache_complete|models_t5_umt5-xxl-enc-bf16\.pth|models_clip_open-clip-xlm-roberta-large-vit-huge-14\.pth|Wan2\.1_VAE\.pth)$'
-            osmo data download --resume --regex "$wan_regex" --processes 1 --threads 1 "${MODEL_CACHE_S3_URI}/Wan2.1-I2V-14B-480P/" "$WAN_IMPORT"
-            if [ -f "${WAN_IMPORT}/.cache_complete" ]; then
-              ln -sfn "$WAN_IMPORT" "$WAN_EXPECTED"
-            elif [ -f "${WAN_IMPORT}/Wan2.1-I2V-14B-480P/.cache_complete" ]; then
-              ln -sfn "${WAN_IMPORT}/Wan2.1-I2V-14B-480P" "$WAN_EXPECTED"
-            else
-              echo "FATAL: no usable Wan2.1-I2V-14B-480P cache after S3 download" >&2
-              find "$WAN_IMPORT" -maxdepth 3 -type f | sed -n "1,80p" || true
-              exit 22
-            fi
+            echo "AMLFS Wan cache unavailable; restoring minimal eval components from HuggingFace"
+            mkdir -p "$WAN_MINIMAL_AMLFS"
+            WAN_MINIMAL_AMLFS="$WAN_MINIMAL_AMLFS" python - <<'PY'
+          import os
+          from pathlib import Path
+          from huggingface_hub import hf_hub_download
+
+          repo_id = "Wan-AI/Wan2.1-I2V-14B-480P"
+          target = Path(os.environ["WAN_MINIMAL_AMLFS"])
+          required_files = [
+              "models_t5_umt5-xxl-enc-bf16.pth",
+              "models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth",
+              "Wan2.1_VAE.pth",
+          ]
+          for filename in required_files:
+              path = hf_hub_download(
+                  repo_id=repo_id,
+                  filename=filename,
+                  local_dir=str(target),
+              )
+              print(f"restored {filename}: {path}")
+          PY
+            date -u +"%Y-%m-%dT%H:%M:%SZ" > "${WAN_MINIMAL_AMLFS}/.cache_complete"
+            ln -sfn "$WAN_MINIMAL_AMLFS" "$WAN_EXPECTED"
           fi
           test -f "${WAN_EXPECTED}/.cache_complete"
           test -f "${WAN_EXPECTED}/models_t5_umt5-xxl-enc-bf16.pth"
