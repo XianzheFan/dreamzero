@@ -477,6 +477,7 @@ workflow:
           OmegaConf.save(config=cfg, f=str(cfg_path))
           text = cfg_path.read_text()
           text = text.replace("/workspace/checkpoints/umt5-xxl/umt5-xxl", "/workspace/checkpoints/umt5-xxl")
+          text = text.replace("/workspace/checkpoints/umt5-xxl-tokenizer", "/workspace/checkpoints/umt5-xxl")
           cfg_path.write_text(text)
           PY
 
