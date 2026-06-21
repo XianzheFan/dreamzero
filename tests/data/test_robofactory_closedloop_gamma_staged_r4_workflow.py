@@ -27,6 +27,7 @@ def test_gamma_staged_r4_eval_patches_nested_tokenizer_paths():
         '"/workspace/checkpoints/umt5-xxl")'
     ) in script
     assert 'grep -n "tokenizer_path" "${candidate_dir}/experiment_cfg/conf.yaml"' in script
+    assert 'FATAL: stale umt5-xxl-tokenizer path remains in checkpoint config' in script
 
 
 def test_gamma_staged_r4_eval_embedded_script_is_valid_bash():

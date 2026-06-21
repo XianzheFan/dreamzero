@@ -484,6 +484,10 @@ workflow:
           grep -n "pretrained_model_path" "${candidate_dir}/experiment_cfg/conf.yaml" || true
           grep -n "robofactory_data_root" "${candidate_dir}/experiment_cfg/conf.yaml" || true
           grep -n "tokenizer_path" "${candidate_dir}/experiment_cfg/conf.yaml" || true
+          if grep -q "/workspace/checkpoints/umt5-xxl-tokenizer" "${candidate_dir}/experiment_cfg/conf.yaml"; then
+            echo "FATAL: stale umt5-xxl-tokenizer path remains in checkpoint config" >&2
+            exit 26
+          fi
           du -sh "$candidate_dir"
 
           echo "Preparing RoboFactory assets cache"
