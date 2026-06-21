@@ -67,7 +67,7 @@ def test_closedloop_gamma_workflow_runs_causal_cache_diagnostics():
         '"video_pred_rollout_mode": server_meta.get("video_pred_rollout_mode")',
         '"shared_global_wrist_window_mode": server_meta.get("shared_global_wrist_window_mode")',
         '--joint-target-slew-rate "$JOINT_TARGET_SLEW_RATE"',
-        'REPLAN_BOUNDARY_BLEND_STEPS="${REPLAN_BOUNDARY_BLEND_STEPS:-0}"',
+        'REPLAN_BOUNDARY_BLEND_STEPS="${REPLAN_BOUNDARY_BLEND_STEPS:-0 4}"',
         '--replan-boundary-blend-steps "$REPLAN_BOUNDARY_BLEND_STEP"',
         '"replan_boundary_blend_steps": cfg.get("replan_boundary_blend_steps")',
         'TEMPORAL_ACTION_ENSEMBLE_DECAY="${TEMPORAL_ACTION_ENSEMBLE_DECAY:-0}"',
@@ -110,6 +110,7 @@ def test_closedloop_gamma_scale_sweep_targets_action_amplitude_diagnostic():
     assert 'JOINT_DELTA_SCALES="0.75 1.0 1.25 1.5 2.0"' in script
     assert '--joint-delta-scale "$JOINT_DELTA_SCALE"' in script
     assert "--joint-delta-output-clip" in script
+    assert 'REPLAN_BOUNDARY_BLEND_STEPS="${REPLAN_BOUNDARY_BLEND_STEPS:-0 4}"' in script
     assert 'TEMPORAL_ACTION_ENSEMBLE_DECAY="${TEMPORAL_ACTION_ENSEMBLE_DECAY:-0}"' in script
     assert '--temporal-action-ensemble-decay "$TEMPORAL_ACTION_ENSEMBLE_DECAY"' in script
     assert "action_dump_summary.json" in script
