@@ -15,7 +15,7 @@ DEFAULT_WORKFLOW = (
     "osmo_workflows/robofactory/"
     "closedloop_liftbarrier_gamma_droidwidth_teacher_c2000_slim_eval_h100_1seed_20260621.yaml"
 )
-DEFAULT_POOL = "groot-h100-02"
+DEFAULT_POOL = "groot-h100-01"
 DEFAULT_NAME_TEMPLATE = (
     "dz-rf-sg-gamma-dwteacher-bidir-50k-c{step}-slim-eval-h100-1seed1000-xz-{tag}"
 )

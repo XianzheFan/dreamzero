@@ -432,8 +432,8 @@ def test_liftbarrier_gamma_droidwidth_teacher_workflow_preserves_droid_base_head
         workflow = yaml.safe_load(f)
 
     defaults = workflow["default-values"]
-    assert defaults["workflow_name"] == "dz-rf-sg-gamma-dwteacher-lb500-50k-from0-xz-20260621"
-    assert defaults["run_name"] == "dz-rf-sg-gamma-dwteacher-lb500-50k-from0-xz-20260621"
+    assert defaults["workflow_name"] == "dz-rf-sg-gamma-dwteacher-bidir-lb500-50k-xz-20260622"
+    assert defaults["run_name"] == "dz-rf-sg-gamma-dwteacher-bidir-lb500-50k-xz-20260622"
     assert defaults["code_s3_uri"] == ""
     assert defaults["expected_code_commit"] == ""
     assert defaults["stage1_max_steps"] == "50000"

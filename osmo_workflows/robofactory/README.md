@@ -12,7 +12,7 @@ old cached code snapshot.
 
 ```bash
 osmo workflow submit osmo_workflows/robofactory/train_liftbarrier_gamma_droidwidth_teacher.yaml \
-  --pool groot-h100-02 \
+  --pool groot-h100-01 \
   --priority LOW \
   --set-string \
   code_s3_uri=swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/<current-code-cache> \
@@ -38,8 +38,8 @@ The standalone droidwidth teacher workflow also defaults
 dense-teacher side of this curriculum rather than the sparse read-only student
 side.
 
-The standalone droidwidth teacher default is a 50k-from-zero run:
-`run_name=dz-rf-sg-gamma-dwteacher-lb500-50k-from0-xz-20260621`, with the
+The standalone droidwidth teacher default is a 50k bidirectional-teacher run:
+`run_name=dz-rf-sg-gamma-dwteacher-bidir-lb500-50k-xz-20260622`, with the
 actual training stage saved under the `-teacher` suffix. The H100 slim eval
 templates and 2k checkpoint grid point at that stage run, so the default train
 workflow must produce checkpoints through `checkpoint-50000`.
@@ -73,8 +73,10 @@ default, so off-grid checkpoints such as `checkpoint-1000`,
 part of the standing checkpoint curve.
 
 The helper uses `osmo workflow submit` with `--set-string` overrides for
-`workflow_name`, `run_name`, `ckpt_setting`, and `local_eval_ckpt_root`, so each
-checkpoint writes to an isolated eval run. The default cadence is:
+`workflow_name`, `run_name`, `ckpt_run_name`, `ckpt_s3_base`,
+`ckpt_amlfs_base`, `ckpt_setting`, and `local_eval_ckpt_root`, so each
+checkpoint writes to an isolated eval run while still pointing at the current
+bidirectional teacher checkpoint tree. The default cadence is:
 
 ```text
 checkpoint-2000, checkpoint-4000, ..., checkpoint-50000

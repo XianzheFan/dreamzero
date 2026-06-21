@@ -23,6 +23,7 @@ def test_checkpoint_steps_default_grid_is_2k_spaced():
     steps = module.checkpoint_steps(2000, 10000, 2000)
 
     assert steps == [2000, 4000, 6000, 8000, 10000]
+    assert module.DEFAULT_POOL == "groot-h100-01"
     assert "c2000" in module.DEFAULT_WORKFLOW
     assert "c500" not in module.DEFAULT_WORKFLOW
 
@@ -43,7 +44,7 @@ def test_build_submit_command_uses_checkpoint_specific_names():
 
     command = module.build_submit_command(
         workflow=Path("eval.yaml"),
-        pool="groot-h100-02",
+        pool="groot-h100-01",
         priority="LOW",
         step=4000,
         tag="20260621",
@@ -104,6 +105,7 @@ def test_main_prints_dry_run_commands_without_submitting(capsys):
     assert "ckpt_setting=checkpoint-4000" in out
     assert "ckpt_setting=checkpoint-6000" in out
     assert "ckpt_setting=checkpoint-2500" not in out
+    assert "--pool groot-h100-01" in out
     assert "ckpt_run_name=dz-rf-sg-gamma-dwteacher-bidir-lb500-50k-xz-20260622-teacher" in out
 
 
