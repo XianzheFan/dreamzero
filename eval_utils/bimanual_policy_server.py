@@ -79,6 +79,10 @@ import websockets.asyncio.server
 import websockets.frames
 
 
+_DEFAULT_SHARED_GLOBAL_WRIST_WINDOW_MODE = "history-chronological"
+_DEFAULT_VIDEO_PRED_ROLLOUT_MODE = "noncausal"
+
+
 @dataclasses.dataclass
 class BimanualServerConfig:
     num_agents: int = 2
@@ -102,9 +106,9 @@ class BimanualServerConfig:
     mai_causal_scheduler: str = "unipc"
     mai_num_inference_steps: int | None = None
     mai_rolling_noise: bool = True
-    shared_global_wrist_window_mode: str = "history-current-first"
+    shared_global_wrist_window_mode: str = _DEFAULT_SHARED_GLOBAL_WRIST_WINDOW_MODE
     reset_causal_state_each_infer: bool = False
-    video_pred_rollout_mode: str = "action"
+    video_pred_rollout_mode: str = _DEFAULT_VIDEO_PRED_ROLLOUT_MODE
 
 
 _SHARED_GLOBAL_WRIST_WINDOW_MODES = (
@@ -117,7 +121,7 @@ _VIDEO_PRED_ROLLOUT_MODES = ("action", "noncausal")
 
 
 def _resolve_video_pred_rollout_mode(value: str | None) -> str:
-    mode = str(value or "action").strip().lower()
+    mode = str(value or _DEFAULT_VIDEO_PRED_ROLLOUT_MODE).strip().lower()
     if mode not in _VIDEO_PRED_ROLLOUT_MODES:
         raise ValueError(
             "video_pred_rollout_mode must be one of "
@@ -428,7 +432,7 @@ class BimanualPolicy:
         if video_pred_rollout_mode is None:
             video_pred_rollout_mode = os.environ.get(
                 "DREAMZERO_VIDEO_PRED_ROLLOUT_MODE",
-                "action",
+                _DEFAULT_VIDEO_PRED_ROLLOUT_MODE,
             )
         self.video_pred_rollout_mode = _resolve_video_pred_rollout_mode(
             video_pred_rollout_mode
@@ -490,10 +494,11 @@ class BimanualPolicy:
         if shared_global_wrist_window_mode is None:
             shared_global_wrist_window_mode = os.environ.get(
                 "DREAMZERO_SHARED_GLOBAL_WRIST_WINDOW_MODE",
-                "history-current-first",
+                _DEFAULT_SHARED_GLOBAL_WRIST_WINDOW_MODE,
             )
         self.shared_global_wrist_window_mode = str(
-            shared_global_wrist_window_mode or "history-current-first"
+            shared_global_wrist_window_mode
+            or _DEFAULT_SHARED_GLOBAL_WRIST_WINDOW_MODE
         ).strip().lower()
         if self.shared_global_wrist_window_mode not in _SHARED_GLOBAL_WRIST_WINDOW_MODES:
             raise ValueError(
@@ -1150,7 +1155,7 @@ class BimanualPolicy:
             mode = getattr(
                 self,
                 "shared_global_wrist_window_mode",
-                "history-current-first",
+                _DEFAULT_SHARED_GLOBAL_WRIST_WINDOW_MODE,
             )
             if mode == "repeat-current":
                 agent0_history = np.repeat(
@@ -1612,7 +1617,7 @@ class BimanualPolicy:
             mode = getattr(
                 self,
                 "shared_global_wrist_window_mode",
-                "history-current-first",
+                _DEFAULT_SHARED_GLOBAL_WRIST_WINDOW_MODE,
             )
             return frames.shape[0] - 1 if mode == "history-chronological" else 0
         return frames.shape[0] - 1
@@ -2374,7 +2379,10 @@ def main():
     )
     parser.add_argument(
         "--video-pred-rollout-mode",
-        default=os.environ.get("DREAMZERO_VIDEO_PRED_ROLLOUT_MODE", "action"),
+        default=os.environ.get(
+            "DREAMZERO_VIDEO_PRED_ROLLOUT_MODE",
+            _DEFAULT_VIDEO_PRED_ROLLOUT_MODE,
+        ),
         choices=_VIDEO_PRED_ROLLOUT_MODES,
         help="Which model rollout supplies saved predicted-video latents. "
              "'action' uses the same rollout that produced the control action; "
@@ -2441,13 +2449,13 @@ def main():
         "--shared-global-wrist-window-mode",
         default=os.environ.get(
             "DREAMZERO_SHARED_GLOBAL_WRIST_WINDOW_MODE",
-            "history-current-first",
+            _DEFAULT_SHARED_GLOBAL_WRIST_WINDOW_MODE,
         ),
         choices=_SHARED_GLOBAL_WRIST_WINDOW_MODES,
-        help="Eval diagnostic for shared-global checkpoints. history-current-first "
-             "keeps the current wrist frame at index 0 and appends rolling "
-             "history; repeat-current matches the historical server behavior; "
-             "history-chronological keeps wrist history unchanged.",
+        help="Eval diagnostic for shared-global checkpoints. history-chronological "
+             "keeps wrist history unchanged; history-current-first puts the "
+             "current wrist frame at index 0 and appends rolling history; "
+             "repeat-current matches the historical server behavior.",
     )
     parser.add_argument(
         "--reset-causal-state-each-infer",
