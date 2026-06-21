@@ -66,6 +66,12 @@ python scripts/eval/submit_robofactory_droidwidth_eval_grid.py \
   --submit
 ```
 
+Explicit `--steps` values are still checked against the same 2k cadence by
+default, so off-grid checkpoints such as `checkpoint-1000`,
+`checkpoint-1500`, or `checkpoint-3500` are rejected. Use
+`--allow-off-grid-steps` only for isolated diagnostics that should not become
+part of the standing checkpoint curve.
+
 The helper uses `osmo workflow submit` with `--set-string` overrides for
 `workflow_name`, `run_name`, `ckpt_setting`, and `local_eval_ckpt_root`, so each
 checkpoint writes to an isolated eval run. The default cadence is:

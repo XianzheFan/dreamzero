@@ -50,6 +50,16 @@ def parse_steps(value: str) -> list[int]:
     return steps
 
 
+def off_grid_steps(steps: Sequence[int], *, start_step: int, max_step: int, interval: int) -> list[int]:
+    if interval <= 0:
+        raise ValueError("interval must be positive")
+    return [
+        step
+        for step in steps
+        if step < start_step or step > max_step or (step - start_step) % interval != 0
+    ]
+
+
 def build_submit_command(
     *,
     workflow: Path,
@@ -105,7 +115,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--steps",
         type=parse_steps,
-        help="Explicit checkpoint steps, e.g. '2000,4000,6000'. Overrides the grid.",
+        help=(
+            "Explicit checkpoint steps, e.g. '2000,4000,6000'. Overrides the grid, "
+            "but still must land on the 2k cadence unless --allow-off-grid-steps is set."
+        ),
+    )
+    parser.add_argument(
+        "--allow-off-grid-steps",
+        action="store_true",
+        help="Permit explicit --steps outside the configured start/max/interval grid for one-off diagnostics.",
     )
     parser.add_argument(
         "--tag",
@@ -130,8 +148,23 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
     steps = args.steps or checkpoint_steps(args.start_step, args.max_step, args.interval)
+    if args.steps and not args.allow_off_grid_steps:
+        bad_steps = off_grid_steps(
+            steps,
+            start_step=args.start_step,
+            max_step=args.max_step,
+            interval=args.interval,
+        )
+        if bad_steps:
+            parser.error(
+                "explicit --steps must stay on the configured eval cadence "
+                f"{args.start_step}..{args.max_step} every {args.interval}; "
+                f"off-grid steps: {','.join(str(step) for step in bad_steps)}. "
+                "Use --allow-off-grid-steps only for one-off diagnostics."
+            )
     commands = [
         build_submit_command(
             workflow=args.workflow,

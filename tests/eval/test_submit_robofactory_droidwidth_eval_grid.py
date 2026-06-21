@@ -91,3 +91,39 @@ def test_main_prints_dry_run_commands_without_submitting(capsys):
     assert "ckpt_setting=checkpoint-4000" in out
     assert "ckpt_setting=checkpoint-6000" in out
     assert "ckpt_setting=checkpoint-2500" not in out
+
+
+def test_main_rejects_explicit_off_grid_steps_by_default():
+    module = _load_module()
+
+    with pytest.raises(SystemExit):
+        module.main(
+            [
+                "--workflow",
+                "eval.yaml",
+                "--tag",
+                "20260621",
+                "--steps",
+                "2000,3500",
+            ]
+        )
+
+
+def test_main_allows_explicit_off_grid_steps_for_one_off_diagnostics(capsys):
+    module = _load_module()
+
+    status = module.main(
+        [
+            "--workflow",
+            "eval.yaml",
+            "--tag",
+            "20260621",
+            "--steps",
+            "3500",
+            "--allow-off-grid-steps",
+        ]
+    )
+
+    assert status == 0
+    out = capsys.readouterr().out
+    assert "ckpt_setting=checkpoint-3500" in out
