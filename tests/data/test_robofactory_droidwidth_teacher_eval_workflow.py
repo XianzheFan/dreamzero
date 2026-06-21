@@ -90,6 +90,14 @@ def test_droidwidth_teacher_gb200_s3_model_cache_downloads_are_throttled():
     assert "local_dir=str(target)" in script
 
 
+def test_droidwidth_teacher_eval_publishes_artifacts_to_osmo_output():
+    _, _, script = _workflow_and_script()
+
+    assert 'OSMO_OUTPUT_DIR="{{output}}"' in script
+    assert 'mkdir -p "${OSMO_OUTPUT_DIR}/eval_outputs"' in script
+    assert 'cp -a /workspace/eval_outputs/. "${OSMO_OUTPUT_DIR}/eval_outputs/"' in script
+
+
 def test_droidwidth_teacher_eval_embedded_script_is_valid_bash():
     _, _, script = _workflow_and_script()
 
