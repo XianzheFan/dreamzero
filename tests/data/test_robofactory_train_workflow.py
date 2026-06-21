@@ -38,7 +38,7 @@ def test_liftbarrier_train_workflow_defaults_to_cached_code_and_500_episode_data
     assert defaults["run_name"] == "dz-rf-sg-gammactx-lb500-50k-scratch-xianzhef-20260621"
     assert defaults["restore_run_name"] == ""
     assert defaults["code_s3_uri"] == CODE_CACHE_URI
-    assert defaults["expected_code_commit"] == ""
+    assert defaults["expected_code_commit"] == "217502da24fd614210e201f421e46a8151880caa"
     assert defaults["data_variant"] == "LiftBarrier-rf-500"
     assert defaults["expected_data_episodes"] == "500"
     assert defaults["data_s3_uri"] == (
