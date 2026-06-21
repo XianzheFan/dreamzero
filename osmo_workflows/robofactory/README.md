@@ -42,7 +42,7 @@ teacher-style objective where the available shared global observation should
 remain clean context for video planning.
 
 The standalone droidwidth teacher default is a 50k bidirectional-teacher run:
-`run_name=dz-rf-sg-gamma-dwteacher-bidir-lb500-50k-xz-20260622`, with the
+`run_name=dz-rf-sg-gamma-dwteacher-bidir-nodrop-lb500-50k-xz-20260622`, with the
 actual training stage saved under the `-teacher` suffix. The H100 slim eval
 templates and 2k checkpoint grid point at that stage run, so the default train
 workflow must produce checkpoints through `checkpoint-50000`.

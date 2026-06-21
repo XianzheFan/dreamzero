@@ -19,12 +19,12 @@ DEFAULT_WORKFLOW = (
 )
 DEFAULT_POOL = "groot-h100-01"
 DEFAULT_NAME_TEMPLATE = (
-    "dz-rf-sg-gamma-dwteacher-bidir-50k-c{step}-slim-eval-h100-1seed1000-xz-{tag}"
+    "dz-rf-sg-gamma-dwteacher-bidir-nodrop-50k-c{step}-slim-eval-h100-1seed1000-xz-{tag}"
 )
 DEFAULT_LOCAL_ROOT_TEMPLATE = (
-    "gamma_droidwidth_teacher_bidir_50k_c{step}_slim_eval_h100_1seed1000"
+    "gamma_droidwidth_teacher_bidir_nodrop_50k_c{step}_slim_eval_h100_1seed1000"
 )
-DEFAULT_CKPT_RUN_NAME = "dz-rf-sg-gamma-dwteacher-bidir-lb500-50k-xz-20260622-teacher"
+DEFAULT_CKPT_RUN_NAME = "dz-rf-sg-gamma-dwteacher-bidir-nodrop-lb500-50k-xz-20260622-teacher"
 DEFAULT_CKPT_S3_RUNS_PREFIX = "s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs"
 DEFAULT_CKPT_AMLFS_RUNS_PREFIX = "/mnt/amlfs-01/home/xianzhef/osmo_cache/dreamzero/checkpoints"
 MODEL_MARKERS = ("model.safetensors", "model.safetensors.index.json")
