@@ -511,6 +511,22 @@ class TemporalActionEnsembler:
                 del self._plans[step]
 
 
+def temporal_action_ensemble_overlap_warning(
+    decay: float,
+    replan_every: int,
+    action_horizon: int | None,
+) -> str | None:
+    if decay <= 0.0 or action_horizon is None or action_horizon <= 0:
+        return None
+    if replan_every < action_horizon:
+        return None
+    return (
+        "WARNING: temporal action ensemble has no overlapping future actions "
+        f"because replan_every={replan_every} >= action_horizon={action_horizon}; "
+        "set replan_every below action_horizon to make ensemble smoothing active."
+    )
+
+
 def apply_gripper_override(
     action16: np.ndarray,
     step: int,
@@ -1195,6 +1211,13 @@ def main():
     print(f"Server meta: {meta}", flush=True)
     assert meta.get("num_agents") == 2, f"server reports num_agents={meta.get('num_agents')}"
     action_representation = meta.get("action_representation", "robotwin_delta")
+    warning = temporal_action_ensemble_overlap_warning(
+        args.temporal_action_ensemble_decay,
+        args.replan_every,
+        meta.get("action_horizon"),
+    )
+    if warning is not None:
+        print(warning, flush=True)
 
     results = []
     def _write_partial() -> None:

@@ -323,6 +323,20 @@ def test_temporal_action_ensembler_rejects_invalid_decay(monkeypatch):
         raise AssertionError("expected invalid temporal action ensemble decay")
 
 
+def test_temporal_action_ensemble_warns_when_no_overlap(monkeypatch):
+    mod = _load_eval_module(monkeypatch)
+
+    assert (
+        mod.temporal_action_ensemble_overlap_warning(0.6, 24, 24)
+        == "WARNING: temporal action ensemble has no overlapping future actions "
+        "because replan_every=24 >= action_horizon=24; set replan_every below "
+        "action_horizon to make ensemble smoothing active."
+    )
+    assert mod.temporal_action_ensemble_overlap_warning(0.6, 12, 24) is None
+    assert mod.temporal_action_ensemble_overlap_warning(0.0, 24, 24) is None
+    assert mod.temporal_action_ensemble_overlap_warning(0.6, 24, None) is None
+
+
 def test_scale_joint_targets_one_is_noop(monkeypatch):
     mod = _load_eval_module(monkeypatch)
     qpos = np.arange(16, dtype=np.float32)

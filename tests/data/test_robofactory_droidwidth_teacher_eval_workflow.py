@@ -122,7 +122,7 @@ def test_droidwidth_teacher_h100_eval_targets_h100_pool_resources():
     )
     assert defaults["ckpt_setting"] == "checkpoint-2000"
     assert defaults["local_eval_ckpt_root"] == "gamma_droidwidth_teacher_50kfrom0_c2000_slim_eval_h100_1seed1000"
-    assert defaults["temporal_action_ensemble_decays"] == "0"
+    assert defaults["temporal_action_ensemble_decays"] == "0 0.6"
     assert task["image"].startswith("nvcr.io/nvidian/groot-ci-base-eval:")
     assert 'RUN_NAME="{{run_name}}"' in script
     assert (
@@ -132,6 +132,7 @@ def test_droidwidth_teacher_h100_eval_targets_h100_pool_resources():
     )
     assert 'VIDEO_PRED_WRIST_WINDOW_MODE="${VIDEO_PRED_WRIST_WINDOW_MODE:-action}"' in script
     assert 'VIDEO_PRED_ROLLOUT_MODE="${VIDEO_PRED_ROLLOUT_MODE:-action}"' in script
+    assert 'REPLAN_EVERYS="${REPLAN_EVERYS:-24 12}"' in script
     assert 'CKPT_SETTING="{{ckpt_setting}}"' in script
     assert 'LOCAL_EVAL_CKPT_ROOT="/workspace/eval_ckpts/{{local_eval_ckpt_root}}"' in script
     assert 'ROBOFACTORY_RENDER_BACKEND="${ROBOFACTORY_RENDER_BACKEND:-sapien_cuda:0}"' in script

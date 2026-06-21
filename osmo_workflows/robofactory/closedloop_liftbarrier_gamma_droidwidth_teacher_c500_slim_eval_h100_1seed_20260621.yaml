@@ -55,7 +55,7 @@ workflow:
           SHARED_GLOBAL_WRIST_WINDOW_MODE="${SHARED_GLOBAL_WRIST_WINDOW_MODE:-history-current-first}"
           export MAI_WRITE_DENOISED_CONTEXT_CACHE="${MAI_WRITE_DENOISED_CONTEXT_CACHE:-1}"
           export MAI_ROLLING_NOISE="${MAI_ROLLING_NOISE:-1}"
-          REPLAN_EVERYS="24"
+          REPLAN_EVERYS="${REPLAN_EVERYS:-24 12}"
           PROMPT="the two robot arms lift the steel barrier together off the table"
           GRIPPER_BINARIZE_THRESHOLD="-0.2"
           GRIPPER_OVERRIDE="open-then-close-after-step"
@@ -1022,4 +1022,4 @@ default-values:
   run_name: dz-rf-sg-gamma-dwteacher-50kfrom0-c2000-slim-eval-h100-1seed1000-xz-20260621
   ckpt_setting: checkpoint-2000
   local_eval_ckpt_root: gamma_droidwidth_teacher_50kfrom0_c2000_slim_eval_h100_1seed1000
-  temporal_action_ensemble_decays: "0"
+  temporal_action_ensemble_decays: "0 0.6"
