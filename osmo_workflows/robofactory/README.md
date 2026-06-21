@@ -56,12 +56,14 @@ explicit long-window pred-video ablation, override these OSMO template values
 together:
 
 ```bash
---set-string train_num_frames=65 train_max_chunk_size=8
+--set-string train_num_frames=65 train_max_chunk_size=8 train_max_grad_norm=0.1
 ```
 
 In this loader, `train_num_frames` should remain `8 * train_max_chunk_size + 1`;
 larger values such as `97/12` are closer to the Gamma-World teacher objective
-but should be treated as a separate memory/runtime ablation.
+but should be treated as a separate memory/runtime ablation. `train_max_grad_norm=0.1`
+matches Gamma-World's teacher grad-clip setting; leave it unset when intentionally
+preserving the DreamZero-DROID fine-tuning defaults.
 
 ## 2k Checkpoint Eval Grid
 
