@@ -244,21 +244,6 @@ workflow:
                 return 0
               fi
 
-              echo "Trying filtered xianzhef S3 Wan component cache."
-              wan_component_regex='.*(Wan2\.1_VAE\.pth|models_t5_umt5-xxl-enc-bf16\.pth|models_clip_open-clip-xlm-roberta-large-vit-huge-14\.pth)$'
-              set +e
-              osmo data download --resume --regex "$wan_component_regex" "${MODEL_CACHE_S3_URI}/Wan2.1-I2V-14B-480P/" "$dest"
-              cache_status=$?
-              set -e
-              resolved_cache_root="$(resolve_model_root "Wan2.1-I2V-14B-480P" "$dest" || true)"
-              if [ "$cache_status" -eq 0 ] && [ -n "$resolved_cache_root" ]; then
-                promote_model_root "$resolved_cache_root" "$dest"
-              fi
-              if model_dir_is_usable "Wan2.1-I2V-14B-480P" "$dest"; then
-                echo "Restored minimal Wan2.1 components from filtered S3 cache."
-                return 0
-              fi
-
               python - <<'PY'
             import importlib.util
             import subprocess
@@ -267,7 +252,7 @@ workflow:
             if importlib.util.find_spec("huggingface_hub") is None:
                 subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "huggingface_hub"])
             PY
-              echo "No usable filtered S3 cache; downloading minimal Wan2.1 components from Hugging Face."
+              echo "Downloading minimal Wan2.1 components from Hugging Face to avoid rate-limited S3 restore."
               python - "$dest" <<'PY'
             import sys
             from pathlib import Path

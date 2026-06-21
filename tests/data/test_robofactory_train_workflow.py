@@ -225,7 +225,8 @@ def test_liftbarrier_train_workflows_restore_minimal_wan_components():
             '"Wan-AI/Wan2.1-I2V-14B-480P" "model" "$WAN_CKPT_DIR"'
             not in script
         )
-        assert 'osmo data download --resume --regex "$wan_component_regex"' in script
+        assert 'osmo data download --resume --regex "$wan_component_regex"' not in script
+        assert "Downloading minimal Wan2.1 components from Hugging Face" in script
         assert "models_t5_umt5-xxl-enc-bf16.pth" in script
         assert "models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth" in script
         assert "Wan2.1_VAE.pth" in script
