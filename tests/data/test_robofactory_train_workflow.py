@@ -9,8 +9,8 @@ STAGED_WORKFLOW_PATH = REPO_ROOT / "osmo_workflows/robofactory/train_liftbarrier
 DROIDWIDTH_TEACHER_WORKFLOW_PATH = (
     REPO_ROOT / "osmo_workflows/robofactory/train_liftbarrier_gamma_droidwidth_teacher.yaml"
 )
-CODE_CACHE_URI = "swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_gamma_stage2fix_7501953_20260621"
-EXPECTED_CODE_COMMIT = "7501953952f391f1f8f6f68f0c798f486424e505"
+CODE_CACHE_URI = "swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_gamma_jerkloss_32e8028_20260621"
+EXPECTED_CODE_COMMIT = "32e80283df4d1655045dacea9cc14ad49760b7d2"
 
 
 def _task_by_name(workflow, name):
