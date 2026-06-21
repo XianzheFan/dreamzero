@@ -34,6 +34,18 @@ def test_infer_request_includes_replan_context_for_server_manifest():
     assert '"chunk_start_index": int(steps)' in source
 
 
+def test_eval_renderer_knobs_are_configurable():
+    source = EVAL_SCRIPT.read_text()
+
+    assert "--render-backend" in source
+    assert "ROBOFACTORY_RENDER_BACKEND" in source
+    assert "--disable-shadow" in source
+    assert "ROBOFACTORY_ENABLE_SHADOW" in source
+    assert "env_kwargs[\"render_backend\"] = args.render_backend" in source
+    assert "enable_shadow=bool(args.enable_shadow)" in source
+    assert "shader_pack=args.shader_pack" in source
+
+
 def test_close_after_step_does_not_force_open_before_threshold(monkeypatch):
     mod = _load_eval_module(monkeypatch)
     action = np.zeros(16, dtype=np.float32)

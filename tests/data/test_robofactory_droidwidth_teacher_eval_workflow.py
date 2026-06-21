@@ -87,6 +87,10 @@ def test_droidwidth_teacher_h100_eval_targets_h100_pool_resources():
         in script
     )
     assert 'VIDEO_PRED_WRIST_WINDOW_MODE="${VIDEO_PRED_WRIST_WINDOW_MODE:-action}"' in script
+    assert 'ROBOFACTORY_RENDER_BACKEND="${ROBOFACTORY_RENDER_BACKEND:-sapien_cuda:0}"' in script
+    assert 'ROBOFACTORY_ENABLE_SHADOW="${ROBOFACTORY_ENABLE_SHADOW:-0}"' in script
+    assert 'ROBOFACTORY_SHADER_PACK="${ROBOFACTORY_SHADER_PACK:-default}"' in script
+    assert "render_backend=${ROBOFACTORY_RENDER_BACKEND}" in script
     assert "dense-teacher" not in script
 
     resources = workflow["workflow"]["resources"]["default"]

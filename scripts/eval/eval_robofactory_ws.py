@@ -569,6 +569,13 @@ def _bool_from(info_val) -> bool:
     return bool(info_val)
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None or value == "":
+        return default
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
 def _current_grasp_count(env) -> int:
     root = _env_root(env)
     barrier = getattr(root, "barrier", None)
@@ -796,6 +803,32 @@ def main():
     ap.add_argument("--task", default="LiftBarrier-rf")
     ap.add_argument("--config", default=None)
     ap.add_argument(
+        "--render-backend",
+        default=os.environ.get("ROBOFACTORY_RENDER_BACKEND") or None,
+        help=(
+            "Optional ManiSkill/SAPIEN render backend, e.g. sapien_cuda:0. "
+            "Defaults to ManiSkill's selection."
+        ),
+    )
+    ap.add_argument(
+        "--shader-pack",
+        default=os.environ.get("ROBOFACTORY_SHADER_PACK", "default"),
+        help="SAPIEN shader pack for sensors and viewer cameras.",
+    )
+    ap.add_argument(
+        "--enable-shadow",
+        dest="enable_shadow",
+        action="store_true",
+        default=_env_bool("ROBOFACTORY_ENABLE_SHADOW", True),
+        help="Enable RoboFactory/ManiSkill shadows during eval rendering.",
+    )
+    ap.add_argument(
+        "--disable-shadow",
+        dest="enable_shadow",
+        action="store_false",
+        help="Disable RoboFactory/ManiSkill shadows during eval rendering.",
+    )
+    ap.add_argument(
         "--prompt",
         default="the two robot arms lift the steel barrier together off the table",
     )
@@ -1014,6 +1047,9 @@ def main():
     print(f"Seeds:         {args.seed_start}..{args.seed_start + args.num_episodes - 1}")
     print(f"Max steps:     {args.max_steps}")
     print(f"Replan every:  {args.replan_every}")
+    print(f"Render backend: {args.render_backend}")
+    print(f"Shader pack:   {args.shader_pack}")
+    print(f"Enable shadow: {args.enable_shadow}")
     print(f"Joint scale:   {args.joint_target_scale}")
     print(f"Joint ref:     {args.joint_target_scale_reference}")
     print(f"Joint clip:    {args.joint_target_scale_clip}")
@@ -1075,20 +1111,23 @@ def main():
     # image_w`` (=240/320, matching LeRobot v2 mp4) before feeding
     # the transform chain. Forcing sensor 240px here was triggering
     # a sapien-side hang during ``gym.make``.
-    env = gym.make(
-        args.task,
+    env_kwargs = dict(
+        id=args.task,
         config=args.config,
         obs_mode="rgb",
         control_mode="pd_joint_pos",
         render_mode="rgb_array",
         num_envs=1,
         sim_backend="cpu",
-        enable_shadow=True,
+        enable_shadow=bool(args.enable_shadow),
         parallel_in_single_scene=False,
-        sensor_configs=dict(shader_pack="default"),
-        human_render_camera_configs=dict(shader_pack="default"),
-        viewer_camera_configs=dict(shader_pack="default"),
+        sensor_configs=dict(shader_pack=args.shader_pack),
+        human_render_camera_configs=dict(shader_pack=args.shader_pack),
+        viewer_camera_configs=dict(shader_pack=args.shader_pack),
     )
+    if args.render_backend:
+        env_kwargs["render_backend"] = args.render_backend
+    env = gym.make(**env_kwargs)
     if args.video_dir:
         from mani_skill.utils.wrappers import RecordEpisode
 
