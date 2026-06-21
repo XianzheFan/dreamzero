@@ -199,6 +199,50 @@ def compare_videos(
     }
 
 
+def _current_observed_frame_index(frame_count: int, window_mode: str | None) -> int:
+    if frame_count <= 1:
+        return 0
+    mode = str(window_mode or "").strip().lower()
+    if mode in {"repeat-current", "history-current-first", "action"}:
+        return 0
+    if mode == "history-chronological":
+        return frame_count - 1
+    return frame_count - 1
+
+
+def compare_conditioning_frame_to_current_observation(
+    pred_frames: np.ndarray,
+    observed_frames: np.ndarray,
+    *,
+    includes_conditioning_frame: bool | None,
+    observed_window_mode: str | None,
+) -> dict[str, Any] | None:
+    """Compare predicted frame 0 with the current observed frame when valid."""
+    if not includes_conditioning_frame:
+        return None
+    pred_frames = np.asarray(pred_frames, dtype=np.uint8)
+    observed_frames = np.asarray(observed_frames, dtype=np.uint8)
+    if pred_frames.ndim != 4 or observed_frames.ndim != 4:
+        return None
+    if pred_frames.shape[0] <= 0 or observed_frames.shape[0] <= 0:
+        return None
+    observed_idx = _current_observed_frame_index(
+        int(observed_frames.shape[0]),
+        observed_window_mode,
+    )
+    comparison = compare_videos(
+        pred_frames[:1],
+        observed_frames[observed_idx : observed_idx + 1],
+    )
+    comparison.update(
+        {
+            "observed_frame_index": int(observed_idx),
+            "observed_window_mode": observed_window_mode,
+        }
+    )
+    return comparison
+
+
 def _npz_string(value: Any) -> str:
     arr = np.asarray(value)
     if arr.shape == ():
@@ -484,9 +528,23 @@ def analyze_video_tree(
                     agent_id,
                 )
                 comparison = None
+                conditioning_frame_comparison = None
                 if observed_path is not None and observed_path.exists():
                     observed_frames = read_video(observed_path, max_frames=max_frames)
                     comparison = compare_videos(pred_frames, observed_frames)
+                    conditioning_frame_comparison = (
+                        compare_conditioning_frame_to_current_observation(
+                            pred_frames,
+                            observed_frames,
+                            includes_conditioning_frame=entry.get(
+                                "pred_latent_includes_conditioning_frame"
+                            ),
+                            observed_window_mode=entry.get(
+                                "video_pred_wrist_window_mode"
+                            )
+                            or entry.get("shared_global_wrist_window_mode"),
+                        )
+                    )
                 future_trace = _select_future_trace(
                     future_traces,
                     entry.get("session_id_prefix"),
@@ -505,6 +563,13 @@ def analyze_video_tree(
                     if future_trace is not None
                     else None
                 )
+                risk_flags = _risk_flags(metrics)
+                if (
+                    conditioning_frame_comparison is not None
+                    and conditioning_frame_comparison.get("mae_rgb") is not None
+                    and float(conditioning_frame_comparison["mae_rgb"]) > 30.0
+                ):
+                    risk_flags.append("conditioning_frame_mismatch")
                 row = {
                     "path": pred_path.relative_to(root).as_posix(),
                     "session_dir": session_dir.relative_to(root).as_posix(),
@@ -549,11 +614,14 @@ def analyze_video_tree(
                     ),
                     "observed_kind": observed_kind,
                     "metrics": metrics,
+                    "pred_conditioning_frame_vs_current_observation": (
+                        conditioning_frame_comparison
+                    ),
                     "pred_vs_condition_window": comparison,
                     # Backward-compatible alias for older analysis readers.
                     "pred_vs_observed": comparison,
                     "pred_vs_future": future_comparison,
-                    "risk_flags": _risk_flags(metrics),
+                    "risk_flags": risk_flags,
                 }
                 videos.append(row)
             except Exception as exc:
@@ -683,6 +751,15 @@ def _aggregate(videos: list[dict[str, Any]]) -> dict[str, Any]:
         "pred_vs_observed_mae_rgb_mean": _mean_or_none(
             collect(("pred_vs_condition_window", "mae_rgb"))
         ),
+        "pred_conditioning_frame_mae_rgb_mean": _mean_or_none(
+            collect(("pred_conditioning_frame_vs_current_observation", "mae_rgb"))
+        ),
+        "pred_conditioning_frame_mae_luma_mean": _mean_or_none(
+            collect(("pred_conditioning_frame_vs_current_observation", "mae_luma"))
+        ),
+        "pred_conditioning_frame_available_count": int(
+            collect(("pred_conditioning_frame_vs_current_observation", "mae_rgb")).size
+        ),
         "pred_vs_future_mae_rgb_mean": _mean_or_none(
             collect(("pred_vs_future", "mae_rgb"))
         ),
@@ -750,6 +827,12 @@ def write_text_report(payload: dict[str, Any], path: Path) -> None:
         f"{summary.get('pred_vs_condition_window_mae_rgb_mean')}",
         "  pred_vs_observed_mae_rgb_mean: "
         f"{summary.get('pred_vs_observed_mae_rgb_mean')}  # compatibility alias",
+        "  pred_conditioning_frame_mae_rgb_mean: "
+        f"{summary.get('pred_conditioning_frame_mae_rgb_mean')}",
+        "  pred_conditioning_frame_mae_luma_mean: "
+        f"{summary.get('pred_conditioning_frame_mae_luma_mean')}",
+        "  pred_conditioning_frame_available_count: "
+        f"{summary.get('pred_conditioning_frame_available_count')}",
         "  pred_vs_future_mae_rgb_mean: "
         f"{summary.get('pred_vs_future_mae_rgb_mean')}",
         "  pred_vs_future_mae_luma_mean: "
@@ -774,6 +857,9 @@ def write_text_report(payload: dict[str, Any], path: Path) -> None:
     for row in payload["videos"]:
         metrics = row["metrics"]
         comparison = row.get("pred_vs_condition_window") or {}
+        conditioning = (
+            row.get("pred_conditioning_frame_vs_current_observation") or {}
+        )
         future = row.get("pred_vs_future") or {}
         lines.append(
             "  "
@@ -791,6 +877,8 @@ def write_text_report(payload: dict[str, Any], path: Path) -> None:
             f"lap_mean={metrics['laplacian_var']['mean']} "
             f"sat_mean={metrics['saturation_frac']['mean']} "
             f"condition_window_mae={comparison.get('mae_rgb')} "
+            f"conditioning_t0_mae={conditioning.get('mae_rgb')} "
+            f"conditioning_t0_obs_idx={conditioning.get('observed_frame_index')} "
             f"future_mae={future.get('mae_rgb')} "
             f"future_delta={future.get('mae_rgb_first_to_last_delta')} "
             f"future_best_offset={future.get('best_alignment_offset')} "

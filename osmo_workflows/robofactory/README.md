@@ -87,7 +87,10 @@ success, reach/grasp margins, action saturation/clamping, boundary jumps, and
 predicted-video future MAE/drift. The video-quality report also scans a small
 future-frame alignment window and reports the best offset; a consistent nonzero
 best offset is evidence of a pred-video/eval time-window mismatch rather than
-only poor visual modeling.
+only poor visual modeling. The `cond_t0` column compares predicted frame 0 with
+the current observed wrist frame when the decoded video includes the conditioning
+frame; high `cond_t0` points to a conditioning/VAE/window issue before future
+dynamics quality is even evaluated.
 
 New gamma training checkpoints include `experiment_cfg/runtime_provenance.json`,
 and the droidwidth closed-loop eval manifests surface checkpoint code commit,

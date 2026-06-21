@@ -216,6 +216,12 @@ def summarize_eval_root(root: Path) -> dict[str, Any]:
         "joint_clamp_delta_mean": best.get("joint_clamp_delta_mean"),
         "joint_clamp_delta_max": best.get("joint_clamp_delta_max"),
         "pred_vs_future_mae_rgb_mean": video.get("pred_vs_future_mae_rgb_mean"),
+        "pred_conditioning_frame_mae_rgb_mean": video.get(
+            "pred_conditioning_frame_mae_rgb_mean"
+        ),
+        "pred_conditioning_frame_available_count": video.get(
+            "pred_conditioning_frame_available_count"
+        ),
         "pred_vs_future_first_frame_mae_rgb_mean": video.get(
             "pred_vs_future_first_frame_mae_rgb_mean"
         ),
@@ -288,6 +294,7 @@ TABLE_COLUMNS = [
     ("raw_sat_L", "raw_joint_saturation_frac_left"),
     ("raw_sat_R", "raw_joint_saturation_frac_right"),
     ("clamp", "joint_clamp_delta_mean"),
+    ("cond_t0", "pred_conditioning_frame_mae_rgb_mean"),
     ("future_mae", "pred_vs_future_mae_rgb_mean"),
     ("future_t0", "pred_vs_future_first_frame_mae_rgb_mean"),
     ("future_tlast", "pred_vs_future_last_frame_mae_rgb_mean"),

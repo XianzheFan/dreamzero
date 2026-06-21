@@ -3,6 +3,7 @@ import numpy as np
 from scripts.eval.analyze_video_pred_quality import (
     _aggregate,
     _risk_flags,
+    compare_conditioning_frame_to_current_observation,
     compare_pred_to_future_trace,
     compare_videos,
     video_metrics,
@@ -45,6 +46,44 @@ def test_compare_videos_reports_rgb_mae():
     assert metrics["mae_rgb_by_frame"] == [10.0, 10.0, 10.0]
     assert metrics["mae_luma_by_frame"] == [10.0, 10.0, 10.0]
     assert metrics["mae_rgb_first_to_last_delta"] == 0.0
+
+
+def test_compare_conditioning_frame_uses_current_observed_frame():
+    pred = np.zeros((3, 4, 4, 3), dtype=np.uint8)
+    pred[0] = 30
+    observed = np.stack(
+        [
+            np.full((4, 4, 3), 10, dtype=np.uint8),
+            np.full((4, 4, 3), 20, dtype=np.uint8),
+            np.full((4, 4, 3), 30, dtype=np.uint8),
+        ],
+        axis=0,
+    )
+
+    chronological = compare_conditioning_frame_to_current_observation(
+        pred,
+        observed,
+        includes_conditioning_frame=True,
+        observed_window_mode="history-chronological",
+    )
+    current_first = compare_conditioning_frame_to_current_observation(
+        pred,
+        observed,
+        includes_conditioning_frame=True,
+        observed_window_mode="history-current-first",
+    )
+    unavailable = compare_conditioning_frame_to_current_observation(
+        pred,
+        observed,
+        includes_conditioning_frame=False,
+        observed_window_mode="history-chronological",
+    )
+
+    assert chronological["observed_frame_index"] == 2
+    assert chronological["mae_rgb"] == 0.0
+    assert current_first["observed_frame_index"] == 0
+    assert current_first["mae_rgb"] == 20.0
+    assert unavailable is None
 
 
 def test_compare_pred_to_future_trace_aligns_after_conditioning_frame():
@@ -152,6 +191,11 @@ def test_video_quality_summary_names_condition_window_metric(tmp_path):
                 },
                 "pred_vs_condition_window": {"mae_rgb": 12.5},
                 "pred_vs_observed": {"mae_rgb": 12.5},
+                "pred_conditioning_frame_vs_current_observation": {
+                    "mae_rgb": 4.5,
+                    "mae_luma": 3.5,
+                    "observed_frame_index": 0,
+                },
                 "pred_vs_future": {
                     "mae_rgb": 8.5,
                     "mae_luma": 7.5,
@@ -176,6 +220,9 @@ def test_video_quality_summary_names_condition_window_metric(tmp_path):
 
     assert payload["summary"]["pred_vs_condition_window_mae_rgb_mean"] == 12.5
     assert payload["summary"]["pred_vs_observed_mae_rgb_mean"] == 12.5
+    assert payload["summary"]["pred_conditioning_frame_mae_rgb_mean"] == 4.5
+    assert payload["summary"]["pred_conditioning_frame_mae_luma_mean"] == 3.5
+    assert payload["summary"]["pred_conditioning_frame_available_count"] == 1
     assert payload["summary"]["pred_vs_future_mae_rgb_mean"] == 8.5
     assert payload["summary"]["pred_vs_future_mae_luma_mean"] == 7.5
     assert payload["summary"]["pred_vs_future_matched_frame_count_mean"] == 4.0
@@ -214,10 +261,13 @@ def test_video_quality_summary_names_condition_window_metric(tmp_path):
     assert "action_wrist_window=history-current-first" in text
     assert "video_wrist_window=history-chronological" in text
     assert "pred_vs_condition_window_mae_rgb_mean" in text
+    assert "pred_conditioning_frame_mae_rgb_mean" in text
     assert "pred_vs_future_mae_rgb_mean" in text
     assert "pred_vs_future_mae_rgb_by_frame_mean" in text
     assert "pred_vs_future_best_alignment_offset_counts" in text
     assert "condition_window_mae=12.5" in text
+    assert "conditioning_t0_mae=4.5" in text
+    assert "conditioning_t0_obs_idx=0" in text
     assert "future_mae=8.5" in text
     assert "future_best_offset=1" in text
     assert "future_best_mae=6.5" in text
