@@ -7,11 +7,11 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW_PATH = (
     REPO_ROOT
-    / "osmo_workflows/robofactory/closedloop_liftbarrier_gamma_droidwidth_teacher_c500_slim_eval_gb200_1seed_20260621.yaml"
+    / "osmo_workflows/robofactory/closedloop_liftbarrier_gamma_droidwidth_teacher_c2000_slim_eval_gb200_1seed_20260621.yaml"
 )
 H100_WORKFLOW_PATH = (
     REPO_ROOT
-    / "osmo_workflows/robofactory/closedloop_liftbarrier_gamma_droidwidth_teacher_c500_slim_eval_h100_1seed_20260621.yaml"
+    / "osmo_workflows/robofactory/closedloop_liftbarrier_gamma_droidwidth_teacher_c2000_slim_eval_h100_1seed_20260621.yaml"
 )
 
 

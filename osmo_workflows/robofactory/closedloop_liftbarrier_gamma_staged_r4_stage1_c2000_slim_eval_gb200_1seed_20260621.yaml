@@ -4,7 +4,7 @@ workflow:
   - name: eval-group
     tasks:
     - args:
-      - /tmp/run_closedloop_gamma_staged_r4_stage1_c500_slim_eval_1seed_h100.sh
+      - /tmp/run_closedloop_gamma_staged_r4_stage1_c2000_slim_eval_1seed_gb200.sh
       command:
       - bash
       credentials:
@@ -24,22 +24,26 @@ workflow:
           #!/usr/bin/env bash
           set -euo pipefail
 
-          exec > >(tee /tmp/closedloop_gamma_staged_r4_stage1_c500_slim_eval_1seed_h100.log) 2>&1
+          exec > >(tee /tmp/closedloop_gamma_staged_r4_stage1_c2000_slim_eval_1seed_gb200.log) 2>&1
 
-          RUN_NAME="dz-rf-sg-gamma-r4-stage1-c500-slim-eval-1seed1000-xz-20260621"
+          RUN_NAME="{{run_name}}"
           DREAMZERO_GIT_URL="https://github.com/XianzheFan/dreamzero.git"
           DREAMZERO_GIT_REF="${DREAMZERO_GIT_REF:-gamma}"
           ROBOFACTORY_GIT_URL="https://github.com/MARS-EAI/RoboFactory.git"
           ROBOFACTORY_GIT_COMMIT="5868242322414a91454e22f1dd9641f613ba1bcf"
           DATA_S3_URI="s3://GearHome/users/xianzhef/oci-migration/data/robofactory_lerobot_v2/LiftBarrier-rf-500"
           MODEL_CACHE_S3_URI="s3://GearHome/users/xianzhef/oci-migration/checkpoints"
-          CKPT_S3_BASE="s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/dz-rf-sg-gamma-staged-lb500-r4-actiondelta-xianzhef-20260621-dense-teacher-slim-eval/checkpoints/dz-rf-sg-gamma-staged-lb500-r4-actiondelta-xianzhef-20260621-dense-teacher-slim-eval"
-          CKPT_AMLFS_BASE="/mnt/amlfs-01/home/xianzhef/osmo_cache/dreamzero/checkpoints/dz-rf-sg-gamma-staged-lb500-r4-actiondelta-xianzhef-20260621-dense-teacher-slim-eval/dz-rf-sg-gamma-staged-lb500-r4-actiondelta-xianzhef-20260621-dense-teacher-slim-eval"
-          CKPT_SETTING="checkpoint-500"
+          CKPT_S3_BASE="s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/dz-rf-sg-gamma-staged-lb500-r4-actiondelta-xianzhef-20260621-dense-teacher/checkpoints/dz-rf-sg-gamma-staged-lb500-r4-actiondelta-xianzhef-20260621-dense-teacher"
+          CKPT_AMLFS_BASE="/mnt/amlfs-01/home/xianzhef/osmo_cache/dreamzero/checkpoints/dz-rf-sg-gamma-staged-lb500-r4-actiondelta-xianzhef-20260621-dense-teacher/dz-rf-sg-gamma-staged-lb500-r4-actiondelta-xianzhef-20260621-dense-teacher"
+          CKPT_SETTING="{{ckpt_setting}}"
           CKPT_WAIT_TIMEOUT_SECONDS=5400
           CKPT_WAIT_INTERVAL_SECONDS=120
-          LOCAL_EVAL_CKPT_ROOT="/workspace/eval_ckpts/gamma_staged_r4_stage1_c500_slim_eval_1seed1000"
+          LOCAL_EVAL_CKPT_ROOT="/workspace/eval_ckpts/{{local_eval_ckpt_root}}"
           AMLFS_MODEL_CACHE_DIR="/mnt/amlfs-01/home/xianzhef/osmo_cache/dreamzero/checkpoints"
+          DREAMZERO_VENV="/mnt/amlfs-01/home/xianzhef/osmo_cache/dreamzero/venvs/gb200_rf_eval_py312"
+          MODEL_ONLY_DIAG="${MODEL_ONLY_DIAG:-1}"
+          MODEL_ONLY_NUM_BATCHES="${MODEL_ONLY_NUM_BATCHES:-1}"
+          MODEL_ONLY_INFERENCE_MODES="${MODEL_ONLY_INFERENCE_MODES:-causal_flowmatch noncausal_flowmatch}"
           ROBOFACTORY_ASSET_CACHE="/mnt/amlfs-01/home/xianzhef/osmo_cache/robofactory/assets"
           RUN_S3_ROOT="s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/${RUN_NAME}"
           DROID_HF_REPO="GEAR-Dreams/DreamZero-DROID"
@@ -51,7 +55,7 @@ workflow:
           INFERENCE_MODES="${INFERENCE_MODES:-causal_flowmatch}"
           RESET_CAUSAL_STATE_EACH_INFERS="${RESET_CAUSAL_STATE_EACH_INFERS:-1}"
           VIDEO_PRED_ROLLOUT_MODE="${VIDEO_PRED_ROLLOUT_MODE:-noncausal}"
-          VIDEO_PRED_WRIST_WINDOW_MODE="${VIDEO_PRED_WRIST_WINDOW_MODE:-history-chronological}"
+          VIDEO_PRED_WRIST_WINDOW_MODE="${VIDEO_PRED_WRIST_WINDOW_MODE:-action}"
           SHARED_GLOBAL_WRIST_WINDOW_MODE="${SHARED_GLOBAL_WRIST_WINDOW_MODE:-history-current-first}"
           export MAI_WRITE_DENOISED_CONTEXT_CACHE="${MAI_WRITE_DENOISED_CONTEXT_CACHE:-1}"
           export MAI_ROLLING_NOISE="${MAI_ROLLING_NOISE:-1}"
@@ -69,7 +73,7 @@ workflow:
           JOINT_TARGET_SLEW_RATES="0.35"
           REPLAN_BOUNDARY_BLEND_STEPS="${REPLAN_BOUNDARY_BLEND_STEPS:-0 4}"
           TEMPORAL_ACTION_ENSEMBLE_DECAY="${TEMPORAL_ACTION_ENSEMBLE_DECAY:-0}"
-          SERVER_CUDA_VISIBLE_DEVICES="4"
+          SERVER_CUDA_VISIBLE_DEVICES="1"
           CLIENT_CUDA_VISIBLE_DEVICES="0"
           SUCCESS_MODE="strict-lift"
           STRICT_SUCCESS_MIN_GRASP_COUNT=1
@@ -107,7 +111,7 @@ workflow:
             local status="${1:-$?}"
             set +e
             mkdir -p /workspace/eval_outputs
-            cp -f /tmp/closedloop_gamma_staged_r4_stage1_c500_slim_eval_1seed_h100.log /workspace/eval_outputs/closedloop_gamma_staged_r4_stage1_c500_slim_eval_1seed_h100.log
+            cp -f /tmp/closedloop_gamma_staged_r4_stage1_c2000_slim_eval_1seed_gb200.log /workspace/eval_outputs/closedloop_gamma_staged_r4_stage1_c2000_slim_eval_1seed_gb200.log
             if [ -f /tmp/server.log ]; then cp -f /tmp/server.log /workspace/eval_outputs/server.log; fi
             if [ -f /tmp/client.log ]; then cp -f /tmp/client.log /workspace/eval_outputs/client.log; fi
             find /tmp -maxdepth 1 -type f \( -name "server_*.log" -o -name "client_*.log" \) -exec cp -f {} /workspace/eval_outputs/ \; || true
@@ -141,7 +145,11 @@ workflow:
           export NO_ALBUMENTATIONS_UPDATE=1
           export PIP_ROOT_USER_ACTION=ignore
           export MUJOCO_GL=glfw
-          export LD_LIBRARY_PATH="/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}"
+          if [ -d /usr/lib/aarch64-linux-gnu ]; then
+            export LD_LIBRARY_PATH="/usr/lib/aarch64-linux-gnu:${LD_LIBRARY_PATH:-}"
+          elif [ -d /usr/lib/x86_64-linux-gnu ]; then
+            export LD_LIBRARY_PATH="/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}"
+          fi
 
           mkdir -p \
             /workspace/code \
@@ -155,6 +163,7 @@ workflow:
             /workspace/hf \
             /workspace/cache \
             /workspace/cuda_cache \
+            "$(dirname "$DREAMZERO_VENV")" \
             /tmp/nvidia-vulkan \
             /tmp/nvidia-egl
 
@@ -180,38 +189,65 @@ workflow:
           export __GLX_VENDOR_LIBRARY_NAME=nvidia
 
           echo "Installing Python packages for DreamZero + RoboFactory eval"
-          python -m pip install -q --no-cache-dir --upgrade "pip<25.3" "setuptools>=64,<80" wheel "huggingface_hub[cli]"
-          python -m pip install -q --no-cache-dir "mani_skill==3.0.0b12"
-          python -m pip install -q --no-cache-dir \
-            "websockets>=12" \
-            msgpack \
-            msgpack-numpy \
-            hydra-core \
-            omegaconf \
-            safetensors \
-            "einops==0.8.1" \
-            "transformers==4.51.3" \
-            "diffusers==0.30.2" \
-            "peft==0.5.0" \
-            accelerate \
-            dm-tree \
-            "albumentations==1.4.18" \
-            torchvision \
-            "av==15.0.0" \
-            pillow \
-            ftfy \
-            sentencepiece \
-            termcolor \
-            tiktoken \
-            timm \
-            loguru \
-            matplotlib \
-            h5py \
-            "opencv-python-headless==4.10.0.84" \
-            decord \
-            pandas \
-            pyarrow
-          python -m pip install -q --no-cache-dir "numpy==1.26.4"
+          if ! command -v uv >/dev/null 2>&1; then
+            echo "FATAL: uv is required to create the GB200 Python 3.12 eval venv." >&2
+            exit 65
+          fi
+          if [ ! -x /usr/bin/python3.12 ]; then
+            echo "FATAL: /usr/bin/python3.12 is required for the GB200 eval venv." >&2
+            exit 65
+          fi
+          if [ ! -x "${DREAMZERO_VENV}/bin/python" ]; then
+            uv venv --python /usr/bin/python3.12 --system-site-packages "$DREAMZERO_VENV"
+          fi
+          export PATH="${DREAMZERO_VENV}/bin:${PATH}"
+          python --version
+          python -m pip install -q --upgrade "pip<25.3" "setuptools>=64,<80" wheel "huggingface_hub[cli]"
+          if [ "$MODEL_ONLY_DIAG" = "1" ]; then
+            DEPS_MARKER="${DREAMZERO_VENV}/.gb200_model_only_eval_deps_v1"
+          else
+            DEPS_MARKER="${DREAMZERO_VENV}/.gb200_robofactory_eval_deps_v1"
+          fi
+          if [ ! -f "$DEPS_MARKER" ]; then
+            if [ "$MODEL_ONLY_DIAG" != "1" ]; then
+              python -m pip install -q "mani_skill==3.0.0b12" decord
+            fi
+            python -m pip install -q \
+              "websockets>=12" \
+              msgpack \
+              msgpack-numpy \
+              hydra-core \
+              omegaconf \
+              safetensors \
+              "einops==0.8.1" \
+              "transformers==4.51.3" \
+              "diffusers==0.30.2" \
+              "peft==0.5.0" \
+              accelerate \
+              dm-tree \
+              "albumentations==1.4.18" \
+              torchvision \
+              "av==15.0.0" \
+              pillow \
+              ftfy \
+              sentencepiece \
+              termcolor \
+              tiktoken \
+              timm \
+              loguru \
+              matplotlib \
+              h5py \
+              "opencv-python-headless==4.10.0.84" \
+              pandas \
+              pyarrow \
+              "datasets==3.6.0" \
+              imageio \
+              imageio-ffmpeg
+            python -m pip install -q "numpy==1.26.4"
+            date -u +"%Y-%m-%dT%H:%M:%SZ" > "$DEPS_MARKER"
+          else
+            echo "GB200 eval dependency cache already present: ${DEPS_MARKER}"
+          fi
 
           mkdir -p /workspace/checkpoints
 
@@ -325,21 +361,33 @@ workflow:
           echo "$DREAMZERO_GIT_COMMIT" > /workspace/eval_outputs/dreamzero_code_commit.txt
             python -m py_compile \
             /workspace/code/dreamzero/eval_utils/bimanual_policy_server.py \
+            /workspace/code/dreamzero/eval_utils/offline_video_action_diagnostic.py \
             /workspace/code/dreamzero/scripts/eval/eval_robofactory_ws.py \
             /workspace/code/dreamzero/scripts/eval/analyze_gripper_dump.py \
             /workspace/code/dreamzero/scripts/eval/analyze_video_pred_quality.py
 
-          echo "Cloning RoboFactory at ${ROBOFACTORY_GIT_COMMIT}"
-          git clone --no-checkout --filter=blob:none "$ROBOFACTORY_GIT_URL" /workspace/code/RoboFactory
-          git -C /workspace/code/RoboFactory fetch --depth 1 origin "$ROBOFACTORY_GIT_COMMIT"
-          git -C /workspace/code/RoboFactory checkout --detach "$ROBOFACTORY_GIT_COMMIT"
-          test "$(git -C /workspace/code/RoboFactory rev-parse HEAD)" = "$ROBOFACTORY_GIT_COMMIT"
-
-          echo "Installing local DreamZero and RoboFactory packages"
+          echo "Installing local DreamZero package"
           python -m pip install -q --no-cache-dir --ignore-requires-python -e /workspace/code/dreamzero --no-deps
-          python -m pip install -q --no-cache-dir -e /workspace/code/RoboFactory --no-deps
-
-          python - <<'PY'
+          export PYTHONPATH="/workspace/code/dreamzero:${PYTHONPATH:-}"
+          if [ "$MODEL_ONLY_DIAG" = "1" ]; then
+            python - <<'PY'
+          import importlib.util
+          required = ["torch", "groot", "datasets", "websockets", "msgpack_numpy", "pyarrow", "av", "cv2"]
+          for name in required:
+              print(f"{name}: {bool(importlib.util.find_spec(name))}", flush=True)
+          missing = [name for name in required if importlib.util.find_spec(name) is None]
+          if missing:
+              raise SystemExit(f"missing required model-only imports: {missing}")
+          PY
+          else
+            echo "Cloning RoboFactory at ${ROBOFACTORY_GIT_COMMIT}"
+            git clone --no-checkout --filter=blob:none "$ROBOFACTORY_GIT_URL" /workspace/code/RoboFactory
+            git -C /workspace/code/RoboFactory fetch --depth 1 origin "$ROBOFACTORY_GIT_COMMIT"
+            git -C /workspace/code/RoboFactory checkout --detach "$ROBOFACTORY_GIT_COMMIT"
+            test "$(git -C /workspace/code/RoboFactory rev-parse HEAD)" = "$ROBOFACTORY_GIT_COMMIT"
+            echo "Installing local RoboFactory package"
+            python -m pip install -q --no-cache-dir -e /workspace/code/RoboFactory --no-deps
+            python - <<'PY'
           import importlib.util
           required = ["torch", "groot", "robofactory", "mani_skill", "sapien", "gymnasium", "websockets", "msgpack_numpy", "pyarrow"]
           for name in required:
@@ -348,6 +396,7 @@ workflow:
           if missing:
               raise SystemExit(f"missing required imports: {missing}")
           PY
+          fi
 
           echo "Downloading RoboFactory LiftBarrier-rf-500 data"
           osmo data download --resume "${DATA_S3_URI}/" /workspace/data/LiftBarrier-rf
@@ -489,6 +538,34 @@ workflow:
             exit 26
           fi
           du -sh "$candidate_dir"
+
+          if [ "$MODEL_ONLY_DIAG" = "1" ]; then
+            echo "Running GB200 model-only action/video diagnostics"
+            for MODEL_ONLY_INFERENCE_MODE in ${MODEL_ONLY_INFERENCE_MODES}; do
+              diag_out="/workspace/eval_outputs/model_only_${MODEL_ONLY_INFERENCE_MODE}"
+              mkdir -p "$diag_out"
+              CUDA_VISIBLE_DEVICES=0 python -m eval_utils.offline_video_action_diagnostic \
+                --ckpt-dir "$LOCAL_EVAL_CKPT_ROOT" \
+                --ckpt-setting "$CKPT_SETTING" \
+                --out-dir "$diag_out" \
+                --num-batches "$MODEL_ONLY_NUM_BATCHES" \
+                --batch-size 1 \
+                --num-workers 0 \
+                --device cuda \
+                --inference-mode "$MODEL_ONLY_INFERENCE_MODE" \
+                2>&1 | tee "${diag_out}/diagnostic.log"
+            done
+            if find /workspace/eval_outputs -path "*/video_pred/*.mp4" -print -quit | grep -q .; then
+              python /workspace/code/dreamzero/scripts/eval/analyze_video_pred_quality.py \
+                /workspace/eval_outputs \
+                --output-json /workspace/eval_outputs/model_only_video_pred_quality.json \
+                --output-txt /workspace/eval_outputs/model_only_video_pred_quality.txt \
+                --contact-sheet /workspace/eval_outputs/model_only_video_pred_quality_contact.jpg \
+                2>&1 | tee /workspace/eval_outputs/model_only_video_pred_quality.log || true
+            fi
+            echo "GB200 model-only diagnostics complete"
+            exit 0
+          fi
 
           echo "Preparing RoboFactory assets cache"
           mkdir -p "$ROBOFACTORY_ASSET_CACHE"
@@ -905,26 +982,26 @@ workflow:
           fi
 
           SERVE_ROOT="/workspace/eval_outputs_http"
-          ARCHIVE="${SERVE_ROOT}/gamma_staged_r4_stage1_c500_slim_eval_1seed_artifacts.tar"
+          ARCHIVE="${SERVE_ROOT}/${RUN_NAME}_artifacts.tar"
           mkdir -p "$SERVE_ROOT"
           echo "Creating HTTP artifact archive ${ARCHIVE}"
           tar -C /workspace/eval_outputs -cf "$ARCHIVE" .
           sha256sum "$ARCHIVE" > "${ARCHIVE}.sha256"
           split -b 1m -d -a 4 "$ARCHIVE" "${ARCHIVE}.part."
           find "$SERVE_ROOT" -maxdepth 1 -type f -print -exec ls -lh {} \; | sort
-          echo "Gamma staged r4 dense-teacher checkpoint-500 slim eval seed1000 strict-lift noncausal pred-video eval complete"
+          echo "Gamma staged r4 dense-teacher ${CKPT_SETTING} slim eval seed1000 strict-lift noncausal pred-video eval complete"
           echo "Serving split artifacts from ${SERVE_ROOT} on 0.0.0.0:8765"
           python -m http.server 8765 --bind 0.0.0.0 --directory "$SERVE_ROOT"
-        path: /tmp/run_closedloop_gamma_staged_r4_stage1_c500_slim_eval_1seed_h100.sh
-      image: nvcr.io/nvidian/groot-ci-base-eval:latest@sha256:de6e59614be213f06f95c8c1e8311f0b700c963aed6c39eeec1fb56cd40c6ee7
+        path: /tmp/run_closedloop_gamma_staged_r4_stage1_c2000_slim_eval_1seed_gb200.sh
+      image: nvcr.io/nvidian/gr00t_isaac:v1.5
       lead: true
       name: eval
-  name: dz-rf-sg-gamma-r4-stage1-c500-slim-eval-1seed1000-xz-20260621
+  name: '{{workflow_name}}'
   resources:
     default:
       cpu: 84
-      gpu: 8
-      memory: 1681Gi
+      gpu: 4
+      memory: 760Gi
       nodesExcluded:
       - aks-gpu-61109112-vmss00000v
       - aks-gpu-61109112-vmss000012
@@ -940,8 +1017,13 @@ workflow:
       - aks-gpu-92777625-vmss0002jl
       - aks-gpu-92777625-vmss00002g
       - aks-gpu-92777625-vmss00007h
-      platform: dgx-h100
+      platform: gb200
       storage: 620Gi
   timeout:
     exec_timeout: 5h
     queue_timeout: 2h
+default-values:
+  workflow_name: dz-rf-sg-gamma-r4-stage1-c2000-slim-eval-gb200-1seed1000-xz-20260621
+  run_name: dz-rf-sg-gamma-r4-stage1-c2000-slim-eval-gb200-1seed1000-xz-20260621
+  ckpt_setting: checkpoint-2000
+  local_eval_ckpt_root: gamma_staged_r4_stage1_c2000_slim_eval_1seed1000

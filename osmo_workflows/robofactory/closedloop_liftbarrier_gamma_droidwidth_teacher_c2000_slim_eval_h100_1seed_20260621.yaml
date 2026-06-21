@@ -4,7 +4,7 @@ workflow:
   - name: eval-group
     tasks:
     - args:
-      - /tmp/run_closedloop_gamma_droidwidth_teacher_c500_slim_eval_1seed_h100.sh
+      - /tmp/run_closedloop_gamma_droidwidth_teacher_c2000_slim_eval_1seed_h100.sh
       command:
       - bash
       credentials:
@@ -24,7 +24,7 @@ workflow:
           #!/usr/bin/env bash
           set -euo pipefail
 
-          exec > >(tee /tmp/closedloop_gamma_droidwidth_teacher_c500_slim_eval_1seed_h100.log) 2>&1
+          exec > >(tee /tmp/closedloop_gamma_droidwidth_teacher_c2000_slim_eval_1seed_h100.log) 2>&1
 
           RUN_NAME="{{run_name}}"
           DREAMZERO_GIT_URL="https://github.com/XianzheFan/dreamzero.git"
@@ -265,7 +265,7 @@ workflow:
             set +e
             mkdir -p /workspace/eval_outputs
             write_eval_manifest "$status" || true
-            cp -f /tmp/closedloop_gamma_droidwidth_teacher_c500_slim_eval_1seed_h100.log /workspace/eval_outputs/closedloop_gamma_droidwidth_teacher_c500_slim_eval_1seed_h100.log
+            cp -f /tmp/closedloop_gamma_droidwidth_teacher_c2000_slim_eval_1seed_h100.log /workspace/eval_outputs/closedloop_gamma_droidwidth_teacher_c2000_slim_eval_1seed_h100.log
             if [ -f /tmp/server.log ]; then cp -f /tmp/server.log /workspace/eval_outputs/server.log; fi
             if [ -f /tmp/client.log ]; then cp -f /tmp/client.log /workspace/eval_outputs/client.log; fi
             find /tmp -maxdepth 1 -type f \( -name "server_*.log" -o -name "client_*.log" \) -exec cp -f {} /workspace/eval_outputs/ \; || true
@@ -1132,7 +1132,7 @@ workflow:
           else
             echo "HTTP artifact serving disabled; uploaded artifacts and exiting to release H100 resources."
           fi
-        path: /tmp/run_closedloop_gamma_droidwidth_teacher_c500_slim_eval_1seed_h100.sh
+        path: /tmp/run_closedloop_gamma_droidwidth_teacher_c2000_slim_eval_1seed_h100.sh
       image: nvcr.io/nvidian/groot-ci-base-eval:latest@sha256:de6e59614be213f06f95c8c1e8311f0b700c963aed6c39eeec1fb56cd40c6ee7
       lead: true
       name: eval

@@ -196,6 +196,16 @@ def summarize_eval_root(root: Path) -> dict[str, Any]:
         "mean_joint_step_delta": best.get("mean_joint_step_delta"),
         "max_joint_step_delta": best.get("max_joint_step_delta"),
         "mean_joint_step_accel": best.get("mean_joint_step_accel"),
+        "mean_joint_accel_to_delta_ratio": best.get(
+            "mean_joint_accel_to_delta_ratio"
+        ),
+        "max_joint_accel_to_delta_ratio": best.get(
+            "max_joint_accel_to_delta_ratio"
+        ),
+        "joint_delta_sign_flip_frac": best.get("joint_delta_sign_flip_frac"),
+        "mean_joint_delta_sign_flip_frac": best.get(
+            "mean_joint_delta_sign_flip_frac"
+        ),
         "max_replan_boundary_joint_jump": best.get("max_replan_boundary_joint_jump"),
         "raw_joint_saturation_frac": best.get("raw_joint_saturation_frac"),
         "raw_joint_saturation_frac_left": best.get("raw_joint_saturation_frac_left"),
@@ -271,6 +281,8 @@ TABLE_COLUMNS = [
     ("R_grasp", "right_grasp_episodes"),
     ("joint_mean", "mean_joint_step_delta"),
     ("joint_max", "max_joint_step_delta"),
+    ("accel_ratio", "mean_joint_accel_to_delta_ratio"),
+    ("flip_frac", "joint_delta_sign_flip_frac"),
     ("boundary", "max_replan_boundary_joint_jump"),
     ("raw_sat", "raw_joint_saturation_frac"),
     ("raw_sat_L", "raw_joint_saturation_frac_left"),

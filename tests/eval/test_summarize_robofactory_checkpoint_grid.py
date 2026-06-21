@@ -75,6 +75,10 @@ def _make_eval(
                     "mean_joint_step_delta": 0.03,
                     "max_joint_step_delta": 0.14,
                     "mean_joint_step_accel": 0.02,
+                    "mean_joint_accel_to_delta_ratio": 0.67,
+                    "max_joint_accel_to_delta_ratio": 0.5,
+                    "joint_delta_sign_flip_frac": 0.25,
+                    "mean_joint_delta_sign_flip_frac": 0.2,
                     "max_replan_boundary_joint_jump": 0.06,
                     "raw_joint_saturation_frac": raw_sat,
                     "raw_joint_saturation_frac_left": raw_sat + 0.01,
@@ -137,6 +141,10 @@ def test_summarize_roots_orders_by_checkpoint_and_selects_best_setting(tmp_path)
     assert rows[0]["checkpoint_global_video_attention_mode"] == "bidirectional"
     assert rows[0]["best_setting_dir"] == "rp12_best"
     assert rows[0]["raw_joint_saturation_frac"] == 0.7
+    assert rows[0]["mean_joint_accel_to_delta_ratio"] == 0.67
+    assert rows[0]["max_joint_accel_to_delta_ratio"] == 0.5
+    assert rows[0]["joint_delta_sign_flip_frac"] == 0.25
+    assert rows[0]["mean_joint_delta_sign_flip_frac"] == 0.2
     assert rows[0]["pred_vs_future_mae_rgb_first_to_last_delta_mean"] == 8.0
     assert rows[0]["pred_vs_future_best_alignment_offset_counts"] == {"1": 2}
     assert rows[0]["pred_vs_future_best_alignment_mae_rgb_mean"] == 10.0

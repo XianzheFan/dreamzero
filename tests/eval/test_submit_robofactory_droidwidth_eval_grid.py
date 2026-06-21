@@ -23,6 +23,8 @@ def test_checkpoint_steps_default_grid_is_2k_spaced():
     steps = module.checkpoint_steps(2000, 10000, 2000)
 
     assert steps == [2000, 4000, 6000, 8000, 10000]
+    assert "c2000" in module.DEFAULT_WORKFLOW
+    assert "c500" not in module.DEFAULT_WORKFLOW
 
 
 def test_checkpoint_steps_rejects_bad_ranges():

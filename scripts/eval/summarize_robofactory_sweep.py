@@ -213,6 +213,24 @@ def summarize_setting(setting_dir: str) -> dict[str, Any]:
                 "max_joint_step_accel": _float_or_none(
                     summary.get("max_joint_step_accel")
                 ),
+                "mean_joint_accel_to_delta_ratio": _float_or_none(
+                    summary.get("mean_joint_accel_to_delta_ratio")
+                ),
+                "max_joint_accel_to_delta_ratio": _float_or_none(
+                    summary.get("max_joint_accel_to_delta_ratio")
+                ),
+                "joint_delta_sign_flip_frac": _float_or_none(
+                    summary.get("joint_delta_sign_flip_frac")
+                ),
+                "mean_joint_delta_sign_flip_frac": _float_or_none(
+                    summary.get("mean_joint_delta_sign_flip_frac")
+                ),
+                "joint_delta_sign_flip_count": summary.get(
+                    "joint_delta_sign_flip_count"
+                ),
+                "joint_delta_active_pair_count": summary.get(
+                    "joint_delta_active_pair_count"
+                ),
                 "mean_replan_boundary_joint_jump": _float_or_none(
                     summary.get("mean_replan_boundary_joint_jump")
                 ),
@@ -407,6 +425,8 @@ def print_table(rows: list[dict[str, Any]]) -> None:
         ("joint_mean", "mean_joint_step_delta"),
         ("joint_max", "max_joint_step_delta"),
         ("accel_mean", "mean_joint_step_accel"),
+        ("accel_ratio", "mean_joint_accel_to_delta_ratio"),
+        ("flip_frac", "joint_delta_sign_flip_frac"),
         ("boundary_max", "max_replan_boundary_joint_jump"),
         ("preblend_max", "max_pre_blend_replan_boundary_joint_jump"),
         ("ens_corr", "mean_temporal_ensemble_correction_joint"),

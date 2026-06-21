@@ -305,6 +305,34 @@ def _joint_boundary_jumps(
     return np.asarray(jumps, dtype=np.float32)
 
 
+def _safe_ratio(numerator: float, denominator: float, eps: float = 1e-8) -> float:
+    return float(numerator / max(float(denominator), eps))
+
+
+def _joint_delta_sign_flip_stats(
+    joint_step_delta: np.ndarray,
+    *,
+    active_threshold: float = 1e-4,
+) -> dict[str, float | int]:
+    if joint_step_delta.shape[0] <= 1 or joint_step_delta.size == 0:
+        return {
+            "flip_frac": 0.0,
+            "flip_count": 0,
+            "active_pair_count": 0,
+        }
+    prev = joint_step_delta[:-1]
+    nxt = joint_step_delta[1:]
+    active = (np.abs(prev) > active_threshold) & (np.abs(nxt) > active_threshold)
+    flips = active & (np.sign(prev) != np.sign(nxt))
+    active_count = int(active.sum())
+    flip_count = int(flips.sum())
+    return {
+        "flip_frac": float(flip_count / active_count) if active_count else 0.0,
+        "flip_count": flip_count,
+        "active_pair_count": active_count,
+    }
+
+
 def _fmt_range(stats: dict[str, float]) -> str:
     return (
         f"min={stats['min']:+.3f} max={stats['max']:+.3f} "
@@ -505,6 +533,7 @@ def analyze_episode(
         if joint_step_delta.shape[0] > 1
         else np.zeros((0, len(joint_dims)))
     )
+    joint_delta_sign_flip = _joint_delta_sign_flip_stats(joint_step_delta)
     replan_boundary_jump = _joint_boundary_jumps(
         exec_action,
         joint_dims,
@@ -514,6 +543,14 @@ def analyze_episode(
     mean_joint_step_delta = float(np.mean(np.abs(joint_step_delta))) if joint_step_delta.size else 0.0
     max_joint_step_accel = float(np.max(np.abs(joint_step_accel))) if joint_step_accel.size else 0.0
     mean_joint_step_accel = float(np.mean(np.abs(joint_step_accel))) if joint_step_accel.size else 0.0
+    mean_joint_accel_to_delta_ratio = _safe_ratio(
+        mean_joint_step_accel,
+        mean_joint_step_delta,
+    )
+    max_joint_accel_to_delta_ratio = _safe_ratio(
+        max_joint_step_accel,
+        max_joint_step_delta,
+    )
     max_replan_boundary_joint_jump = (
         float(np.max(np.abs(replan_boundary_jump)))
         if replan_boundary_jump.size
@@ -764,6 +801,11 @@ def analyze_episode(
         "mean_joint_step_delta": mean_joint_step_delta,
         "max_joint_step_accel": max_joint_step_accel,
         "mean_joint_step_accel": mean_joint_step_accel,
+        "mean_joint_accel_to_delta_ratio": mean_joint_accel_to_delta_ratio,
+        "max_joint_accel_to_delta_ratio": max_joint_accel_to_delta_ratio,
+        "joint_delta_sign_flip_frac": joint_delta_sign_flip["flip_frac"],
+        "joint_delta_sign_flip_count": joint_delta_sign_flip["flip_count"],
+        "joint_delta_active_pair_count": joint_delta_sign_flip["active_pair_count"],
         "max_replan_boundary_joint_jump": max_replan_boundary_joint_jump,
         "mean_replan_boundary_joint_jump": mean_replan_boundary_joint_jump,
         "first_cmd_delta_mean": first_cmd_delta_mean,
@@ -821,6 +863,14 @@ def analyze_episode(
         print(f"  exec joint range: {_fmt_range(joint_debug['exec_joint'])}")
         print(f"  pred chunk joint range: {_fmt_range(joint_debug['pred_chunk_joint'])}")
         print(f"  joint acceleration: {_fmt_abs(joint_debug['exec_joint_step_accel'])}")
+        print(
+            "  joint high-frequency: "
+            f"accel/delta mean={mean_joint_accel_to_delta_ratio:.3f} "
+            f"max={max_joint_accel_to_delta_ratio:.3f} "
+            f"delta_sign_flip_frac={joint_delta_sign_flip['flip_frac']:.3f} "
+            f"flips={joint_delta_sign_flip['flip_count']}/"
+            f"{joint_delta_sign_flip['active_pair_count']}"
+        )
         print(
             "  replan boundary joint jump: "
             f"{_fmt_abs(joint_debug['replan_boundary_joint_jump'])}"
@@ -998,6 +1048,27 @@ def _aggregate(episodes: list[dict[str, Any]]) -> dict[str, Any]:
         "mean_joint_step_delta": float(np.mean([e["mean_joint_step_delta"] for e in episodes])) if episodes else 0.0,
         "max_joint_step_accel": max(e["max_joint_step_accel"] for e in episodes) if episodes else 0.0,
         "mean_joint_step_accel": float(np.mean([e["mean_joint_step_accel"] for e in episodes])) if episodes else 0.0,
+        "mean_joint_accel_to_delta_ratio": float(
+            np.mean([e["mean_joint_accel_to_delta_ratio"] for e in episodes])
+        ) if episodes else 0.0,
+        "max_joint_accel_to_delta_ratio": max(
+            e["max_joint_accel_to_delta_ratio"] for e in episodes
+        ) if episodes else 0.0,
+        "mean_joint_delta_sign_flip_frac": float(
+            np.mean([e["joint_delta_sign_flip_frac"] for e in episodes])
+        ) if episodes else 0.0,
+        "joint_delta_sign_flip_frac": (
+            float(sum(e["joint_delta_sign_flip_count"] for e in episodes))
+            / float(sum(e["joint_delta_active_pair_count"] for e in episodes))
+            if sum(e["joint_delta_active_pair_count"] for e in episodes)
+            else 0.0
+        ),
+        "joint_delta_sign_flip_count": sum(
+            e["joint_delta_sign_flip_count"] for e in episodes
+        ),
+        "joint_delta_active_pair_count": sum(
+            e["joint_delta_active_pair_count"] for e in episodes
+        ),
         "max_replan_boundary_joint_jump": max(
             e["max_replan_boundary_joint_jump"] for e in episodes
         ) if episodes else 0.0,
@@ -1202,6 +1273,14 @@ def main() -> None:
         "  joint acceleration: "
         f"mean_abs={summary['mean_joint_step_accel']:.3f} "
         f"max_abs={summary['max_joint_step_accel']:.3f}"
+    )
+    print(
+        "  joint high-frequency: "
+        f"accel/delta mean={summary['mean_joint_accel_to_delta_ratio']:.3f} "
+        f"max={summary['max_joint_accel_to_delta_ratio']:.3f} "
+        f"delta_sign_flip_frac={summary['joint_delta_sign_flip_frac']:.3f} "
+        f"flips={summary['joint_delta_sign_flip_count']}/"
+        f"{summary['joint_delta_active_pair_count']}"
     )
     print(
         "  replan boundary joint jump: "

@@ -1,6 +1,6 @@
 import numpy as np
 
-from scripts.eval.analyze_gripper_dump import analyze_episode
+from scripts.eval.analyze_gripper_dump import _aggregate, analyze_episode
 
 
 def test_analyze_episode_reports_joint_jitter_metrics(tmp_path):
@@ -61,6 +61,11 @@ def test_analyze_episode_reports_joint_jitter_metrics(tmp_path):
 
     assert episode["mean_joint_step_delta"] > 0.0
     assert episode["max_joint_step_accel"] > 0.0
+    assert episode["mean_joint_accel_to_delta_ratio"] > 0.0
+    assert episode["max_joint_accel_to_delta_ratio"] > 0.0
+    assert episode["joint_delta_sign_flip_frac"] == 0.0
+    assert episode["joint_delta_sign_flip_count"] == 0
+    assert episode["joint_delta_active_pair_count"] > 0
     assert np.isclose(episode["max_replan_boundary_joint_jump"], 0.6)
     assert "exec_joint_step_accel" in episode["joint_debug"]
     assert "replan_boundary_joint_jump" in episode["joint_debug"]
@@ -103,3 +108,40 @@ def test_analyze_episode_reports_joint_jitter_metrics(tmp_path):
     assert norm_debug["joint_clamp_delta_mean_by_arm"]["right"] > 0.0
     assert norm_debug["raw_joint_top_saturated_dims"][0]["dim"] == 0
     assert norm_debug["raw_joint_top_saturated_dims"][1]["dim"] == 8
+
+
+def test_analyze_episode_reports_joint_delta_sign_flips(tmp_path):
+    path = tmp_path / "episode_1001.npz"
+    exec_action = np.zeros((5, 16), dtype=np.float32)
+    oscillating = np.asarray([0.0, 1.0, 0.0, 1.0, 0.0], dtype=np.float32)
+    exec_action[:, :7] = oscillating[:, None]
+    exec_action[:, 8:15] = oscillating[:, None]
+    pred_chunk = np.zeros((1, 3, 16), dtype=np.float32)
+    np.savez(
+        path,
+        seed=np.asarray(1001),
+        success=np.asarray(False),
+        exec_action=exec_action,
+        pred_chunk=pred_chunk,
+    )
+
+    episode = analyze_episode(
+        str(path),
+        close_threshold=0.0,
+        decisive_threshold=-0.5,
+        print_profiles=False,
+        num_arms=2,
+        arm_dim=8,
+        gripper_offset=7,
+        explicit_gripper_dims=None,
+        custom_arm_labels=None,
+    )
+
+    assert episode["joint_delta_active_pair_count"] == 42
+    assert episode["joint_delta_sign_flip_count"] == 42
+    assert episode["joint_delta_sign_flip_frac"] == 1.0
+
+    summary = _aggregate([episode])
+    assert summary["joint_delta_active_pair_count"] == 42
+    assert summary["joint_delta_sign_flip_count"] == 42
+    assert summary["joint_delta_sign_flip_frac"] == 1.0
