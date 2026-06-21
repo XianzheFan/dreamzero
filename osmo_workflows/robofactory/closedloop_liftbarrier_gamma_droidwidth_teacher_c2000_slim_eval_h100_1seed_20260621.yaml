@@ -943,8 +943,8 @@ workflow:
             --port "$PORT" \
             --image-h 240 \
             --image-w 320 \
-            --num-frames 33 \
-            --action-horizon 24 \
+            --num-frames "{{eval_num_frames}}" \
+            --action-horizon "{{eval_action_horizon}}" \
             --return-action-debug \
             --gripper-binarize-threshold "$GRIPPER_BINARIZE_THRESHOLD" \
             --shared-global-wrist-window-mode "$SHARED_GLOBAL_WRIST_WINDOW_MODE" \
@@ -1202,6 +1202,8 @@ default-values:
   dreamzero_git_ref: gamma
   dreamzero_expected_git_commit: ""
   local_eval_ckpt_root: gamma_droidwidth_teacher_bidir_nodrop_50k_c2000_slim_eval_h100_1seed1000
+  eval_num_frames: "33"
+  eval_action_horizon: "24"
   video_pred_rollout_modes: "action noncausal"
   replan_everys: "24 12"
   joint_delta_scales: "1.0"

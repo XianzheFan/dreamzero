@@ -177,6 +177,8 @@ def build_submit_command(
     ckpt_amlfs_base_value: str,
     dreamzero_git_ref: str = DEFAULT_DREAMZERO_GIT_REF,
     dreamzero_expected_git_commit: str = "",
+    eval_num_frames: int | None = None,
+    eval_action_horizon: int | None = None,
     extra_set_string: Sequence[str] = (),
     osmo_binary: str = "osmo",
 ) -> list[str]:
@@ -192,8 +194,12 @@ def build_submit_command(
         f"local_eval_ckpt_root={local_root}",
         f"dreamzero_git_ref={dreamzero_git_ref}",
         f"dreamzero_expected_git_commit={dreamzero_expected_git_commit}",
-        *extra_set_string,
     ]
+    if eval_num_frames is not None:
+        set_string.append(f"eval_num_frames={eval_num_frames}")
+    if eval_action_horizon is not None:
+        set_string.append(f"eval_action_horizon={eval_action_horizon}")
+    set_string.extend(extra_set_string)
     return [
         osmo_binary,
         "workflow",
@@ -275,6 +281,16 @@ def build_parser() -> argparse.ArgumentParser:
             "Expected DreamZero commit after resolving --dreamzero-git-ref. "
             "Defaults to the current local HEAD; pass an empty string to disable the guard."
         ),
+    )
+    parser.add_argument(
+        "--eval-num-frames",
+        type=int,
+        help="Override the eval server --num-frames template value for long-window ablations.",
+    )
+    parser.add_argument(
+        "--eval-action-horizon",
+        type=int,
+        help="Override the eval server --action-horizon template value for action-window ablations.",
     )
     parser.add_argument(
         "--set-string",
@@ -392,6 +408,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             ckpt_amlfs_base_value=ckpt_amlfs_base_value,
             dreamzero_git_ref=args.dreamzero_git_ref,
             dreamzero_expected_git_commit=dreamzero_expected_git_commit,
+            eval_num_frames=args.eval_num_frames,
+            eval_action_horizon=args.eval_action_horizon,
             extra_set_string=args.set_string,
             osmo_binary=args.osmo_binary,
         )

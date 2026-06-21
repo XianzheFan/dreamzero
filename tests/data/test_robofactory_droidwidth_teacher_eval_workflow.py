@@ -35,6 +35,8 @@ def test_droidwidth_teacher_eval_points_to_teacher_checkpoint_prefix():
     )
     assert defaults["ckpt_setting"] == "checkpoint-2000"
     assert defaults["local_eval_ckpt_root"] == "gamma_droidwidth_teacher_c2000_slim_eval_1seed1000"
+    assert defaults["eval_num_frames"] == "33"
+    assert defaults["eval_action_horizon"] == "24"
     assert task["image"] == "nvcr.io/nvidian/gr00t_isaac:v1.5"
     assert 'RUN_NAME="{{run_name}}"' in script
     assert (
@@ -57,6 +59,8 @@ def test_droidwidth_teacher_eval_uses_current_frame_window_defaults():
     )
     assert '--shared-global-wrist-window-mode "$SHARED_GLOBAL_WRIST_WINDOW_MODE"' in script
     assert '--video-pred-wrist-window-mode "$VIDEO_PRED_WRIST_WINDOW_MODE"' in script
+    assert '--num-frames "{{eval_num_frames}}"' in script
+    assert '--action-horizon "{{eval_action_horizon}}"' in script
 
 
 def test_droidwidth_teacher_eval_uses_gb200_node_resources():
@@ -153,6 +157,8 @@ def test_droidwidth_teacher_h100_eval_targets_h100_pool_resources():
         defaults["local_eval_ckpt_root"]
         == "gamma_droidwidth_teacher_bidir_nodrop_50k_c2000_slim_eval_h100_1seed1000"
     )
+    assert defaults["eval_num_frames"] == "33"
+    assert defaults["eval_action_horizon"] == "24"
     assert defaults["video_pred_rollout_modes"] == "action noncausal"
     assert defaults["replan_everys"] == "24 12"
     assert defaults["joint_delta_scales"] == "1.0"
@@ -178,6 +184,8 @@ def test_droidwidth_teacher_h100_eval_targets_h100_pool_resources():
     assert 'REPLAN_EVERYS="${REPLAN_EVERYS:-{{replan_everys}}}"' in script
     assert 'CKPT_SETTING="{{ckpt_setting}}"' in script
     assert 'LOCAL_EVAL_CKPT_ROOT="/workspace/eval_ckpts/{{local_eval_ckpt_root}}"' in script
+    assert '--num-frames "{{eval_num_frames}}"' in script
+    assert '--action-horizon "{{eval_action_horizon}}"' in script
     assert 'ROBOFACTORY_RENDER_BACKEND="${ROBOFACTORY_RENDER_BACKEND:-sapien_cuda:0}"' in script
     assert 'ROBOFACTORY_ENABLE_SHADOW="${ROBOFACTORY_ENABLE_SHADOW:-0}"' in script
     assert 'ROBOFACTORY_SHADER_PACK="${ROBOFACTORY_SHADER_PACK:-default}"' in script

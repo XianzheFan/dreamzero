@@ -59,6 +59,19 @@ together:
 --set-string train_num_frames=65 train_max_chunk_size=8 train_max_grad_norm=0.1
 ```
 
+When evaluating a long-window checkpoint, pass the matching server window to
+the 2k grid helper as well:
+
+```bash
+python scripts/eval/submit_robofactory_droidwidth_eval_grid.py \
+  --tag 20260621-longwin \
+  --only-ready \
+  --skip-existing \
+  --eval-num-frames 65 \
+  --eval-action-horizon 24 \
+  --submit
+```
+
 In this loader, `train_num_frames` should remain `8 * train_max_chunk_size + 1`;
 larger values such as `97/12` are closer to the Gamma-World teacher objective
 but should be treated as a separate memory/runtime ablation. `train_max_grad_norm=0.1`
@@ -112,9 +125,10 @@ part of the standing checkpoint curve.
 
 The helper uses `osmo workflow submit` with `--set-string` overrides for
 `workflow_name`, `run_name`, `ckpt_run_name`, `ckpt_s3_base`,
-`ckpt_amlfs_base`, `ckpt_setting`, and `local_eval_ckpt_root`, so each
-checkpoint writes to an isolated eval run while still pointing at the current
-bidirectional teacher checkpoint tree. The default cadence is:
+`ckpt_amlfs_base`, `ckpt_setting`, and `local_eval_ckpt_root`, plus optional
+`eval_num_frames` / `eval_action_horizon` overrides for long-window ablations,
+so each checkpoint writes to an isolated eval run while still pointing at the
+current bidirectional teacher checkpoint tree. The default cadence is:
 
 ```text
 checkpoint-2000, checkpoint-4000, ..., checkpoint-50000

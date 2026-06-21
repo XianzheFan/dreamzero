@@ -85,6 +85,30 @@ def test_build_submit_command_uses_checkpoint_specific_names():
     )
     assert "dreamzero_git_ref=gamma" in command
     assert "dreamzero_expected_git_commit=abc123" in command
+    assert "eval_num_frames=65" not in command
+    assert "eval_action_horizon=24" not in command
+
+
+def test_build_submit_command_can_override_eval_window():
+    module = _load_module()
+
+    command = module.build_submit_command(
+        workflow=Path("eval.yaml"),
+        pool="groot-h100-01",
+        priority="LOW",
+        step=2000,
+        tag="longwin",
+        name_template=module.DEFAULT_NAME_TEMPLATE,
+        local_root_template=module.DEFAULT_LOCAL_ROOT_TEMPLATE,
+        ckpt_run_name=module.DEFAULT_CKPT_RUN_NAME,
+        ckpt_s3_base_value=module.checkpoint_s3_base(module.DEFAULT_CKPT_RUN_NAME),
+        ckpt_amlfs_base_value=module.checkpoint_amlfs_base(module.DEFAULT_CKPT_RUN_NAME),
+        eval_num_frames=65,
+        eval_action_horizon=24,
+    )
+
+    assert "eval_num_frames=65" in command
+    assert "eval_action_horizon=24" in command
 
 
 def test_main_prints_dry_run_commands_without_submitting(monkeypatch, capsys):
@@ -117,6 +141,32 @@ def test_main_prints_dry_run_commands_without_submitting(monkeypatch, capsys):
     assert "ckpt_run_name=dz-rf-sg-gamma-dwteacher-bidir-nodrop-lb500-50k-xz-20260622-teacher" in out
     assert "dreamzero_git_ref=gamma" in out
     assert "dreamzero_expected_git_commit=abc123" in out
+
+
+def test_main_prints_eval_window_overrides(monkeypatch, capsys):
+    module = _load_module()
+    monkeypatch.setattr(module, "current_git_head", lambda: "abc123")
+
+    status = module.main(
+        [
+            "--workflow",
+            "eval.yaml",
+            "--tag",
+            "20260621",
+            "--steps",
+            "2000",
+            "--eval-num-frames",
+            "65",
+            "--eval-action-horizon",
+            "24",
+        ]
+    )
+
+    assert status == 0
+    out = capsys.readouterr().out
+    assert "ckpt_setting=checkpoint-2000" in out
+    assert "eval_num_frames=65" in out
+    assert "eval_action_horizon=24" in out
 
 
 def test_main_rejects_explicit_off_grid_steps_by_default():

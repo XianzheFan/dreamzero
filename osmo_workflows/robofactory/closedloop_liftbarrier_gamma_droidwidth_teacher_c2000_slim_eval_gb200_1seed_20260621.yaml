@@ -938,8 +938,8 @@ workflow:
             --port "$PORT" \
             --image-h 240 \
             --image-w 320 \
-            --num-frames 33 \
-            --action-horizon 24 \
+            --num-frames "{{eval_num_frames}}" \
+            --action-horizon "{{eval_action_horizon}}" \
             --return-action-debug \
             --gripper-binarize-threshold "$GRIPPER_BINARIZE_THRESHOLD" \
             --shared-global-wrist-window-mode "$SHARED_GLOBAL_WRIST_WINDOW_MODE" \
@@ -1177,3 +1177,5 @@ default-values:
   run_name: dz-rf-sg-gamma-dwteacher-c2000-slim-eval-gb200-1seed1000-xz-20260621
   ckpt_setting: checkpoint-2000
   local_eval_ckpt_root: gamma_droidwidth_teacher_c2000_slim_eval_1seed1000
+  eval_num_frames: "33"
+  eval_action_horizon: "24"
