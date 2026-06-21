@@ -418,6 +418,37 @@ def limit_joint_target_slew(
     return out
 
 
+def limit_joint_target_accel(
+    action16: np.ndarray,
+    previous_action16: np.ndarray | None,
+    previous_joint_delta16: np.ndarray | None,
+    max_joint_accel: float | None,
+) -> np.ndarray:
+    """Limit per-step changes in joint target velocity, preserving grippers."""
+    out = np.asarray(action16, dtype=np.float32).copy()
+    if (
+        previous_action16 is None
+        or previous_joint_delta16 is None
+        or max_joint_accel is None
+        or max_joint_accel <= 0.0
+    ):
+        return out
+    if not np.isfinite(max_joint_accel):
+        raise ValueError(f"joint target accel limit must be finite, got {max_joint_accel}")
+
+    prev = np.asarray(previous_action16, dtype=np.float32)
+    prev_delta = np.asarray(previous_joint_delta16, dtype=np.float32)
+    for start, end in JOINT_TARGET_SLICES:
+        desired_delta = out[start:end] - prev[start:end]
+        limited_delta = prev_delta[start:end] + np.clip(
+            desired_delta - prev_delta[start:end],
+            -max_joint_accel,
+            max_joint_accel,
+        )
+        out[start:end] = prev[start:end] + limited_delta
+    return out
+
+
 def blend_replan_boundary_target(
     action16: np.ndarray,
     boundary_anchor16: np.ndarray | None,
@@ -663,6 +694,7 @@ def run_episode(
     gripper_policy_close_threshold: float,
     gripper_policy_close_min_step: int,
     joint_target_slew_rate: float,
+    joint_target_accel_limit: float,
     replan_boundary_blend_steps: int,
     temporal_action_ensemble_decay: float,
     success_mode: str,
@@ -690,6 +722,7 @@ def run_episode(
 
     steps = 0
     last_commanded: np.ndarray | None = None
+    last_joint_delta = np.zeros((16,), dtype=np.float32)
     gripper_latch_state = {"left": False, "right": False}
     temporal_action_ensembler = TemporalActionEnsembler(
         temporal_action_ensemble_decay
@@ -799,16 +832,29 @@ def run_episode(
                 chunk_offset,
                 replan_boundary_blend_steps,
             )
+            pre_accel_abs16 = abs16.copy()
+            abs16 = limit_joint_target_accel(
+                abs16,
+                last_commanded,
+                last_joint_delta,
+                joint_target_accel_limit,
+            )
             pre_slew_abs16 = abs16.copy()
             abs16 = limit_joint_target_slew(abs16, last_commanded, joint_target_slew_rate)
+            prev_commanded = last_commanded.copy() if last_commanded is not None else None
             raw_obs, reward, term, trunc, info = env.step(env_action_dict(abs16))
             last_commanded = abs16.copy()
+            if prev_commanded is not None:
+                last_joint_delta = abs16 - prev_commanded
+            else:
+                last_joint_delta = np.zeros_like(abs16)
             cur = abs16
             steps += 1
             temporal_action_ensembler.prune(steps)
             if dump is not None:
                 dump["exec_action_pre_ensemble"].append(pre_ensemble_abs16.copy())
                 dump["exec_action_pre_blend"].append(pre_blend_abs16.copy())
+                dump["exec_action_pre_accel"].append(pre_accel_abs16.copy())
                 dump["exec_action_pre_slew"].append(pre_slew_abs16.copy())
                 dump["exec_action"].append(abs16.copy())
                 dump["env_trace"].append(collect_env_trace(env, steps, abs16, info))
@@ -1001,6 +1047,16 @@ def main():
         ),
     )
     ap.add_argument(
+        "--joint-target-accel-limit",
+        type=float,
+        default=0.0,
+        help=(
+            "Optional eval-only per-step joint target acceleration limit in "
+            "radians per env step squared. 0 disables second-order smoothing. "
+            "Gripper commands are not smoothed."
+        ),
+    )
+    ap.add_argument(
         "--replan-boundary-blend-steps",
         type=int,
         default=0,
@@ -1084,6 +1140,8 @@ def main():
     args = ap.parse_args()
     if args.replan_boundary_blend_steps < 0:
         ap.error("--replan-boundary-blend-steps must be >= 0")
+    if not np.isfinite(args.joint_target_accel_limit) or args.joint_target_accel_limit < 0.0:
+        ap.error("--joint-target-accel-limit must be finite and >= 0")
     if (
         not np.isfinite(args.temporal_action_ensemble_decay)
         or args.temporal_action_ensemble_decay < 0.0
@@ -1112,6 +1170,7 @@ def main():
     print(f"Joint ref:     {args.joint_target_scale_reference}")
     print(f"Joint clip:    {args.joint_target_scale_clip}")
     print(f"Joint slew:    {args.joint_target_slew_rate}")
+    print(f"Joint accel:   {args.joint_target_accel_limit}")
     print(f"Boundary blend: {args.replan_boundary_blend_steps}")
     print(f"Temporal action ensemble decay: {args.temporal_action_ensemble_decay}")
     if args.left_joint_target_scale is not None or args.right_joint_target_scale is not None:
@@ -1249,6 +1308,7 @@ def main():
                         "joint_target_scale_clip": args.joint_target_scale_clip,
                         "joint_delta_output_clip": args.joint_target_scale_clip,
                         "joint_target_slew_rate": args.joint_target_slew_rate,
+                        "joint_target_accel_limit": args.joint_target_accel_limit,
                         "replan_boundary_blend_steps": args.replan_boundary_blend_steps,
                         "temporal_action_ensemble_decay": args.temporal_action_ensemble_decay,
                         "effective_joint_delta_scale": args.joint_target_scale,
@@ -1289,6 +1349,7 @@ def main():
             "obs_qpos": np.stack(dump["obs_qpos"]),           # [n_infer, 16]
             "exec_action_pre_blend": np.stack(dump["exec_action_pre_blend"]),
             "exec_action_pre_ensemble": np.stack(dump["exec_action_pre_ensemble"]),
+            "exec_action_pre_accel": np.stack(dump["exec_action_pre_accel"]),
             "exec_action_pre_slew": np.stack(dump["exec_action_pre_slew"]),
             "exec_action": np.stack(dump["exec_action"]),     # [n_steps, 16]
             "env_trace": np.stack(dump["env_trace"]),         # [n_steps + 1, len(ENV_TRACE_COLUMNS)]
@@ -1318,6 +1379,7 @@ def main():
                 "obs_qpos": [],
                 "exec_action_pre_blend": [],
                 "exec_action_pre_ensemble": [],
+                "exec_action_pre_accel": [],
                 "exec_action_pre_slew": [],
                 "exec_action": [],
                 "env_trace": [],
@@ -1354,6 +1416,7 @@ def main():
                 gripper_policy_close_threshold=args.gripper_policy_close_threshold,
                 gripper_policy_close_min_step=args.gripper_policy_close_min_step,
                 joint_target_slew_rate=args.joint_target_slew_rate,
+                joint_target_accel_limit=args.joint_target_accel_limit,
                 replan_boundary_blend_steps=args.replan_boundary_blend_steps,
                 temporal_action_ensemble_decay=args.temporal_action_ensemble_decay,
                 success_mode=args.success_mode,

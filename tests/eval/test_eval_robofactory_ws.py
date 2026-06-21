@@ -234,6 +234,30 @@ def test_limit_joint_target_slew_limits_joints_only(monkeypatch):
     np.testing.assert_allclose(out[[7, 15]], [-1.0, 1.0])
 
 
+def test_limit_joint_target_accel_limits_joints_only(monkeypatch):
+    mod = _load_eval_module(monkeypatch)
+    previous = np.zeros(16, dtype=np.float32)
+    previous_delta = np.zeros(16, dtype=np.float32)
+    previous_delta[0:7] = 0.1
+    previous_delta[8:15] = -0.1
+    action = np.zeros(16, dtype=np.float32)
+    action[0:7] = 1.0
+    action[8:15] = -1.0
+    action[7] = -1.0
+    action[15] = 1.0
+
+    out = mod.limit_joint_target_accel(
+        action,
+        previous,
+        previous_delta,
+        max_joint_accel=0.2,
+    )
+
+    np.testing.assert_allclose(out[0:7], 0.3, atol=1e-6)
+    np.testing.assert_allclose(out[8:15], -0.3, atol=1e-6)
+    np.testing.assert_allclose(out[[7, 15]], [-1.0, 1.0])
+
+
 def test_blend_replan_boundary_target_blends_joints_only(monkeypatch):
     mod = _load_eval_module(monkeypatch)
     anchor = np.zeros(16, dtype=np.float32)

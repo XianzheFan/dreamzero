@@ -174,6 +174,10 @@ def test_droidwidth_teacher_h100_eval_targets_h100_pool_resources():
     )
     assert 'TEMPORAL_ACTION_ENSEMBLE_DECAYS="${TEMPORAL_ACTION_ENSEMBLE_DECAY}"' in script
     assert "for TEMPORAL_ACTION_ENSEMBLE_DECAY in ${TEMPORAL_ACTION_ENSEMBLE_DECAYS}; do" in script
+    assert 'JOINT_TARGET_ACCEL_LIMITS="${JOINT_TARGET_ACCEL_LIMITS:-0 0.08}"' in script
+    assert "for JOINT_TARGET_ACCEL_LIMIT in ${JOINT_TARGET_ACCEL_LIMITS}; do" in script
+    assert '--joint-target-accel-limit "$JOINT_TARGET_ACCEL_LIMIT"' in script
+    assert '"target_accel_limit": cfg.get("joint_target_accel_limit")' in script
     assert "write_eval_manifest" in script
     assert "checkpoint_eval_manifest.json" in script
     assert "DREAMZERO_GIT_COMMIT" in script

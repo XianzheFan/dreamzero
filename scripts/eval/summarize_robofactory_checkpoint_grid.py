@@ -184,6 +184,7 @@ def summarize_eval_root(root: Path) -> dict[str, Any]:
         "best_replan_every": best.get("replan_every"),
         "best_scale": best.get("scale"),
         "best_slew": best.get("target_slew_rate"),
+        "best_accel_limit": best.get("target_accel_limit"),
         "best_blend": best.get("replan_boundary_blend_steps"),
         "best_ensemble": best.get("temporal_action_ensemble_decay"),
         "success_count": best.get("success_count"),
@@ -205,6 +206,9 @@ def summarize_eval_root(root: Path) -> dict[str, Any]:
         "joint_delta_sign_flip_frac": best.get("joint_delta_sign_flip_frac"),
         "mean_joint_delta_sign_flip_frac": best.get(
             "mean_joint_delta_sign_flip_frac"
+        ),
+        "mean_accel_limiter_correction_joint": best.get(
+            "mean_accel_limiter_correction_joint"
         ),
         "max_replan_boundary_joint_jump": best.get("max_replan_boundary_joint_jump"),
         "raw_joint_saturation_frac": best.get("raw_joint_saturation_frac"),
@@ -280,6 +284,7 @@ TABLE_COLUMNS = [
     ("scale", "best_scale"),
     ("blend", "best_blend"),
     ("ens", "best_ensemble"),
+    ("accel_lim", "best_accel_limit"),
     ("L_target", "target_min_mean_left"),
     ("R_target", "target_min_mean_right"),
     ("margin", "barrier_margin_best"),
@@ -289,6 +294,7 @@ TABLE_COLUMNS = [
     ("joint_max", "max_joint_step_delta"),
     ("accel_ratio", "mean_joint_accel_to_delta_ratio"),
     ("flip_frac", "joint_delta_sign_flip_frac"),
+    ("accel_corr", "mean_accel_limiter_correction_joint"),
     ("boundary", "max_replan_boundary_joint_jump"),
     ("raw_sat", "raw_joint_saturation_frac"),
     ("raw_sat_L", "raw_joint_saturation_frac_left"),

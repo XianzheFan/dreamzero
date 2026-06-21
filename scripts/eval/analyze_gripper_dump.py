@@ -469,6 +469,11 @@ def analyze_episode(
         if "exec_action_pre_blend" in d.files
         else None
     )
+    exec_action_pre_accel = (
+        np.asarray(d["exec_action_pre_accel"], dtype=np.float32)
+        if "exec_action_pre_accel" in d.files
+        else None
+    )
     exec_action_pre_ensemble = (
         np.asarray(d["exec_action_pre_ensemble"], dtype=np.float32)
         if "exec_action_pre_ensemble" in d.files
@@ -612,7 +617,10 @@ def analyze_episode(
             infer_step,
         )
         boundary_blend_target = (
-            exec_action_pre_slew
+            exec_action_pre_accel
+            if exec_action_pre_accel is not None
+            and exec_action_pre_accel.shape == exec_action.shape
+            else exec_action_pre_slew
             if exec_action_pre_slew is not None
             and exec_action_pre_slew.shape == exec_action.shape
             else exec_action
@@ -626,6 +634,28 @@ def analyze_episode(
                     pre_blend_boundary_jump
                 ),
                 "boundary_blend_correction_joint": _abs_stats(boundary_blend_correction),
+            }
+        )
+    if (
+        joint_dims
+        and exec_action_pre_accel is not None
+        and exec_action_pre_accel.shape == exec_action.shape
+    ):
+        accel_limiter_target = (
+            exec_action_pre_slew
+            if exec_action_pre_slew is not None
+            and exec_action_pre_slew.shape == exec_action.shape
+            else exec_action
+        )
+        accel_limiter_correction = (
+            exec_action_pre_accel[:, joint_dims]
+            - accel_limiter_target[:, joint_dims]
+        )
+        joint_debug.update(
+            {
+                "accel_limiter_correction_joint": _abs_stats(
+                    accel_limiter_correction
+                ),
             }
         )
     if (
@@ -890,6 +920,11 @@ def analyze_episode(
                 f"{_fmt_abs(joint_debug['temporal_ensemble_correction_joint'])}"
             )
         if "pre_slew_joint_step_delta" in joint_debug:
+            if "accel_limiter_correction_joint" in joint_debug:
+                print(
+                    "  accel limiter correction joint: "
+                    f"{_fmt_abs(joint_debug['accel_limiter_correction_joint'])}"
+                )
             print(
                 "  pre-slew joint step delta: "
                 f"{_fmt_abs(joint_debug['pre_slew_joint_step_delta'])}"

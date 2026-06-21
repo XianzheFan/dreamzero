@@ -23,6 +23,7 @@ def test_summarize_sweep_extracts_trace_metrics(tmp_path):
                 "joint_target_scale_reference": "auto",
                 "joint_target_scale_clip": 0.25,
                 "joint_target_slew_rate": 0.35,
+                "joint_target_accel_limit": 0.08,
                 "replan_boundary_blend_steps": 4,
                 "temporal_action_ensemble_decay": 0.6,
             },
@@ -88,6 +89,10 @@ def test_summarize_sweep_extracts_trace_metrics(tmp_path):
                             "mean_abs": 0.025,
                             "max_abs": 0.11,
                         },
+                        "accel_limiter_correction_joint": {
+                            "mean_abs": 0.012,
+                            "max_abs": 0.05,
+                        },
                         "pre_slew_joint_step_delta": {
                             "mean_abs": 0.05,
                             "max_abs": 0.19,
@@ -112,6 +117,7 @@ def test_summarize_sweep_extracts_trace_metrics(tmp_path):
                 "joint_delta_scale_reference": "auto",
                 "joint_delta_scale_clip": 0.25,
                 "joint_target_slew_rate": 0.35,
+                "joint_target_accel_limit": 0.0,
                 "replan_boundary_blend_steps": 0,
                 "temporal_action_ensemble_decay": 0.0,
             },
@@ -177,6 +183,10 @@ def test_summarize_sweep_extracts_trace_metrics(tmp_path):
                             "mean_abs": 0.0,
                             "max_abs": 0.0,
                         },
+                        "accel_limiter_correction_joint": {
+                            "mean_abs": 0.0,
+                            "max_abs": 0.0,
+                        },
                         "pre_slew_joint_step_delta": {
                             "mean_abs": 0.02,
                             "max_abs": 0.1,
@@ -197,6 +207,7 @@ def test_summarize_sweep_extracts_trace_metrics(tmp_path):
     assert rows[0]["success_count"] == 0
     assert rows[0]["replan_every"] == 24.0
     assert rows[0]["target_slew_rate"] == 0.35
+    assert rows[0]["target_accel_limit"] == 0.0
     assert rows[0]["replan_boundary_blend_steps"] == 0.0
     assert rows[0]["temporal_action_ensemble_decay"] == 0.0
     assert rows[0]["first_cmd_delta_mean"] == 0.02
@@ -221,12 +232,14 @@ def test_summarize_sweep_extracts_trace_metrics(tmp_path):
     assert rows[0]["max_pre_blend_replan_boundary_joint_jump"] == 0.05
     assert rows[0]["max_pre_ensemble_replan_boundary_joint_jump"] == 0.05
     assert rows[0]["mean_temporal_ensemble_correction_joint"] == 0.0
+    assert rows[0]["mean_accel_limiter_correction_joint"] == 0.0
     assert rows[0]["mean_slew_correction_joint"] == 0.0
     assert rows[0]["right_grasp_episodes"] == 0
     assert rows[1]["success_count"] == 1
     assert rows[1]["replan_every"] == 12.0
     assert rows[1]["scale_clip"] == 0.25
     assert rows[1]["target_slew_rate"] == 0.35
+    assert rows[1]["target_accel_limit"] == 0.08
     assert rows[1]["replan_boundary_blend_steps"] == 4.0
     assert rows[1]["temporal_action_ensemble_decay"] == 0.6
     assert rows[1]["target_min_mean_right"] == 0.08
@@ -245,6 +258,8 @@ def test_summarize_sweep_extracts_trace_metrics(tmp_path):
     assert rows[1]["max_pre_ensemble_replan_boundary_joint_jump"] == 0.2
     assert rows[1]["mean_temporal_ensemble_correction_joint"] == 0.025
     assert rows[1]["max_temporal_ensemble_correction_joint"] == 0.11
+    assert rows[1]["mean_accel_limiter_correction_joint"] == 0.012
+    assert rows[1]["max_accel_limiter_correction_joint"] == 0.05
     assert rows[1]["mean_pre_slew_joint_step_delta"] == 0.05
     assert rows[1]["max_pre_slew_joint_step_delta"] == 0.19
     assert rows[1]["mean_slew_correction_joint"] == 0.01

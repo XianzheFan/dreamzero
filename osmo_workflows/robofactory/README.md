@@ -92,6 +92,12 @@ the current observed wrist frame when the decoded video includes the conditionin
 frame; high `cond_t0` points to a conditioning/VAE/window issue before future
 dynamics quality is even evaluated.
 
+The H100 droidwidth eval template also sweeps `--joint-target-accel-limit`
+over `0` and `0.08` by default. This is eval-only second-order smoothing for
+testing whether action amplification is causing high-frequency target reversals;
+the action dump summary reports both acceleration/delta ratios and the
+acceleration-limiter correction magnitude.
+
 New gamma training checkpoints include `experiment_cfg/runtime_provenance.json`,
 and the droidwidth closed-loop eval manifests surface checkpoint code commit,
 stage label, action dimension, and global-video attention mode. Use those fields

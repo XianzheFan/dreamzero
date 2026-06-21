@@ -88,6 +88,7 @@ def _setting_from_results(results: dict[str, Any], setting_dir: str) -> dict[str
         "scale_reference": reference,
         "scale_clip": _float_or_none(clip),
         "target_slew_rate": _float_or_none(cfg.get("joint_target_slew_rate")),
+        "target_accel_limit": _float_or_none(cfg.get("joint_target_accel_limit")),
         "replan_boundary_blend_steps": _float_or_none(boundary_blend_steps),
         "temporal_action_ensemble_decay": _float_or_none(temporal_ensemble_decay),
     }
@@ -339,6 +340,18 @@ def summarize_setting(setting_dir: str) -> dict[str, Any]:
                     "max_abs",
                     "max",
                 ),
+                "mean_accel_limiter_correction_joint": _joint_debug_stat(
+                    dump_episodes,
+                    "accel_limiter_correction_joint",
+                    "mean_abs",
+                    "mean",
+                ),
+                "max_accel_limiter_correction_joint": _joint_debug_stat(
+                    dump_episodes,
+                    "accel_limiter_correction_joint",
+                    "max_abs",
+                    "max",
+                ),
                 "mean_pre_slew_joint_step_delta": _joint_debug_stat(
                     dump_episodes,
                     "pre_slew_joint_step_delta",
@@ -428,6 +441,8 @@ def print_table(rows: list[dict[str, Any]]) -> None:
         ("accel_ratio", "mean_joint_accel_to_delta_ratio"),
         ("flip_frac", "joint_delta_sign_flip_frac"),
         ("boundary_max", "max_replan_boundary_joint_jump"),
+        ("accel_lim", "target_accel_limit"),
+        ("accel_corr", "mean_accel_limiter_correction_joint"),
         ("preblend_max", "max_pre_blend_replan_boundary_joint_jump"),
         ("ens_corr", "mean_temporal_ensemble_correction_joint"),
         ("slew_corr", "mean_slew_correction_joint"),
