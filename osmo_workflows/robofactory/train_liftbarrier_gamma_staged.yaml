@@ -759,8 +759,8 @@ default-values:
   workflow_name: dz-rf-sg-gamma-staged-lb500-xianzhef-20260621
   run_name: dz-rf-sg-gamma-staged-lb500-xianzhef-20260621
   restore_run_name: ""
-  code_s3_uri: swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_gamma_dense_teacher_20260621
-  expected_code_commit: "69508a3588c10be56d66c9ba7c2d308413001194"
+  code_s3_uri: swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_gamma_lossbalance_20260621
+  expected_code_commit: "81a4a5df79aa5dcdd5ae50ef02a89f219a740ee8"
   data_variant: LiftBarrier-rf-500
   expected_data_episodes: "500"
   data_s3_uri: s3://GearHome/users/xianzhef/oci-migration/data/robofactory_lerobot_v2/LiftBarrier-rf-500
