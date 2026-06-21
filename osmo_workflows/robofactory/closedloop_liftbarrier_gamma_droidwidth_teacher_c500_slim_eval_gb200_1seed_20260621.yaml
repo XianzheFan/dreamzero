@@ -204,13 +204,13 @@ workflow:
           python --version
           python -m pip install -q --upgrade "pip<25.3" "setuptools>=64,<80" wheel "huggingface_hub[cli]"
           if [ "$MODEL_ONLY_DIAG" = "1" ]; then
-            DEPS_MARKER="${DREAMZERO_VENV}/.gb200_model_only_eval_deps_v1"
+            DEPS_MARKER="${DREAMZERO_VENV}/.gb200_model_only_eval_deps_v2"
           else
             DEPS_MARKER="${DREAMZERO_VENV}/.gb200_robofactory_eval_deps_v1"
           fi
           if [ ! -f "$DEPS_MARKER" ]; then
             if [ "$MODEL_ONLY_DIAG" != "1" ]; then
-              python -m pip install -q "mani_skill==3.0.0b12" decord
+              python -m pip install -q "mani_skill==3.0.0b12"
             fi
             python -m pip install -q \
               "websockets>=12" \
@@ -238,6 +238,7 @@ workflow:
               matplotlib \
               h5py \
               "opencv-python-headless==4.10.0.84" \
+              decord \
               pandas \
               pyarrow \
               "datasets==3.6.0" \

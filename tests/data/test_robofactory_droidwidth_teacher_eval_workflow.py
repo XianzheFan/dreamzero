@@ -64,6 +64,17 @@ def test_droidwidth_teacher_eval_uses_gb200_node_resources():
     assert resources["memory"] == "760Gi"
 
 
+def test_droidwidth_teacher_gb200_model_only_installs_video_reader_dependency():
+    _, _, script = _workflow_and_script()
+
+    assert 'MODEL_ONLY_DIAG="${MODEL_ONLY_DIAG:-1}"' in script
+    assert '.gb200_model_only_eval_deps_v2' in script
+    assert '.gb200_model_only_eval_deps_v1' not in script
+    assert '"mani_skill==3.0.0b12" decord' not in script
+    assert "decord \\" in script
+    assert "offline_video_action_diagnostic" in script
+
+
 def test_droidwidth_teacher_eval_embedded_script_is_valid_bash():
     _, _, script = _workflow_and_script()
 
