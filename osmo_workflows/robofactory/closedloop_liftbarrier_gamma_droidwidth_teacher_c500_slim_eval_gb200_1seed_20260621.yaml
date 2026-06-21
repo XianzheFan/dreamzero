@@ -26,7 +26,7 @@ workflow:
 
           exec > >(tee /tmp/closedloop_gamma_droidwidth_teacher_c500_slim_eval_1seed_gb200.log) 2>&1
 
-          RUN_NAME="dz-rf-sg-gamma-dwteacher-c500-slim-eval-gb200-1seed1000-xz-20260621"
+          RUN_NAME="{{run_name}}"
           DREAMZERO_GIT_URL="https://github.com/XianzheFan/dreamzero.git"
           DREAMZERO_GIT_REF="${DREAMZERO_GIT_REF:-gamma}"
           ROBOFACTORY_GIT_URL="https://github.com/MARS-EAI/RoboFactory.git"
@@ -35,10 +35,10 @@ workflow:
           MODEL_CACHE_S3_URI="s3://GearHome/users/xianzhef/oci-migration/checkpoints"
           CKPT_S3_BASE="s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/dz-rf-sg-gamma-dwteacher-lb500-r4-actiondelta-xianzhef-20260621-teacher/checkpoints/dz-rf-sg-gamma-dwteacher-lb500-r4-actiondelta-xianzhef-20260621-teacher"
           CKPT_AMLFS_BASE="/mnt/amlfs-01/home/xianzhef/osmo_cache/dreamzero/checkpoints/dz-rf-sg-gamma-dwteacher-lb500-r4-actiondelta-xianzhef-20260621-teacher/dz-rf-sg-gamma-dwteacher-lb500-r4-actiondelta-xianzhef-20260621-teacher"
-          CKPT_SETTING="checkpoint-500"
+          CKPT_SETTING="{{ckpt_setting}}"
           CKPT_WAIT_TIMEOUT_SECONDS=5400
           CKPT_WAIT_INTERVAL_SECONDS=120
-          LOCAL_EVAL_CKPT_ROOT="/workspace/eval_ckpts/gamma_droidwidth_teacher_c500_slim_eval_1seed1000"
+          LOCAL_EVAL_CKPT_ROOT="/workspace/eval_ckpts/{{local_eval_ckpt_root}}"
           AMLFS_MODEL_CACHE_DIR="/mnt/amlfs-01/home/xianzhef/osmo_cache/dreamzero/checkpoints"
           DREAMZERO_VENV="/mnt/amlfs-01/home/xianzhef/osmo_cache/dreamzero/venvs/gb200_rf_eval_py312"
           MODEL_ONLY_DIAG="${MODEL_ONLY_DIAG:-1}"
@@ -987,21 +987,21 @@ workflow:
           fi
 
           SERVE_ROOT="/workspace/eval_outputs_http"
-          ARCHIVE="${SERVE_ROOT}/gamma_droidwidth_teacher_c500_slim_eval_1seed_artifacts.tar"
+          ARCHIVE="${SERVE_ROOT}/gamma_droidwidth_teacher_${CKPT_SETTING}_slim_eval_1seed_artifacts.tar"
           mkdir -p "$SERVE_ROOT"
           echo "Creating HTTP artifact archive ${ARCHIVE}"
           tar -C /workspace/eval_outputs -cf "$ARCHIVE" .
           sha256sum "$ARCHIVE" > "${ARCHIVE}.sha256"
           split -b 1m -d -a 4 "$ARCHIVE" "${ARCHIVE}.part."
           find "$SERVE_ROOT" -maxdepth 1 -type f -print -exec ls -lh {} \; | sort
-          echo "Gamma droidwidth teacher checkpoint-500 slim eval seed1000 strict-lift noncausal pred-video eval complete"
+          echo "Gamma droidwidth teacher ${CKPT_SETTING} slim eval seed1000 strict-lift noncausal pred-video eval complete"
           echo "Serving split artifacts from ${SERVE_ROOT} on 0.0.0.0:8765"
           python -m http.server 8765 --bind 0.0.0.0 --directory "$SERVE_ROOT"
         path: /tmp/run_closedloop_gamma_droidwidth_teacher_c500_slim_eval_1seed_gb200.sh
       image: nvcr.io/nvidian/gr00t_isaac:v1.5
       lead: true
       name: eval
-  name: dz-rf-sg-gamma-dwteacher-c500-slim-eval-gb200-1seed1000-xz-20260621
+  name: "{{workflow_name}}"
   resources:
     default:
       cpu: 84
@@ -1027,3 +1027,8 @@ workflow:
   timeout:
     exec_timeout: 5h
     queue_timeout: 2h
+default-values:
+  workflow_name: dz-rf-sg-gamma-dwteacher-c500-slim-eval-gb200-1seed1000-xz-20260621
+  run_name: dz-rf-sg-gamma-dwteacher-c500-slim-eval-gb200-1seed1000-xz-20260621
+  ckpt_setting: checkpoint-500
+  local_eval_ckpt_root: gamma_droidwidth_teacher_c500_slim_eval_1seed1000

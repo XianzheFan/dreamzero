@@ -25,20 +25,25 @@ def _workflow_and_script(path=WORKFLOW_PATH):
 def test_droidwidth_teacher_eval_points_to_teacher_checkpoint_prefix():
     workflow, task, script = _workflow_and_script()
 
-    assert workflow["workflow"]["name"] == (
+    defaults = workflow["default-values"]
+    assert workflow["workflow"]["name"] == "{{workflow_name}}"
+    assert defaults["workflow_name"] == (
         "dz-rf-sg-gamma-dwteacher-c500-slim-eval-gb200-1seed1000-xz-20260621"
     )
-    assert task["image"] == "nvcr.io/nvidian/gr00t_isaac:v1.5"
-    assert (
-        'RUN_NAME="dz-rf-sg-gamma-dwteacher-c500-slim-eval-gb200-1seed1000-xz-20260621"'
-        in script
+    assert defaults["run_name"] == (
+        "dz-rf-sg-gamma-dwteacher-c500-slim-eval-gb200-1seed1000-xz-20260621"
     )
+    assert defaults["ckpt_setting"] == "checkpoint-500"
+    assert defaults["local_eval_ckpt_root"] == "gamma_droidwidth_teacher_c500_slim_eval_1seed1000"
+    assert task["image"] == "nvcr.io/nvidian/gr00t_isaac:v1.5"
+    assert 'RUN_NAME="{{run_name}}"' in script
     assert (
         "dreamzero_runs/dz-rf-sg-gamma-dwteacher-lb500-r4-actiondelta-xianzhef-20260621-teacher/"
         "checkpoints/dz-rf-sg-gamma-dwteacher-lb500-r4-actiondelta-xianzhef-20260621-teacher"
         in script
     )
-    assert 'CKPT_SETTING="checkpoint-500"' in script
+    assert 'CKPT_SETTING="{{ckpt_setting}}"' in script
+    assert 'LOCAL_EVAL_CKPT_ROOT="/workspace/eval_ckpts/{{local_eval_ckpt_root}}"' in script
     assert "dense-teacher" not in script
 
 
@@ -107,20 +112,26 @@ def test_droidwidth_teacher_eval_embedded_script_is_valid_bash():
 def test_droidwidth_teacher_h100_eval_targets_h100_pool_resources():
     workflow, task, script = _workflow_and_script(H100_WORKFLOW_PATH)
 
-    assert workflow["workflow"]["name"] == (
+    defaults = workflow["default-values"]
+    assert workflow["workflow"]["name"] == "{{workflow_name}}"
+    assert defaults["workflow_name"] == (
         "dz-rf-sg-gamma-dwteacher-c500-slim-eval-h100-1seed1000-xz-20260621"
     )
-    assert task["image"].startswith("nvcr.io/nvidian/groot-ci-base-eval:")
-    assert (
-        'RUN_NAME="dz-rf-sg-gamma-dwteacher-c500-slim-eval-h100-1seed1000-xz-20260621"'
-        in script
+    assert defaults["run_name"] == (
+        "dz-rf-sg-gamma-dwteacher-c500-slim-eval-h100-1seed1000-xz-20260621"
     )
+    assert defaults["ckpt_setting"] == "checkpoint-500"
+    assert defaults["local_eval_ckpt_root"] == "gamma_droidwidth_teacher_c500_slim_eval_h100_1seed1000"
+    assert task["image"].startswith("nvcr.io/nvidian/groot-ci-base-eval:")
+    assert 'RUN_NAME="{{run_name}}"' in script
     assert (
         "dreamzero_runs/dz-rf-sg-gamma-dwteacher-lb500-r4-actiondelta-xianzhef-20260621-teacher/"
         "checkpoints/dz-rf-sg-gamma-dwteacher-lb500-r4-actiondelta-xianzhef-20260621-teacher"
         in script
     )
     assert 'VIDEO_PRED_WRIST_WINDOW_MODE="${VIDEO_PRED_WRIST_WINDOW_MODE:-action}"' in script
+    assert 'CKPT_SETTING="{{ckpt_setting}}"' in script
+    assert 'LOCAL_EVAL_CKPT_ROOT="/workspace/eval_ckpts/{{local_eval_ckpt_root}}"' in script
     assert 'ROBOFACTORY_RENDER_BACKEND="${ROBOFACTORY_RENDER_BACKEND:-sapien_cuda:0}"' in script
     assert 'ROBOFACTORY_ENABLE_SHADOW="${ROBOFACTORY_ENABLE_SHADOW:-0}"' in script
     assert 'ROBOFACTORY_SHADER_PACK="${ROBOFACTORY_SHADER_PACK:-default}"' in script
