@@ -238,7 +238,6 @@ workflow:
               matplotlib \
               h5py \
               "opencv-python-headless==4.10.0.84" \
-              decord \
               pandas \
               pyarrow \
               "datasets==3.6.0" \

@@ -22,6 +22,55 @@ except (ImportError, RuntimeError):
     TORCHCODEC_AVAILABLE = False
 
 
+def _read_all_frames_pyav(video_path: str) -> tuple[np.ndarray, np.ndarray]:
+    container = av.open(video_path)
+    try:
+        stream = container.streams.video[0]
+        fps = float(stream.average_rate) if stream.average_rate is not None else None
+        time_base = stream.time_base
+        frames = []
+        timestamps = []
+        for idx, frame in enumerate(container.decode(video=0)):
+            frames.append(frame.to_ndarray(format="rgb24"))
+            if frame.pts is not None and time_base is not None:
+                timestamps.append(float(frame.pts * time_base))
+            elif fps:
+                timestamps.append(idx / fps)
+            else:
+                timestamps.append(float(idx))
+    finally:
+        container.close()
+    if not frames:
+        raise ValueError(f"no frames decoded from {video_path}")
+    return np.stack(frames), np.asarray(timestamps, dtype=np.float64)
+
+
+def _get_frames_by_indices_pyav(
+    video_path: str,
+    indices: list[int] | np.ndarray,
+) -> np.ndarray:
+    frames, _ = _read_all_frames_pyav(video_path)
+    indices_np = np.asarray(indices, dtype=np.int64)
+    if np.any(indices_np < 0) or np.any(indices_np >= len(frames)):
+        raise ValueError(
+            f"frame indices out of range for {video_path}: "
+            f"requested min={indices_np.min()} max={indices_np.max()} len={len(frames)}"
+        )
+    return frames[indices_np]
+
+
+def _get_frames_by_timestamps_pyav(
+    video_path: str,
+    timestamps: list[float] | np.ndarray,
+) -> np.ndarray:
+    frames, frame_ts = _read_all_frames_pyav(video_path)
+    timestamps_np = np.asarray(timestamps, dtype=np.float64)
+    indices = np.abs(frame_ts[:, np.newaxis] - timestamps_np[np.newaxis, :]).argmin(
+        axis=0
+    )
+    return frames[indices]
+
+
 def _get_video_info_ffmpeg(video_path: str) -> dict:
     """Get video metadata using ffprobe."""
     cmd = [
@@ -261,7 +310,7 @@ def get_frames_by_indices(
 ) -> np.ndarray:
     if video_backend == "decord":
         if not DECORD_AVAILABLE:
-            raise ImportError("decord is not available. Install it with: pip install decord")
+            return _get_frames_by_indices_pyav(video_path, indices)
         vr = decord.VideoReader(video_path, **video_backend_kwargs)
         frames = vr.get_batch(indices)
         return frames.asnumpy()
@@ -309,7 +358,7 @@ def get_frames_by_timestamps(
     """
     if video_backend == "decord":
         if not DECORD_AVAILABLE:
-            raise ImportError("decord is not available. Install it with: pip install decord")
+            return _get_frames_by_timestamps_pyav(video_path, timestamps)
         vr = decord.VideoReader(video_path, **video_backend_kwargs)
         num_frames = len(vr)
         # Retrieve the timestamps for each frame in the video
@@ -457,7 +506,7 @@ def get_all_frames(
     """
     if video_backend == "decord":
         if not DECORD_AVAILABLE:
-            raise ImportError("decord is not available. Install it with: pip install decord")
+            return _read_all_frames_pyav(video_path)
         vr = decord.VideoReader(video_path, **video_backend_kwargs)
         frames = vr.get_batch(range(len(vr))).asnumpy()
         return frames, vr.get_frame_timestamp(range(len(vr)))[:, 0]
@@ -472,16 +521,7 @@ def get_all_frames(
     elif video_backend == "ffmpeg":
         return _extract_all_frames_ffmpeg(video_path)
     elif video_backend == "pyav":
-        container = av.open(video_path)
-        stream = container.streams.video[0]
-        assert stream.time_base is not None
-        frames = []
-        timestamps = []
-        for frame in container.decode(video=0):
-            frames.append(frame.to_ndarray(format="rgb24"))
-            timestamps.append(frame.pts * stream.time_base)
-        container.close()
-        return np.stack(frames), np.array(timestamps)
+        return _read_all_frames_pyav(video_path)
 
     else:
         raise NotImplementedError
