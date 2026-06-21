@@ -275,9 +275,9 @@ workflow:
             export DATALOADER_NUM_WORKERS=4
             export ROBOFACTORY_DATA_ROOT="$DATA_ROOT"
             export OUTPUT_DIR="/workspace/outputs/robofactory_liftbarrier_stage1_actionfirst"
-            export WAN_CKPT_DIR="${WAN_CKPT_DIR:-/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/Wan2.1-I2V-14B-480P}"
-            export TOKENIZER_DIR="${TOKENIZER_DIR:-/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/umt5-xxl}"
-            export PRETRAINED_DIR="${PRETRAINED_DIR:-/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/DreamZero-DROID}"
+            export WAN_CKPT_DIR="${WAN_CKPT_DIR:-/workspace/checkpoints/Wan2.1-I2V-14B-480P}"
+            export TOKENIZER_DIR="${TOKENIZER_DIR:-/workspace/checkpoints/umt5-xxl}"
+            export PRETRAINED_DIR="${PRETRAINED_DIR:-/workspace/checkpoints/DreamZero-DROID}"
             mkdir -p "$OUTPUT_DIR"
 
             stage_checkpoints_for_upload() {
