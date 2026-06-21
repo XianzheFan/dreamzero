@@ -34,6 +34,21 @@ def test_robofactory_training_script_passes_binary_gripper_loss_knobs():
         assert marker in script
 
 
+def test_robofactory_training_script_passes_action_delta_loss_knobs():
+    script = SCRIPT_PATH.read_text()
+
+    for marker in (
+        "ACTION_DELTA_LOSS_WEIGHT=${ACTION_DELTA_LOSS_WEIGHT:-0.0}",
+        "ACTION_DELTA_MAX_SIGMA=${ACTION_DELTA_MAX_SIGMA:-0.75}",
+        "ACTION_DELTA_EXCLUDE_GRIPPER=${ACTION_DELTA_EXCLUDE_GRIPPER:-true}",
+        "action_delta_loss_weight=$ACTION_DELTA_LOSS_WEIGHT",
+        "++action_head_cfg.config.action_delta_loss_weight=$ACTION_DELTA_LOSS_WEIGHT",
+        "++action_head_cfg.config.action_delta_max_sigma=$ACTION_DELTA_MAX_SIGMA",
+        "++action_head_cfg.config.action_delta_exclude_gripper=$ACTION_DELTA_EXCLUDE_GRIPPER",
+    ):
+        assert marker in script
+
+
 def test_robofactory_training_script_passes_first_close_joint_loss_knobs():
     script = SCRIPT_PATH.read_text()
 

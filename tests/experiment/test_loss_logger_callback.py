@@ -2,7 +2,7 @@ import ast
 from pathlib import Path
 
 
-def test_loss_logger_callback_tracks_gripper_loss_keys():
+def test_loss_logger_callback_tracks_auxiliary_loss_keys():
     repo_root = Path(__file__).resolve().parents[2]
     source_path = repo_root / "groot/vla/experiment/base.py"
     tree = ast.parse(source_path.read_text())
@@ -24,3 +24,4 @@ def test_loss_logger_callback_tracks_gripper_loss_keys():
 
     assert "gripper_clean_action_loss_avg" in logged_keys
     assert "gripper_binary_action_loss_avg" in logged_keys
+    assert "action_delta_loss_avg" in logged_keys

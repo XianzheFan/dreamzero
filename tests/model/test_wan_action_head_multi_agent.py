@@ -397,6 +397,76 @@ def test_gripper_binary_action_loss_uses_close_targets_and_weights():
     assert torch.isclose(loss, expected)
 
 
+def test_action_delta_loss_matches_joint_delta_and_excludes_gripper():
+    Cls = _load_head_cls()
+    head = Cls.__new__(Cls)
+    torch.nn.Module.__init__(head)
+    head.config = types.SimpleNamespace(
+        action_delta_loss_weight=2.0,
+        action_delta_exclude_gripper=True,
+        gripper_action_dims=[1],
+    )
+
+    clean_action_pred = torch.tensor(
+        [[[[0.0, 0.0, 0.0],
+           [1.0, 9.0, 0.5],
+           [3.0, 8.0, 1.5]]]],
+        dtype=torch.float32,
+    )
+    actions = torch.tensor(
+        [[[[0.0, 0.0, 0.0],
+           [2.0, -9.0, 1.0],
+           [4.0, -8.0, 2.0]]]],
+        dtype=torch.float32,
+    )
+    action_mask = torch.ones_like(actions, dtype=torch.bool)
+    has_real_action = torch.ones(1, dtype=torch.bool)
+
+    loss = head._compute_action_delta_loss(
+        clean_action_pred=clean_action_pred,
+        actions=actions,
+        action_mask=action_mask,
+        has_real_action=has_real_action,
+    )
+
+    # Joint dims 0 and 2 only. Delta errors:
+    # step 0->1: [-1, -0.5], step 1->2: [0, 0].
+    expected = ((1.0 ** 2) + (0.5 ** 2)) / 4.0 * 2.0
+    assert torch.isclose(loss, torch.tensor(expected, dtype=loss.dtype))
+
+
+def test_action_delta_loss_ignores_masked_pairs_and_fake_actions():
+    Cls = _load_head_cls()
+    head = Cls.__new__(Cls)
+    torch.nn.Module.__init__(head)
+    head.config = types.SimpleNamespace(
+        action_delta_loss_weight=1.0,
+        action_delta_exclude_gripper=False,
+        gripper_action_dims=[1],
+    )
+
+    clean_action_pred = torch.tensor([[[[0.0, 0.0], [1.0, 1.0], [3.0, 3.0]]]])
+    actions = torch.zeros_like(clean_action_pred)
+    action_mask = torch.ones_like(actions, dtype=torch.bool)
+    action_mask[..., 1, :] = False
+
+    masked_loss = head._compute_action_delta_loss(
+        clean_action_pred=clean_action_pred,
+        actions=actions,
+        action_mask=action_mask,
+        has_real_action=torch.ones(1, dtype=torch.bool),
+    )
+    fake_loss = head._compute_action_delta_loss(
+        clean_action_pred=clean_action_pred,
+        actions=actions,
+        action_mask=torch.ones_like(actions, dtype=torch.bool),
+        has_real_action=torch.zeros(1, dtype=torch.bool),
+    )
+
+    assert masked_loss.item() == 0.0
+    assert fake_loss.item() == 0.0
+
+
 def test_clean_sample_reconstruction_matches_flow_scheduler_target():
     Cls = _load_head_cls()
     head = Cls.__new__(Cls)
