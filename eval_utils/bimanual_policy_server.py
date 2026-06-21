@@ -1507,6 +1507,27 @@ class BimanualPolicy:
         infer_idx, env_step, prefix = self._video_pred_context(sess)
         P, T, H, W = frames.shape[0], frames.shape[1], frames.shape[2], frames.shape[3]
         pred_files = self._write_decoded_video_set(frames, out_dir, prefix)
+        includes_conditioning_frame = getattr(
+            action_head,
+            "_last_video_pred_includes_conditioning_frame",
+            None,
+        )
+        predicted_future_frame_count = int(T)
+        if includes_conditioning_frame:
+            predicted_future_frame_count = max(predicted_future_frame_count - 1, 0)
+        action_horizon = getattr(action_head, "action_horizon", self.action_horizon)
+        num_frame_per_block = getattr(action_head, "num_frame_per_block", None)
+        num_action_per_block = getattr(
+            getattr(action_head, "model", None),
+            "num_action_per_block",
+            None,
+        )
+        future_step_stride = None
+        try:
+            if action_horizon is not None and predicted_future_frame_count > 0:
+                future_step_stride = float(action_horizon) / float(predicted_future_frame_count)
+        except (TypeError, ValueError, ZeroDivisionError):
+            future_step_stride = None
         observed_files: list[str] = []
         comparison_files: list[str] = []
         observed_videos = (
@@ -1549,11 +1570,7 @@ class BimanualPolicy:
                 "pred_latent_end_frame": getattr(
                     action_head, "_last_video_pred_end_frame", None
                 ),
-                "pred_latent_includes_conditioning_frame": getattr(
-                    action_head,
-                    "_last_video_pred_includes_conditioning_frame",
-                    None,
-                ),
+                "pred_latent_includes_conditioning_frame": includes_conditioning_frame,
                 "current_start_frame_after_infer": getattr(
                     action_head, "current_start_frame", None
                 ),
@@ -1563,6 +1580,10 @@ class BimanualPolicy:
                 "num_frame_per_block": getattr(
                     action_head, "num_frame_per_block", None
                 ),
+                "num_action_per_block": num_action_per_block,
+                "action_horizon": action_horizon,
+                "predicted_future_frame_count": predicted_future_frame_count,
+                "video_pred_future_step_stride": future_step_stride,
                 "local_attn_size": getattr(
                     getattr(action_head, "model", None),
                     "local_attn_size",

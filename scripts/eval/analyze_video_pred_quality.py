@@ -39,6 +39,13 @@ def _safe_float(value: Any) -> float | None:
     return value
 
 
+def _positive_float(value: Any) -> float | None:
+    value = _safe_float(value)
+    if value is None or value <= 0:
+        return None
+    return value
+
+
 def _stats(values: np.ndarray) -> dict[str, float | None]:
     values = np.asarray(values, dtype=np.float32)
     if values.size == 0:
@@ -308,6 +315,7 @@ def compare_pred_to_future_trace(
     agent_id: int | None,
     env_step: int | None,
     includes_conditioning_frame: bool | None,
+    future_step_stride: float | None = None,
     offset_radius: int = 3,
 ) -> dict[str, Any] | None:
     """Compare predicted wrist frames with realized future RGB trace frames."""
@@ -323,13 +331,15 @@ def compare_pred_to_future_trace(
     pred_start_index = 1 if includes_conditioning_frame else 0
     if pred_frames.shape[0] <= pred_start_index:
         return None
+    step_stride = _positive_float(future_step_stride) or 1.0
 
     def compare_at_offset(alignment_offset: int) -> dict[str, Any] | None:
         future_frames = []
         matched_steps = []
         pred_slice = pred_frames[pred_start_index:]
         for rel_idx in range(pred_slice.shape[0]):
-            target_step = int(env_step) + 1 + alignment_offset + rel_idx
+            future_delta = int(round((rel_idx + 1) * step_stride))
+            target_step = int(env_step) + future_delta + alignment_offset
             trace_idx = step_to_index.get(target_step)
             if trace_idx is None:
                 continue
@@ -346,7 +356,8 @@ def compare_pred_to_future_trace(
                 "alignment_offset": int(alignment_offset),
                 "trace_path": str(trace.get("path", "")),
                 "view_key": view_key,
-                "first_offset": 1,
+                "first_offset": int(round(step_stride)),
+                "future_step_stride": _safe_float(step_stride),
                 "pred_start_index": int(pred_start_index),
                 "skipped_conditioning_frame": bool(includes_conditioning_frame),
                 "matched_frame_count": int(len(future_frames)),
@@ -396,6 +407,23 @@ def compare_pred_to_future_trace(
             float(comparison["mae_rgb"]) - float(best["mae_rgb"])
         )
     return comparison
+
+
+def infer_future_step_stride(entry: dict[str, Any], pred_frames: np.ndarray) -> float:
+    explicit = _positive_float(entry.get("video_pred_future_step_stride"))
+    if explicit is not None:
+        return explicit
+    pred_frames = np.asarray(pred_frames)
+    pred_start_index = 1 if entry.get("pred_latent_includes_conditioning_frame") else 0
+    future_frame_count = max(int(pred_frames.shape[0]) - pred_start_index, 0)
+    action_horizon = _positive_float(entry.get("action_horizon"))
+    if action_horizon is not None and future_frame_count > 0:
+        return action_horizon / float(future_frame_count)
+    num_action_per_block = _positive_float(entry.get("num_action_per_block"))
+    num_frame_per_block = _positive_float(entry.get("num_frame_per_block"))
+    if num_action_per_block is not None and num_frame_per_block is not None:
+        return num_action_per_block / num_frame_per_block
+    return 1.0
 
 
 def read_video(path: Path, *, max_frames: int | None = None) -> np.ndarray:
@@ -554,6 +582,7 @@ def analyze_video_tree(
                     future_traces,
                     entry.get("session_id_prefix"),
                 )
+                future_step_stride = infer_future_step_stride(entry, pred_frames)
                 future_comparison = (
                     compare_pred_to_future_trace(
                         pred_frames,
@@ -563,6 +592,7 @@ def analyze_video_tree(
                         includes_conditioning_frame=entry.get(
                             "pred_latent_includes_conditioning_frame"
                         ),
+                        future_step_stride=future_step_stride,
                         offset_radius=future_offset_radius,
                     )
                     if future_trace is not None
@@ -594,6 +624,12 @@ def analyze_video_tree(
                     ),
                     "cached_until_frame": entry.get("cached_until_frame"),
                     "num_frame_per_block": entry.get("num_frame_per_block"),
+                    "num_action_per_block": entry.get("num_action_per_block"),
+                    "action_horizon": entry.get("action_horizon"),
+                    "predicted_future_frame_count": entry.get(
+                        "predicted_future_frame_count"
+                    ),
+                    "video_pred_future_step_stride": future_step_stride,
                     "local_attn_size": entry.get("local_attn_size"),
                     "replan_every": entry.get("replan_every"),
                     "chunk_start_index": entry.get("chunk_start_index"),
@@ -823,6 +859,12 @@ def _aggregate(
         "pred_vs_future_best_alignment_improvement_rgb_mean": _mean_or_none(
             collect(("pred_vs_future", "best_alignment_improvement_rgb"))
         ),
+        "pred_vs_future_step_stride_mean": _mean_or_none(
+            collect(("pred_vs_future", "future_step_stride"))
+        ),
+        "video_pred_future_step_stride_mean": _mean_or_none(
+            collect(("video_pred_future_step_stride",))
+        ),
     }
     if include_breakdowns:
         summary["by_video_pred_rollout_mode"] = _aggregate_by(
@@ -890,6 +932,10 @@ def write_text_report(payload: dict[str, Any], path: Path) -> None:
         f"{summary.get('pred_vs_future_best_alignment_mae_rgb_mean')}",
         "  pred_vs_future_best_alignment_improvement_rgb_mean: "
         f"{summary.get('pred_vs_future_best_alignment_improvement_rgb_mean')}",
+        "  pred_vs_future_step_stride_mean: "
+        f"{summary.get('pred_vs_future_step_stride_mean')}",
+        "  video_pred_future_step_stride_mean: "
+        f"{summary.get('video_pred_future_step_stride_mean')}",
     ]
     by_rollout = summary.get("by_video_pred_rollout_mode")
     if isinstance(by_rollout, dict) and by_rollout:
@@ -906,6 +952,8 @@ def write_text_report(payload: dict[str, Any], path: Path) -> None:
                     f"{mode_summary.get('pred_vs_future_best_alignment_mae_rgb_mean')}",
                     "    pred_vs_future_mae_rgb_first_to_last_delta_mean: "
                     f"{mode_summary.get('pred_vs_future_mae_rgb_first_to_last_delta_mean')}",
+                    "    video_pred_future_step_stride_mean: "
+                    f"{mode_summary.get('video_pred_future_step_stride_mean')}",
                     "    temporal_absdiff_mean: "
                     f"{mode_summary.get('temporal_absdiff_mean')}",
                     "    temporal_freeze_frac_mean: "
@@ -931,6 +979,7 @@ def write_text_report(payload: dict[str, Any], path: Path) -> None:
             f"video_wrist_window={row.get('video_pred_wrist_window_mode')} "
             f"reset_cache={row.get('reset_causal_state_each_infer')} "
             f"includes_conditioning={row.get('pred_latent_includes_conditioning_frame')} "
+            f"future_stride={row.get('video_pred_future_step_stride')} "
             f"latent_frames={row.get('pred_latent_start_frame')}:{row.get('pred_latent_end_frame')} "
             f"cache_after={row.get('current_start_frame_after_infer')}/{row.get('cached_until_frame')} "
             f"temporal_mean={metrics['temporal_absdiff']['mean']} "
@@ -944,6 +993,7 @@ def write_text_report(payload: dict[str, Any], path: Path) -> None:
             f"future_mae={future.get('mae_rgb')} "
             f"future_delta={future.get('mae_rgb_first_to_last_delta')} "
             f"future_best_offset={future.get('best_alignment_offset')} "
+            f"future_step_stride={future.get('future_step_stride')} "
             f"future_best_mae={future.get('best_alignment_mae_rgb')} "
             f"future_best_improve={future.get('best_alignment_improvement_rgb')} "
             f"future_steps={future.get('first_matched_step')}:{future.get('last_matched_step')} "

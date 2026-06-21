@@ -1,3 +1,4 @@
+import json
 import numpy as np
 import pytest
 from types import SimpleNamespace
@@ -212,6 +213,56 @@ def test_websocket_config_exposes_video_pred_and_gamma_diagnostics(
     assert cfg.video_pred_wrist_window_mode == "action"
     assert cfg.reset_causal_state_each_infer is True
     assert cfg.video_pred_rollout_mode == "noncausal"
+
+
+def test_dump_video_pred_manifest_records_future_stride(tmp_path):
+    policy = _make_policy(_metadata_with_action_stats())
+    policy.video_pred_dir = tmp_path / "video_pred"
+    policy.action_horizon = 8
+    policy.ckpt_dir = tmp_path / "ckpt"
+    action_head = SimpleNamespace(
+        _last_video_pred=np.zeros((1, 2, 4, 5, 2, 2), dtype=np.float32),
+        _last_video_pred_includes_conditioning_frame=True,
+        _last_video_pred_start_frame=0,
+        _last_video_pred_end_frame=5,
+        _last_video_pred_rollout_mode="noncausal",
+        _mai_clean_video_cond_source="test",
+        _ma_noise_draw_counts={},
+        current_start_frame=5,
+        _ma_cached_until_frame=5,
+        num_frame_per_block=2,
+        action_horizon=8,
+        model=SimpleNamespace(num_action_per_block=8, local_attn_size=2),
+    )
+    policy._model = SimpleNamespace(action_head=action_head)
+    policy._decode_latent_video = lambda latents: np.zeros(
+        (2, 5, 4, 4, 3),
+        dtype=np.uint8,
+    )
+    policy._write_decoded_video_set = lambda frames, out_dir, prefix: [
+        f"{prefix}_agent0.mp4",
+        f"{prefix}_agent1.mp4",
+    ]
+
+    policy._dump_video_pred(
+        {"infer_idx": 3, "last_env_step": 42},
+        "session-abcdef123456",
+    )
+
+    manifest_path = (
+        tmp_path
+        / "video_pred"
+        / "session_session-abcd"
+        / "manifest.jsonl"
+    )
+    entry = json.loads(manifest_path.read_text().strip())
+    assert entry["decoded_shape"] == [2, 5, 4, 4, 3]
+    assert entry["pred_latent_includes_conditioning_frame"] is True
+    assert entry["predicted_future_frame_count"] == 4
+    assert entry["action_horizon"] == 8
+    assert entry["num_action_per_block"] == 8
+    assert entry["num_frame_per_block"] == 2
+    assert entry["video_pred_future_step_stride"] == 2.0
 
 
 def test_reset_causal_state_each_infer_resets_action_head():

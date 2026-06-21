@@ -6,6 +6,7 @@ from scripts.eval.analyze_video_pred_quality import (
     compare_conditioning_frame_to_current_observation,
     compare_pred_to_future_trace,
     compare_videos,
+    infer_future_step_stride,
     video_metrics,
     write_text_report,
 )
@@ -205,6 +206,70 @@ def test_compare_pred_to_future_trace_scans_alignment_offsets():
     assert metrics["best_alignment_matched_frame_count"] == 3
 
 
+def test_compare_pred_to_future_trace_uses_future_step_stride():
+    pred = np.stack(
+        [
+            np.full((4, 4, 3), 10, dtype=np.uint8),
+            np.full((4, 4, 3), 20, dtype=np.uint8),
+        ],
+        axis=0,
+    )
+    future = np.stack(
+        [
+            np.full((4, 4, 3), 0, dtype=np.uint8),
+            np.full((4, 4, 3), 11, dtype=np.uint8),
+            np.full((4, 4, 3), 10, dtype=np.uint8),
+            np.full((4, 4, 3), 33, dtype=np.uint8),
+            np.full((4, 4, 3), 20, dtype=np.uint8),
+        ],
+        axis=0,
+    )
+    trace = {
+        "path": "episode_1000.npz",
+        "rgb_trace_step": np.asarray([10, 11, 12, 13, 14], dtype=np.int32),
+        "left_rgb": future,
+    }
+
+    metrics = compare_pred_to_future_trace(
+        pred,
+        trace,
+        agent_id=0,
+        env_step=10,
+        includes_conditioning_frame=False,
+        future_step_stride=2.0,
+    )
+
+    assert metrics["matched_frame_count"] == 2
+    assert metrics["first_matched_step"] == 12
+    assert metrics["last_matched_step"] == 14
+    assert metrics["first_offset"] == 2
+    assert metrics["future_step_stride"] == 2.0
+    assert metrics["mae_rgb"] == 0.0
+
+
+def test_infer_future_step_stride_prefers_manifest_and_action_horizon():
+    pred = np.zeros((5, 4, 4, 3), dtype=np.uint8)
+
+    assert infer_future_step_stride(
+        {"video_pred_future_step_stride": 3.0},
+        pred,
+    ) == 3.0
+    assert infer_future_step_stride(
+        {
+            "action_horizon": 8,
+            "pred_latent_includes_conditioning_frame": True,
+        },
+        pred,
+    ) == 2.0
+    assert infer_future_step_stride(
+        {
+            "num_action_per_block": 12,
+            "num_frame_per_block": 3,
+        },
+        pred,
+    ) == 4.0
+
+
 def test_video_quality_summary_names_condition_window_metric(tmp_path):
     payload = {
         "root": str(tmp_path),
@@ -220,6 +285,9 @@ def test_video_quality_summary_names_condition_window_metric(tmp_path):
                 "cached_until_frame": 5,
                 "shared_global_wrist_window_mode": "history-current-first",
                 "video_pred_wrist_window_mode": "history-chronological",
+                "action_horizon": 8,
+                "predicted_future_frame_count": 4,
+                "video_pred_future_step_stride": 2.0,
                 "reset_causal_state_each_infer": True,
                 "video_pred_rollout_mode": "noncausal",
                 "last_video_pred_rollout_mode": "noncausal",
@@ -247,6 +315,7 @@ def test_video_quality_summary_names_condition_window_metric(tmp_path):
                     "best_alignment_offset": 1,
                     "best_alignment_mae_rgb": 6.5,
                     "best_alignment_improvement_rgb": 2.0,
+                    "future_step_stride": 2.0,
                     "matched_frame_count": 4,
                     "first_matched_step": 1,
                     "last_matched_step": 4,
@@ -283,6 +352,8 @@ def test_video_quality_summary_names_condition_window_metric(tmp_path):
     assert payload["summary"]["pred_vs_future_best_alignment_offset_abs_mean"] == 1.0
     assert payload["summary"]["pred_vs_future_best_alignment_mae_rgb_mean"] == 6.5
     assert payload["summary"]["pred_vs_future_best_alignment_improvement_rgb_mean"] == 2.0
+    assert payload["summary"]["pred_vs_future_step_stride_mean"] == 2.0
+    assert payload["summary"]["video_pred_future_step_stride_mean"] == 2.0
     assert payload["summary"]["video_pred_rollout_mode_counts"] == {"noncausal": 1}
     assert payload["summary"]["pred_latent_includes_conditioning_frame_counts"] == {
         "True": 1
@@ -309,6 +380,8 @@ def test_video_quality_summary_names_condition_window_metric(tmp_path):
     assert "pred_vs_future_mae_rgb_mean" in text
     assert "pred_vs_future_mae_rgb_by_frame_mean" in text
     assert "pred_vs_future_best_alignment_offset_counts" in text
+    assert "pred_vs_future_step_stride_mean" in text
+    assert "video_pred_future_step_stride_mean" in text
     assert "by video_pred_rollout_mode:" in text
     assert "  noncausal: videos=1" in text
     assert "    pred_vs_future_mae_rgb_mean: 8.5" in text
@@ -318,6 +391,8 @@ def test_video_quality_summary_names_condition_window_metric(tmp_path):
     assert "includes_conditioning=True" in text
     assert "future_mae=8.5" in text
     assert "future_best_offset=1" in text
+    assert "future_stride=2.0" in text
+    assert "future_step_stride=2.0" in text
     assert "future_best_mae=6.5" in text
     assert "future_delta=6.0" in text
     assert "future_steps=1:4" in text
@@ -332,6 +407,7 @@ def test_video_quality_summary_groups_metrics_by_rollout_mode():
             "pred_latent_includes_conditioning_frame": False,
             "shared_global_wrist_window_mode": "history-current-first",
             "video_pred_wrist_window_mode": "action",
+            "video_pred_future_step_stride": 1.0,
             "reset_causal_state_each_infer": True,
             "metrics": {
                 "temporal_absdiff": {"mean": temporal_mean, "p95": temporal_mean + 1.0},
@@ -349,6 +425,7 @@ def test_video_quality_summary_groups_metrics_by_rollout_mode():
                 "best_alignment_offset": 0,
                 "best_alignment_mae_rgb": best_mae,
                 "best_alignment_improvement_rgb": future_mae - best_mae,
+                "future_step_stride": 1.0,
             },
             "risk_flags": [],
         }
