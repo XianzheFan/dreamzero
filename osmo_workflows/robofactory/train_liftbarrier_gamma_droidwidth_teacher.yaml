@@ -842,6 +842,7 @@ workflow:
               export MAX_STEPS="$stage_max_steps"
               export USE_SPARSE_HUB_ATTENTION="$sparse_hub"
               export PRETRAINED_DIR="$stage_pretrained_dir"
+              export PRETRAINED_LORA_DIR="${STAGE1_PRETRAINED_LORA_DIR:-}"
               export OUTPUT_DIR="$stage_output_dir"
               export WANDB_RUN_NAME="$RUN_NAME"
               export WANDB_RUN_ID="$RUN_NAME"
@@ -858,6 +859,7 @@ workflow:
               echo "OUTPUT_S3_URI=$OUTPUT_S3_URI"
               echo "CACHE_OUTPUT_S3_URI=$CACHE_OUTPUT_S3_URI"
               echo "PRETRAINED_DIR=$PRETRAINED_DIR"
+              echo "PRETRAINED_LORA_DIR=$PRETRAINED_LORA_DIR"
               echo "MAX_STEPS=$MAX_STEPS"
               echo "MODEL_MAX_STATE_DIM=$MODEL_MAX_STATE_DIM"
               echo "MODEL_ACTION_DIM=$MODEL_ACTION_DIM"
@@ -908,31 +910,68 @@ workflow:
               fi
             }
 
-            restore_stage1_checkpoints() {
+            restore_stage1_lora_from_s3() {
+              src_uri="$1"
+              label="$2"
+              if [ -z "$src_uri" ]; then
+                return 1
+              fi
+              import_dir="/workspace/restore_lora/${label}"
+              rm -rf "$import_dir"
+              mkdir -p "$import_dir"
+              echo "Restoring candidate LoRA warm-start checkpoints from ${src_uri}/ into ${import_dir}"
+              set +e
+              osmo data download --resume "${src_uri}/" "$import_dir"
+              restore_status=$?
+              set -e
+              if [ "$restore_status" -ne 0 ]; then
+                echo "LoRA warm-start restore from ${src_uri}/ failed with status=${restore_status}."
+                return 1
+              fi
+
+              latest=""
+              while IFS= read -r ckpt_dir; do
+                [ -n "$ckpt_dir" ] || continue
+                if is_complete_resume_checkpoint "$ckpt_dir"; then
+                  latest="$ckpt_dir"
+                else
+                  echo "Skipping incomplete LoRA warm-start checkpoint ${ckpt_dir}; need model weights plus trainer_state.json."
+                fi
+              done < <(find "$import_dir" -type d -name 'checkpoint-*' | sort -V)
+
+              if [ -z "$latest" ]; then
+                echo "No usable LoRA warm-start checkpoint-* directories found under ${src_uri}/."
+                return 1
+              fi
+              STAGE1_PRETRAINED_LORA_DIR="$latest"
+              export STAGE1_PRETRAINED_LORA_DIR
+              echo "Selected LoRA warm-start checkpoint: ${STAGE1_PRETRAINED_LORA_DIR}"
+              return 0
+            }
+
+            restore_stage1_lora_checkpoint() {
               if [ -z "$RESTORE_RUN_NAME" ]; then
-                echo "No restore run configured; droidwidth teacher will start fresh."
+                echo "No restore run configured; droidwidth teacher will start from DreamZero-DROID."
                 return 0
               fi
 
-              echo "Attempting to restore droidwidth teacher checkpoints from RESTORE_RUN_NAME=${RESTORE_RUN_NAME}"
-              echo "Restored checkpoints will be staged under STAGE1_OUTPUT_DIR=${STAGE1_OUTPUT_DIR}"
-              mkdir -p "$STAGE1_OUTPUT_DIR"
-              OUTPUT_DIR="$STAGE1_OUTPUT_DIR"
-              if restore_checkpoints_from_s3 "$RESTORE_CACHE_S3_URI" "restore_cache"; then
-                echo "Restored droidwidth teacher checkpoints from cache URI ${RESTORE_CACHE_S3_URI}."
+              echo "Attempting to restore droidwidth teacher LoRA warm-start from RESTORE_RUN_NAME=${RESTORE_RUN_NAME}"
+              echo "Restored LoRA checkpoint will be loaded through PRETRAINED_LORA_DIR, not Trainer resume."
+              if restore_stage1_lora_from_s3 "$RESTORE_CACHE_S3_URI" "restore_cache"; then
+                echo "Restored droidwidth teacher LoRA warm-start from cache URI ${RESTORE_CACHE_S3_URI}."
                 return 0
               fi
-              if restore_checkpoints_from_s3 "$RESTORE_S3_URI" "restore_primary"; then
-                echo "Restored droidwidth teacher checkpoints from primary URI ${RESTORE_S3_URI}."
+              if restore_stage1_lora_from_s3 "$RESTORE_S3_URI" "restore_primary"; then
+                echo "Restored droidwidth teacher LoRA warm-start from primary URI ${RESTORE_S3_URI}."
                 return 0
               fi
-              echo "No previous droidwidth teacher checkpoints restored; training will start fresh."
+              echo "No previous droidwidth teacher LoRA warm-start restored; training will start from DreamZero-DROID."
             }
 
             require_wandb
 
             DREAMZERO_DROID_PRETRAINED_DIR="$PRETRAINED_DIR"
-            restore_stage1_checkpoints
+            restore_stage1_lora_checkpoint
             run_training_stage \
               "droidwidth-teacher-style" \
               "$STAGE1_RUN_NAME" \

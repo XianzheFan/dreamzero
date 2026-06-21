@@ -390,14 +390,18 @@ def test_liftbarrier_gamma_droidwidth_teacher_workflow_preserves_droid_base_head
         'echo "AGENT_STATE_PAD_DIM=$AGENT_STATE_PAD_DIM"',
         'echo "AGENT_ACTION_PAD_DIM=$AGENT_ACTION_PAD_DIM"',
         "DREAMZERO_DROID_PRETRAINED_DIR=\"$PRETRAINED_DIR\"",
-        "restore_stage1_checkpoints()",
-        "Attempting to restore droidwidth teacher checkpoints from RESTORE_RUN_NAME",
-        "Restored checkpoints will be staged under STAGE1_OUTPUT_DIR",
-        "restore_checkpoints_from_s3 \"$RESTORE_CACHE_S3_URI\" \"restore_cache\"",
-        "restore_checkpoints_from_s3 \"$RESTORE_S3_URI\" \"restore_primary\"",
-        "No restore run configured; droidwidth teacher will start fresh.",
-        "No previous droidwidth teacher checkpoints restored; training will start fresh.",
-        "restore_stage1_checkpoints",
+        "restore_stage1_lora_from_s3()",
+        "restore_stage1_lora_checkpoint()",
+        "Attempting to restore droidwidth teacher LoRA warm-start from RESTORE_RUN_NAME",
+        "Restored LoRA checkpoint will be loaded through PRETRAINED_LORA_DIR, not Trainer resume.",
+        "restore_stage1_lora_from_s3 \"$RESTORE_CACHE_S3_URI\" \"restore_cache\"",
+        "restore_stage1_lora_from_s3 \"$RESTORE_S3_URI\" \"restore_primary\"",
+        "Selected LoRA warm-start checkpoint",
+        'export PRETRAINED_LORA_DIR="${STAGE1_PRETRAINED_LORA_DIR:-}"',
+        'echo "PRETRAINED_LORA_DIR=$PRETRAINED_LORA_DIR"',
+        "No restore run configured; droidwidth teacher will start from DreamZero-DROID.",
+        "No previous droidwidth teacher LoRA warm-start restored; training will start from DreamZero-DROID.",
+        "restore_stage1_lora_checkpoint",
         '"droidwidth-teacher-style"',
         'TEACHER_CKPT="$(latest_complete_checkpoint "$STAGE1_OUTPUT_DIR" || true)"',
         "Teacher complete checkpoint selected",
@@ -410,6 +414,7 @@ def test_liftbarrier_gamma_droidwidth_teacher_workflow_preserves_droid_base_head
     assert '"sparse-causal-student-style"' not in script
     assert "Stage1 complete checkpoint selected for stage2 warm-start" not in script
     assert "RESTORE_RUN_NAME is ignored by the droidwidth teacher workflow" not in script
+    assert "Restored checkpoints will be staged under STAGE1_OUTPUT_DIR" not in script
 
 
 def test_liftbarrier_gamma_droidwidth_teacher_workflow_embedded_python_blocks_compile():
