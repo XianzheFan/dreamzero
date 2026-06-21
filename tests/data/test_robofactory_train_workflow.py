@@ -232,6 +232,24 @@ def test_liftbarrier_train_workflows_restore_minimal_wan_components():
         assert "hf_hub_download" in script
 
 
+def test_liftbarrier_train_workflows_download_droid_pretrained_from_huggingface():
+    for path in (WORKFLOW_PATH, STAGED_WORKFLOW_PATH, DROIDWIDTH_TEACHER_WORKFLOW_PATH):
+        with path.open() as f:
+            workflow = yaml.safe_load(f)
+
+        script = _task_by_name(workflow, "train")["files"][0]["contents"]
+
+        assert "download_or_restore_droid_pretrained()" in script
+        assert 'download_or_restore_droid_pretrained "$PRETRAINED_DIR"' in script
+        assert (
+            'download_or_restore_model "DreamZero-DROID" '
+            '"GEAR-Dreams/DreamZero-DROID" "model" "$PRETRAINED_DIR"'
+            not in script
+        )
+        assert "Downloading DreamZero-DROID from Hugging Face" in script
+        assert 'hf_download "GEAR-Dreams/DreamZero-DROID" "model" "$dest"' in script
+
+
 def test_liftbarrier_train_workflow_embedded_python_blocks_compile():
     with WORKFLOW_PATH.open() as f:
         workflow = yaml.safe_load(f)

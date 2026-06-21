@@ -293,6 +293,28 @@ workflow:
               fi
             }
 
+            download_or_restore_droid_pretrained() {
+              dest="$1"
+              mkdir -p "$dest"
+              if model_dir_is_usable "DreamZero-DROID" "$dest"; then
+                echo "DreamZero-DROID already present locally: $dest"
+                return 0
+              fi
+              if ! command -v huggingface-cli >/dev/null 2>&1 && ! command -v hf >/dev/null 2>&1; then
+                python -m pip install -q "huggingface_hub[cli]"
+              fi
+              echo "Downloading DreamZero-DROID from Hugging Face to avoid rate-limited S3 restore."
+              hf_download "GEAR-Dreams/DreamZero-DROID" "model" "$dest"
+              resolved_download_root="$(resolve_model_root "DreamZero-DROID" "$dest" || true)"
+              if [ -n "$resolved_download_root" ]; then
+                promote_model_root "$resolved_download_root" "$dest"
+              fi
+              if ! model_dir_is_usable "DreamZero-DROID" "$dest"; then
+                echo "ERROR: downloaded DreamZero-DROID, but required checkpoint files are still missing." >&2
+                exit 8
+              fi
+            }
+
             valid_tokenizer_dir() {
               [ -f "$1/tokenizer_config.json" ] && { [ -f "$1/tokenizer.json" ] || [ -f "$1/spiece.model" ]; }
             }
@@ -477,7 +499,7 @@ workflow:
 
             download_or_restore_wan_minimal "$WAN_CKPT_DIR"
             download_or_restore_tokenizer "umt5-xxl-tokenizer" "google/umt5-xxl" "$TOKENIZER_DIR"
-            download_or_restore_model "DreamZero-DROID" "GEAR-Dreams/DreamZero-DROID" "model" "$PRETRAINED_DIR"
+            download_or_restore_droid_pretrained "$PRETRAINED_DIR"
 
             export NUM_GPUS=8
             export NUM_ARMS=2
