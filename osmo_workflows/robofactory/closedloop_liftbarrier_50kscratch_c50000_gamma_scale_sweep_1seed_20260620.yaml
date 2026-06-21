@@ -50,7 +50,8 @@ workflow:
           MAX_STEPS=300
           INFERENCE_MODES="${INFERENCE_MODES:-causal_flowmatch}"
           RESET_CAUSAL_STATE_EACH_INFERS="${RESET_CAUSAL_STATE_EACH_INFERS:-0 1}"
-          VIDEO_PRED_ROLLOUT_MODE="${VIDEO_PRED_ROLLOUT_MODE:-action}"
+          VIDEO_PRED_ROLLOUT_MODE="${VIDEO_PRED_ROLLOUT_MODE:-noncausal}"
+          SHARED_GLOBAL_WRIST_WINDOW_MODE="${SHARED_GLOBAL_WRIST_WINDOW_MODE:-history-current-first}"
           export MAI_WRITE_DENOISED_CONTEXT_CACHE="${MAI_WRITE_DENOISED_CONTEXT_CACHE:-1}"
           export MAI_ROLLING_NOISE="${MAI_ROLLING_NOISE:-1}"
           REPLAN_EVERYS="24"
@@ -692,7 +693,7 @@ workflow:
               ;;
           esac
           SERVER_LOG="/tmp/server_${INFERENCE_MODE}_${RESET_TAG}.log"
-          echo "Launching DreamZero policy server for closed-loop eval (${CKPT_SETTING}) inference_mode=${INFERENCE_MODE} reset_mode=${RESET_TAG} server_cuda=${SERVER_CUDA_VISIBLE_DEVICES} MAI_USE_CAUSAL_INFERENCE=${MAI_USE_CAUSAL_INFERENCE} MAI_CAUSAL_SCHEDULER=${MAI_CAUSAL_SCHEDULER} MAI_WRITE_DENOISED_CONTEXT_CACHE=${MAI_WRITE_DENOISED_CONTEXT_CACHE} MAI_ROLLING_NOISE=${MAI_ROLLING_NOISE} VIDEO_PRED_ROLLOUT_MODE=${VIDEO_PRED_ROLLOUT_MODE}"
+          echo "Launching DreamZero policy server for closed-loop eval (${CKPT_SETTING}) inference_mode=${INFERENCE_MODE} reset_mode=${RESET_TAG} server_cuda=${SERVER_CUDA_VISIBLE_DEVICES} MAI_USE_CAUSAL_INFERENCE=${MAI_USE_CAUSAL_INFERENCE} MAI_CAUSAL_SCHEDULER=${MAI_CAUSAL_SCHEDULER} MAI_WRITE_DENOISED_CONTEXT_CACHE=${MAI_WRITE_DENOISED_CONTEXT_CACHE} MAI_ROLLING_NOISE=${MAI_ROLLING_NOISE} VIDEO_PRED_ROLLOUT_MODE=${VIDEO_PRED_ROLLOUT_MODE} SHARED_GLOBAL_WRIST_WINDOW_MODE=${SHARED_GLOBAL_WRIST_WINDOW_MODE}"
           CUDA_VISIBLE_DEVICES="${SERVER_CUDA_VISIBLE_DEVICES}" python -m eval_utils.bimanual_policy_server \
             --ckpt-dir "$LOCAL_EVAL_CKPT_ROOT" \
             --ckpt-setting "$CKPT_SETTING" \
@@ -704,7 +705,7 @@ workflow:
             --action-horizon 24 \
             --return-action-debug \
             --gripper-binarize-threshold "$GRIPPER_BINARIZE_THRESHOLD" \
-            --shared-global-wrist-window-mode history-current-first \
+            --shared-global-wrist-window-mode "$SHARED_GLOBAL_WRIST_WINDOW_MODE" \
             --save-video-pred \
             --video-pred-dir "/workspace/eval_outputs/video_pred/${INFERENCE_MODE}_${RESET_TAG}" \
             --video-pred-rollout-mode "$VIDEO_PRED_ROLLOUT_MODE" \
