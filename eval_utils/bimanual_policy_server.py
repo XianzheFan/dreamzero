@@ -79,9 +79,9 @@ import websockets.asyncio.server
 import websockets.frames
 
 
-_DEFAULT_SHARED_GLOBAL_WRIST_WINDOW_MODE = "history-chronological"
+_DEFAULT_SHARED_GLOBAL_WRIST_WINDOW_MODE = "history-current-first"
 _DEFAULT_VIDEO_PRED_ROLLOUT_MODE = "noncausal"
-_DEFAULT_VIDEO_PRED_WRIST_WINDOW_MODE = _DEFAULT_SHARED_GLOBAL_WRIST_WINDOW_MODE
+_DEFAULT_VIDEO_PRED_WRIST_WINDOW_MODE = "action"
 
 
 @dataclasses.dataclass
@@ -1155,8 +1155,10 @@ class BimanualPolicy:
 
         Shared-global training uses frame 0 as the current observation and
         future frames afterward. The global scene stream is repeated from
-        frame 0 when ``global_condition_mode=current_repeat``. Wrist streams
-        stay configurable for eval diagnostics:
+        frame 0 when ``global_condition_mode=current_repeat``. The action
+        head also conditions shared-global wrist streams from frame 0, so
+        the default serving mode puts the latest wrist observation first.
+        Wrist streams stay configurable for eval diagnostics:
 
         * repeat-current: repeat the current wrist frames, matching the old
           closed-loop server behavior.
@@ -2500,10 +2502,11 @@ def main():
             _DEFAULT_SHARED_GLOBAL_WRIST_WINDOW_MODE,
         ),
         choices=_SHARED_GLOBAL_WRIST_WINDOW_MODES,
-        help="Eval diagnostic for shared-global checkpoints. history-chronological "
-             "keeps wrist history unchanged; history-current-first puts the "
-             "current wrist frame at index 0 and appends rolling history; "
-             "repeat-current matches the historical server behavior.",
+        help="Eval diagnostic for shared-global checkpoints. history-current-first "
+             "puts the current wrist frame at index 0, matching shared-global "
+             "I2V conditioning; history-chronological keeps wrist history "
+             "unchanged for ablations; repeat-current matches the historical "
+             "server behavior.",
     )
     parser.add_argument(
         "--video-pred-wrist-window-mode",

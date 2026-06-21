@@ -122,15 +122,15 @@ def test_resolve_inference_parallel_size_rejects_unsupported_world_size():
         mod._resolve_inference_parallel_size(2, 1)
 
 
-def test_diagnostic_defaults_prefer_noncausal_chronological_video():
+def test_diagnostic_defaults_keep_shared_global_current_frame_at_index_zero():
     mod = _load_server_module()
 
     cfg = mod.BimanualServerConfig()
 
     assert cfg.video_pred_rollout_mode == "noncausal"
     assert mod._resolve_video_pred_rollout_mode(None) == "noncausal"
-    assert cfg.shared_global_wrist_window_mode == "history-chronological"
-    assert cfg.video_pred_wrist_window_mode == "history-chronological"
+    assert cfg.shared_global_wrist_window_mode == "history-current-first"
+    assert cfg.video_pred_wrist_window_mode == "action"
 
 
 def test_distributed_policy_proxy_broadcasts_leader_commands():
@@ -208,8 +208,8 @@ def test_websocket_config_exposes_video_pred_and_gamma_diagnostics(
     assert cfg.mai_causal_scheduler == "flowmatch"
     assert cfg.mai_num_inference_steps == 5
     assert cfg.mai_rolling_noise is False
-    assert cfg.shared_global_wrist_window_mode == "history-chronological"
-    assert cfg.video_pred_wrist_window_mode == "history-chronological"
+    assert cfg.shared_global_wrist_window_mode == "history-current-first"
+    assert cfg.video_pred_wrist_window_mode == "action"
     assert cfg.reset_causal_state_each_infer is True
     assert cfg.video_pred_rollout_mode == "noncausal"
 
@@ -747,7 +747,7 @@ def _constant_rgb(value: int) -> np.ndarray:
     return np.full((2, 3, 3), value, dtype=np.uint8)
 
 
-def test_shared_global_video_window_keeps_chronological_wrist_history_by_default():
+def test_shared_global_video_window_puts_current_wrist_first_by_default():
     policy = _make_policy(_metadata_with_action_stats())
     policy.num_frames = 3
     shared_global_transform = _DummyTransform()
@@ -762,8 +762,8 @@ def test_shared_global_video_window_keeps_chronological_wrist_history_by_default
     global_video, agent0_video, agent1_video = policy._build_video_windows(history)
 
     np.testing.assert_array_equal(global_video[:, 0, 0, 0], [2, 2, 2])
-    np.testing.assert_array_equal(agent0_video[:, 0, 0, 0], [10, 11, 12])
-    np.testing.assert_array_equal(agent1_video[:, 0, 0, 0], [20, 21, 22])
+    np.testing.assert_array_equal(agent0_video[:, 0, 0, 0], [12, 10, 11])
+    np.testing.assert_array_equal(agent1_video[:, 0, 0, 0], [22, 20, 21])
 
 
 def test_shared_global_video_window_can_use_current_first_wrist_history():
