@@ -383,6 +383,14 @@ def _aggregate(videos: list[dict[str, Any]]) -> dict[str, Any]:
     if not videos:
         return {"video_count": 0}
 
+    def count_values(key: str) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for row in videos:
+            value = row.get(key)
+            label = "missing" if value is None else str(value)
+            counts[label] = counts.get(label, 0) + 1
+        return counts
+
     def collect(path: tuple[str, ...]) -> np.ndarray:
         values = []
         for row in videos:
@@ -401,6 +409,16 @@ def _aggregate(videos: list[dict[str, Any]]) -> dict[str, Any]:
         "video_count": len(videos),
         "videos_with_flags": sum(1 for row in videos if row["risk_flags"]),
         "flag_counts": flag_counts,
+        "video_pred_rollout_mode_counts": count_values("video_pred_rollout_mode"),
+        "last_video_pred_rollout_mode_counts": count_values(
+            "last_video_pred_rollout_mode"
+        ),
+        "shared_global_wrist_window_mode_counts": count_values(
+            "shared_global_wrist_window_mode"
+        ),
+        "reset_causal_state_each_infer_counts": count_values(
+            "reset_causal_state_each_infer"
+        ),
         "temporal_absdiff_mean": _mean_or_none(
             collect(("metrics", "temporal_absdiff", "mean"))
         ),
@@ -432,6 +450,15 @@ def write_text_report(payload: dict[str, Any], path: Path) -> None:
         f"videos: {summary.get('video_count', 0)}",
         f"videos_with_flags: {summary.get('videos_with_flags', 0)}",
         f"flag_counts: {summary.get('flag_counts', {})}",
+        "diagnostic_modes:",
+        "  video_pred_rollout_mode_counts: "
+        f"{summary.get('video_pred_rollout_mode_counts', {})}",
+        "  last_video_pred_rollout_mode_counts: "
+        f"{summary.get('last_video_pred_rollout_mode_counts', {})}",
+        "  shared_global_wrist_window_mode_counts: "
+        f"{summary.get('shared_global_wrist_window_mode_counts', {})}",
+        "  reset_causal_state_each_infer_counts: "
+        f"{summary.get('reset_causal_state_each_infer_counts', {})}",
         "aggregate:",
         f"  temporal_absdiff_mean: {summary.get('temporal_absdiff_mean')}",
         f"  temporal_absdiff_p95_mean: {summary.get('temporal_absdiff_p95_mean')}",
@@ -451,6 +478,10 @@ def write_text_report(payload: dict[str, Any], path: Path) -> None:
         lines.append(
             "  "
             f"{row['path']} agent={row.get('agent_id')} env_step={row.get('env_step')} "
+            f"rollout={row.get('video_pred_rollout_mode')}/"
+            f"{row.get('last_video_pred_rollout_mode')} "
+            f"wrist_window={row.get('shared_global_wrist_window_mode')} "
+            f"reset_cache={row.get('reset_causal_state_each_infer')} "
             f"latent_frames={row.get('pred_latent_start_frame')}:{row.get('pred_latent_end_frame')} "
             f"cache_after={row.get('current_start_frame_after_infer')}/{row.get('cached_until_frame')} "
             f"temporal_mean={metrics['temporal_absdiff']['mean']} "
