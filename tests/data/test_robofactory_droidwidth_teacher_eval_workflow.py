@@ -85,11 +85,9 @@ def test_droidwidth_teacher_gb200_s3_model_cache_downloads_are_throttled():
     assert '"models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth"' in script
     assert '"Wan2.1_VAE.pth"' in script
     assert '"${MODEL_CACHE_S3_URI}/Wan2.1-I2V-14B-480P/"' not in script
-    assert (
-        'osmo data download --resume --processes 1 --threads 4 '
-        '"${MODEL_CACHE_S3_URI}/DreamZero-DROID/" "$DROID_IMPORT"'
-        in script
-    )
+    assert '"${MODEL_CACHE_S3_URI}/DreamZero-DROID/"' not in script
+    assert 'repo_id=os.environ["DROID_HF_REPO"]' in script
+    assert "local_dir=str(target)" in script
 
 
 def test_droidwidth_teacher_eval_embedded_script_is_valid_bash():

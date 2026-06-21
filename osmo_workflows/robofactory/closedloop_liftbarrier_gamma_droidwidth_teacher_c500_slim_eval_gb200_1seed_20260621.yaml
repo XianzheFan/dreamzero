@@ -322,7 +322,6 @@ workflow:
 
           echo "Restoring DreamZero-DROID model to /workspace/checkpoints/DreamZero-DROID"
           DROID_EXPECTED="/workspace/checkpoints/DreamZero-DROID"
-          DROID_IMPORT="/workspace/model_import/DreamZero-DROID"
           DROID_AMLFS="${AMLFS_MODEL_CACHE_DIR}/DreamZero-DROID"
           DROID_AMLFS_NESTED="${DROID_AMLFS}/DreamZero-DROID"
           rm -rf "$DROID_EXPECTED"
@@ -333,35 +332,21 @@ workflow:
             ln -sfn "$DROID_AMLFS_NESTED" "$DROID_EXPECTED"
             echo "Using DreamZero-DROID from nested AMLFS cache"
           else
-            set +e
-            osmo data download --resume --processes 1 --threads 4 "${MODEL_CACHE_S3_URI}/DreamZero-DROID/" "$DROID_IMPORT"
-            droid_s3_status=$?
-            set -e
-            if [ "$droid_s3_status" -eq 0 ] && [ -f "${DROID_IMPORT}/model.safetensors.index.json" ]; then
-            ln -sfn "$DROID_IMPORT" "$DROID_EXPECTED"
-            echo "Using DreamZero-DROID from xianzhef S3 model cache root"
-            elif [ "$droid_s3_status" -eq 0 ] && [ -f "${DROID_IMPORT}/DreamZero-DROID/model.safetensors.index.json" ]; then
-            ln -sfn "${DROID_IMPORT}/DreamZero-DROID" "$DROID_EXPECTED"
-            echo "Using DreamZero-DROID from xianzhef S3 model cache nested directory"
-            else
-            echo "No usable xianzhef S3 DreamZero-DROID cache found; downloading from Hugging Face"
-            mkdir -p "$DROID_EXPECTED"
-            if command -v hf >/dev/null 2>&1; then
-              timeout 3600 hf download "$DROID_HF_REPO" --repo-type model --local-dir "$DROID_EXPECTED"
-            elif command -v huggingface-cli >/dev/null 2>&1; then
-              timeout 3600 huggingface-cli download "$DROID_HF_REPO" --repo-type model --local-dir "$DROID_EXPECTED"
-            else
-              timeout 3600 python - <<'PY'
+            echo "AMLFS DreamZero-DROID cache unavailable; downloading from HuggingFace"
+            mkdir -p "$DROID_AMLFS"
+            DROID_AMLFS="$DROID_AMLFS" DROID_HF_REPO="$DROID_HF_REPO" python - <<'PY'
+          import os
+          from pathlib import Path
           from huggingface_hub import snapshot_download
+
+          target = Path(os.environ["DROID_AMLFS"])
           snapshot_download(
-              repo_id="GEAR-Dreams/DreamZero-DROID",
+              repo_id=os.environ["DROID_HF_REPO"],
               repo_type="model",
-              local_dir="/workspace/checkpoints/DreamZero-DROID",
-              local_dir_use_symlinks=False,
+              local_dir=str(target),
           )
           PY
-            fi
-          fi
+            ln -sfn "$DROID_AMLFS" "$DROID_EXPECTED"
           fi
           test -f "${DROID_EXPECTED}/model.safetensors.index.json"
           du -sh "${DROID_EXPECTED}"
