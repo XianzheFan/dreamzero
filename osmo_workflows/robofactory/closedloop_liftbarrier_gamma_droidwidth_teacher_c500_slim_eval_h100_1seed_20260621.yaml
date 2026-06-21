@@ -74,6 +74,7 @@ workflow:
           export ROBOFACTORY_RENDER_BACKEND="${ROBOFACTORY_RENDER_BACKEND:-sapien_cuda:0}"
           export ROBOFACTORY_ENABLE_SHADOW="${ROBOFACTORY_ENABLE_SHADOW:-0}"
           export ROBOFACTORY_SHADER_PACK="${ROBOFACTORY_SHADER_PACK:-default}"
+          export ROBOFACTORY_RENDER_PREFLIGHT="${ROBOFACTORY_RENDER_PREFLIGHT:-1}"
           SUCCESS_MODE="strict-lift"
           STRICT_SUCCESS_MIN_GRASP_COUNT=1
           RUN_OFFLINE=0
@@ -564,6 +565,53 @@ workflow:
           find "${SAPIEN_VKLIB}" -maxdepth 1 -type f -print 2>/dev/null | sort || true
 
           cd /workspace/code/dreamzero
+          if [ "${ROBOFACTORY_RENDER_PREFLIGHT}" = "1" ]; then
+            echo "Preflighting RoboFactory renderer before loading policy server"
+            timeout 180 env CUDA_VISIBLE_DEVICES="${CLIENT_CUDA_VISIBLE_DEVICES}" python - <<'PY'
+          import os
+          import time
+
+          import gymnasium as gym
+          from robofactory import CONFIG_DIR
+
+          task = os.environ.get("TASK", "LiftBarrier-rf")
+          config = os.path.join(CONFIG_DIR, "table", "lift_barrier.yaml")
+          render_backend = os.environ.get("ROBOFACTORY_RENDER_BACKEND") or None
+          shader_pack = os.environ.get("ROBOFACTORY_SHADER_PACK") or "default"
+          enable_shadow = os.environ.get("ROBOFACTORY_ENABLE_SHADOW", "0").lower() in {
+              "1",
+              "true",
+              "yes",
+              "on",
+          }
+          kwargs = dict(
+              id=task,
+              config=config,
+              obs_mode="rgb",
+              control_mode="pd_joint_pos",
+              render_mode="rgb_array",
+              num_envs=1,
+              sim_backend="cpu",
+              enable_shadow=enable_shadow,
+              parallel_in_single_scene=False,
+              sensor_configs=dict(shader_pack=shader_pack),
+              human_render_camera_configs=dict(shader_pack=shader_pack),
+              viewer_camera_configs=dict(shader_pack=shader_pack),
+          )
+          if render_backend:
+              kwargs["render_backend"] = render_backend
+          start = time.time()
+          print(
+              "ROBOFACTORY_RENDER_PREFLIGHT_START "
+              f"task={task} render_backend={render_backend} "
+              f"shader_pack={shader_pack} enable_shadow={enable_shadow}",
+              flush=True,
+          )
+          env = gym.make(**kwargs)
+          env.close()
+          print(f"ROBOFACTORY_RENDER_PREFLIGHT_OK seconds={time.time() - start:.2f}", flush=True)
+          PY
+          fi
           echo "Skipping offline diagnostic for close-window gripper run"
           if [ "${RUN_OFFLINE:-0}" = "1" ]; then
           echo "Running offline gripper/action diagnostic for ${CKPT_SETTING}"

@@ -90,6 +90,9 @@ def test_droidwidth_teacher_h100_eval_targets_h100_pool_resources():
     assert 'ROBOFACTORY_RENDER_BACKEND="${ROBOFACTORY_RENDER_BACKEND:-sapien_cuda:0}"' in script
     assert 'ROBOFACTORY_ENABLE_SHADOW="${ROBOFACTORY_ENABLE_SHADOW:-0}"' in script
     assert 'ROBOFACTORY_SHADER_PACK="${ROBOFACTORY_SHADER_PACK:-default}"' in script
+    assert 'ROBOFACTORY_RENDER_PREFLIGHT="${ROBOFACTORY_RENDER_PREFLIGHT:-1}"' in script
+    assert "Preflighting RoboFactory renderer before loading policy server" in script
+    assert "ROBOFACTORY_RENDER_PREFLIGHT_OK" in script
     assert "render_backend=${ROBOFACTORY_RENDER_BACKEND}" in script
     assert "dense-teacher" not in script
 
