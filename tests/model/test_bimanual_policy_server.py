@@ -96,6 +96,16 @@ class _FakeActionHead:
         self.reset_calls += 1
 
 
+class _FakePreserveActionHead:
+    def __init__(self):
+        self.reset_kwargs = []
+
+    def reset_causal_state(self, *, preserve_rollout_noise=False):
+        self.reset_kwargs.append(
+            {"preserve_rollout_noise": preserve_rollout_noise}
+        )
+
+
 def _metadata_with_action_stats(tag="robofactory"):
     return {
         tag: {
@@ -202,6 +212,56 @@ def test_reset_causal_state_each_infer_gate_can_keep_streaming_state():
     assert policy._maybe_reset_action_head_causal_state_for_infer() is False
 
     assert action_head.reset_calls == 0
+
+
+def test_reset_causal_state_each_infer_preserves_rollout_noise_when_supported():
+    policy = _make_policy(_metadata_with_action_stats())
+    action_head = _FakePreserveActionHead()
+    policy._model = SimpleNamespace(action_head=action_head)
+    policy.reset_causal_state_each_infer = True
+
+    assert policy._maybe_reset_action_head_causal_state_for_infer() is True
+
+    assert action_head.reset_kwargs == [{"preserve_rollout_noise": True}]
+
+
+def test_action_head_snapshot_restores_rolling_noise_generator_state():
+    import torch
+
+    policy = _make_policy(_metadata_with_action_stats())
+    generator = torch.Generator(device="cpu").manual_seed(123)
+    action_head = SimpleNamespace(
+        current_start_frame=3,
+        language=None,
+        kv_cache1=None,
+        kv_cache_neg=None,
+        crossattn_cache=None,
+        crossattn_cache_neg=None,
+        clip_feas=None,
+        ys=None,
+        _ma_cached_token_agent_id=None,
+        _ma_cached_token_agent_id_neg=None,
+        _ma_cached_until_frame=3,
+        _ma_noise_generators={"causal_video": generator},
+        _ma_noise_generator_devices={"causal_video": "cpu"},
+        _ma_noise_draw_counts={"causal_video": 1},
+        skip_countdown=0,
+    )
+    policy._model = SimpleNamespace(action_head=action_head)
+
+    snapshot = policy._snapshot_action_head_control_state()
+    expected = torch.randn((2, 3), generator=generator)
+    action_head._ma_cached_until_frame = 99
+    action_head._ma_noise_draw_counts["causal_video"] = 99
+    torch.randn((2, 3), generator=generator)
+
+    policy._restore_action_head_control_state(snapshot)
+    restored_generator = action_head._ma_noise_generators["causal_video"]
+    actual = torch.randn((2, 3), generator=restored_generator)
+
+    assert action_head._ma_cached_until_frame == 3
+    assert action_head._ma_noise_draw_counts == {"causal_video": 1}
+    assert torch.equal(actual, expected)
 
 
 class _FakeInferenceMode:

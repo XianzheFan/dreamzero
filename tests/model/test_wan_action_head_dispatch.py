@@ -96,3 +96,89 @@ def test_detect_three_agents():
         "action": torch.zeros(2, 3, 24, 5),
     })
     assert inst._detect_multi_agent(af) == 3
+
+
+def test_multi_agent_conditioning_uses_encode_image_latent():
+    Cls = _maybe_load_head()
+    inst = Cls.__new__(Cls)
+    inst.model = type("M", (), {"model_type": "i2v"})()
+    inst.image_encoder = object()
+    inst.vae = object()
+    inst._device = "cpu"
+
+    videos = torch.zeros(1, 2, 3, 5, 8, 8)
+    latents = torch.zeros(1, 2, 16, 3, 4, 4)
+    clean_from_image = torch.full((2, 16, 1, 4, 4), 7.0)
+
+    def fake_encode_image(image, num_frames, height, width):
+        assert tuple(image.shape) == (2, 1, 3, 8, 8)
+        return (
+            torch.zeros(2, 4),
+            torch.zeros(2, 20, 3, 4, 4),
+            clean_from_image,
+        )
+
+    inst.encode_image = fake_encode_image
+
+    _, _, clean_x = inst._prepare_multi_agent_i2v_conditioning(
+        videos=videos,
+        latents=latents,
+        condition_frame_index=0,
+    )
+
+    assert clean_x.shape == latents.shape
+    assert torch.all(clean_x == 7.0)
+    assert inst._mai_clean_video_cond_source == "encode_image"
+
+
+def test_multi_agent_rolling_noise_preserve_reset_keeps_stream(monkeypatch):
+    Cls = _maybe_load_head()
+    monkeypatch.setenv("MAI_ROLLING_NOISE", "1")
+
+    def make_inst():
+        inst = Cls.__new__(Cls)
+        inst.seed = 123
+        inst.model = object()
+        inst.current_start_frame = 5
+        inst.kv_cache1 = "cache"
+        inst.kv_cache_neg = "cache"
+        inst.crossattn_cache = "cache"
+        inst.crossattn_cache_neg = "cache"
+        inst.clip_feas = "clip"
+        inst.ys = "ys"
+        inst.language = torch.ones(1)
+        inst._ma_cached_token_agent_id = "agent"
+        inst._ma_cached_token_agent_id_neg = "agent-neg"
+        inst._ma_cached_until_frame = 5
+        return inst
+
+    continuous = make_inst()
+    continuous._generate_multi_agent_sequence_noise(
+        (2, 3), device="cpu", dtype=torch.float32, stream="causal_video"
+    )
+    expected_second = continuous._generate_multi_agent_sequence_noise(
+        (2, 3), device="cpu", dtype=torch.float32, stream="causal_video"
+    )
+
+    preserved = make_inst()
+    preserved._generate_multi_agent_sequence_noise(
+        (2, 3), device="cpu", dtype=torch.float32, stream="causal_video"
+    )
+    preserved.reset_causal_state(preserve_rollout_noise=True)
+    after_preserve = preserved._generate_multi_agent_sequence_noise(
+        (2, 3), device="cpu", dtype=torch.float32, stream="causal_video"
+    )
+
+    reset = make_inst()
+    first = reset._generate_multi_agent_sequence_noise(
+        (2, 3), device="cpu", dtype=torch.float32, stream="causal_video"
+    )
+    reset.reset_causal_state()
+    after_full_reset = reset._generate_multi_agent_sequence_noise(
+        (2, 3), device="cpu", dtype=torch.float32, stream="causal_video"
+    )
+
+    assert torch.equal(after_preserve, expected_second)
+    assert torch.equal(after_full_reset, first)
+    assert preserved.language is not None
+    assert reset.language is None

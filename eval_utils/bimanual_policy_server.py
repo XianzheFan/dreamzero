@@ -64,6 +64,7 @@ import asyncio
 import copy
 import dataclasses
 import gc
+import inspect
 import json
 import logging
 import os
@@ -120,6 +121,10 @@ _ACTION_HEAD_CONTROL_STATE_ATTRS = (
     "ys",
     "_ma_cached_token_agent_id",
     "_ma_cached_token_agent_id_neg",
+    "_ma_cached_until_frame",
+    "_ma_noise_generators",
+    "_ma_noise_generator_devices",
+    "_ma_noise_draw_counts",
     "skip_countdown",
 )
 
@@ -561,6 +566,10 @@ class BimanualPolicy:
         logging.info(
             "Predicted-video rollout mode: %s",
             self.video_pred_rollout_mode,
+        )
+        logging.info(
+            "Multi-agent rolling noise: %s",
+            self._parse_bool(os.environ.get("MAI_ROLLING_NOISE", "1")),
         )
 
     def _effective_prompt(self, prompt: str | None) -> str:
@@ -1235,11 +1244,30 @@ class BimanualPolicy:
         self._reset_action_head_causal_state("episode reset")
         return "reset successful"
 
-    def _reset_action_head_causal_state(self, reason: str) -> bool:
+    def _reset_action_head_causal_state(
+        self, reason: str, *, preserve_rollout_noise: bool = False
+    ) -> bool:
         model = getattr(self, "_model", None)
         action_head = getattr(model, "action_head", None)
         if action_head is not None and hasattr(action_head, "reset_causal_state"):
-            action_head.reset_causal_state()
+            reset_fn = action_head.reset_causal_state
+            supports_preserve = False
+            if preserve_rollout_noise:
+                try:
+                    params = inspect.signature(reset_fn).parameters
+                    supports_preserve = (
+                        "preserve_rollout_noise" in params
+                        or any(
+                            p.kind == inspect.Parameter.VAR_KEYWORD
+                            for p in params.values()
+                        )
+                    )
+                except (TypeError, ValueError):
+                    supports_preserve = False
+            if supports_preserve:
+                reset_fn(preserve_rollout_noise=preserve_rollout_noise)
+            else:
+                reset_fn()
             logging.debug("Reset action-head causal state for %s", reason)
             return True
         return False
@@ -1247,7 +1275,9 @@ class BimanualPolicy:
     def _maybe_reset_action_head_causal_state_for_infer(self) -> bool:
         if not self.reset_causal_state_each_infer:
             return False
-        return self._reset_action_head_causal_state("infer")
+        return self._reset_action_head_causal_state(
+            "infer", preserve_rollout_noise=True
+        )
 
     def _uses_shared_global(self) -> bool:
         """Whether the loaded transform emits ``video_global``.
@@ -1629,6 +1659,11 @@ class BimanualPolicy:
         torch_tensor = getattr(torch, "Tensor", ())
         if torch_tensor and isinstance(value, torch_tensor):
             return value.detach().clone()
+        torch_generator = getattr(torch, "Generator", ())
+        if torch_generator and isinstance(value, torch_generator):
+            cloned = torch.Generator(device=value.device)
+            cloned.set_state(value.get_state().clone())
+            return cloned
         if isinstance(value, list):
             return [BimanualPolicy._clone_action_head_state_value(v) for v in value]
         if isinstance(value, tuple):
@@ -1871,7 +1906,8 @@ class BimanualPolicy:
         logging.info(
             "video_pred runtime: latent_shape=%s current_start_frame=%s "
             "num_frame_per_block=%s num_inference_steps=%s causal=%s "
-            "anchor_i2v=%s scheduler=%s source_context=%s",
+            "anchor_i2v=%s scheduler=%s rolling_noise=%s "
+            "pred_frames=%s:%s includes_conditioning=%s source_context=%s",
             tuple(latents.shape),
             getattr(action_head, "current_start_frame", None),
             getattr(action_head, "num_frame_per_block", None),
@@ -1879,6 +1915,10 @@ class BimanualPolicy:
             os.environ.get("MAI_USE_CAUSAL_INFERENCE", "1"),
             getattr(action_head, "_mai_anchor_i2v_first_frame", None),
             getattr(action_head, "_mai_causal_scheduler", None),
+            getattr(action_head, "_mai_rolling_noise", None),
+            getattr(action_head, "_last_video_pred_start_frame", None),
+            getattr(action_head, "_last_video_pred_end_frame", None),
+            getattr(action_head, "_last_video_pred_includes_conditioning_frame", None),
             self._last_video_pred_context,
         )
         frames = self._decode_latent_video(latents)
@@ -1919,6 +1959,30 @@ class BimanualPolicy:
                 "session_id_prefix": sid[:12],
                 "latent_shape": list(latents.shape),
                 "decoded_shape": [int(P), int(T), int(H), int(W), 3],
+                "last_video_pred_rollout_mode": getattr(
+                    action_head, "_last_video_pred_rollout_mode", None
+                ),
+                "last_video_pred_start_frame": getattr(
+                    action_head, "_last_video_pred_start_frame", None
+                ),
+                "last_video_pred_end_frame": getattr(
+                    action_head, "_last_video_pred_end_frame", None
+                ),
+                "last_video_pred_includes_conditioning_frame": getattr(
+                    action_head,
+                    "_last_video_pred_includes_conditioning_frame",
+                    None,
+                ),
+                "current_start_frame_after_infer": getattr(
+                    action_head, "current_start_frame", None
+                ),
+                "cached_until_frame": getattr(
+                    action_head, "_ma_cached_until_frame", None
+                ),
+                "rolling_noise": getattr(action_head, "_mai_rolling_noise", None),
+                "clean_video_cond_source": getattr(
+                    action_head, "_mai_clean_video_cond_source", None
+                ),
                 "pred_files": pred_files,
                 "observed_files": observed_files,
                 "comparison_files": comparison_files,
