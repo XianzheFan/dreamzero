@@ -867,6 +867,12 @@ def test_eval_io_shape_patch_falls_back_to_pretrained_tensor_shapes(
     )
 
     def fake_tensor_shape(model_dir, key):
+        if model_dir == policy.ckpt_dir / policy.ckpt_setting:
+            if key == "action_head.model.base_model.model.action_decoder.layer2.b":
+                return (1, 8)
+            if key == "action_head.model.base_model.model.state_encoder.layer1.W":
+                return (1, 8, 1024)
+            return None
         if model_dir != pretrained_root:
             return None
         if key == "action_head.model.action_decoder.layer2.b":

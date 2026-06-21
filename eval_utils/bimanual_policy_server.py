@@ -702,30 +702,48 @@ class BimanualPolicy:
                 shape_roots.append(("pretrained", pretrained_root))
 
         def dim_from_shape(
-            candidates: tuple[tuple[str, int], ...],
+            direct_candidates: tuple[tuple[str, int], ...],
+            peft_base_candidates: tuple[tuple[str, int], ...],
         ) -> tuple[int | None, str | None, tuple[int, ...] | None, str | None]:
+            peft_fallback: tuple[int, str, tuple[int, ...], str] | None = None
             for source_name, model_dir in shape_roots:
-                for key, axis in candidates:
+                for key, axis in direct_candidates:
                     shape = _safetensors_tensor_shape(model_dir, key)
                     if shape is None:
                         continue
                     return int(shape[axis]), key, shape, source_name
+                for key, axis in peft_base_candidates:
+                    shape = _safetensors_tensor_shape(model_dir, key)
+                    if shape is None:
+                        continue
+                    if peft_fallback is None:
+                        peft_fallback = (
+                            int(shape[axis]),
+                            key,
+                            shape,
+                            f"{source_name}-peft-base-fallback",
+                        )
+                    break
+            if peft_fallback is not None:
+                return peft_fallback
             return None, None, None, None
 
         action_dim, action_key, action_shape, action_source = dim_from_shape(
             (
-                ("action_head.model.base_model.model.action_decoder.layer2.b", -1),
-                ("action_head.model.base_model.model.action_decoder.layer2.W", -1),
-                ("action_head.model.base_model.model.action_encoder.W1.W", -2),
                 ("action_head.model.action_decoder.layer2.b", -1),
                 ("action_head.model.action_decoder.layer2.W", -1),
                 ("action_head.model.action_encoder.W1.W", -2),
+            ),
+            (
+                ("action_head.model.base_model.model.action_decoder.layer2.b", -1),
+                ("action_head.model.base_model.model.action_decoder.layer2.W", -1),
+                ("action_head.model.base_model.model.action_encoder.W1.W", -2),
             )
         )
         state_dim, state_key, state_shape, state_source = dim_from_shape(
+            (("action_head.model.state_encoder.layer1.W", -2),),
             (
                 ("action_head.model.base_model.model.state_encoder.layer1.W", -2),
-                ("action_head.model.state_encoder.layer1.W", -2),
             )
         )
 
