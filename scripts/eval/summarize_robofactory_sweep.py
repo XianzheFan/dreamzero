@@ -47,6 +47,18 @@ def _float_or_none(value: Any) -> float | None:
     return out
 
 
+def _video_pred_rollout_mode_from_dir(setting_dir: str) -> str | None:
+    name = os.path.basename(setting_dir)
+    marker = "_vpred_"
+    if marker not in name:
+        return None
+    suffix = name.split(marker, 1)[1]
+    if "_rp" not in suffix:
+        return None
+    mode = suffix.split("_rp", 1)[0]
+    return mode or None
+
+
 def _mean_finite(values: list[Any]) -> float | None:
     floats = [
         value
@@ -73,6 +85,9 @@ def _setting_from_results(results: dict[str, Any], setting_dir: str) -> dict[str
     cfg = results.get("eval_config", {})
     if not isinstance(cfg, dict):
         cfg = {}
+    server_meta = _nested(results, "server", "meta")
+    if not isinstance(server_meta, dict):
+        server_meta = {}
     scale = cfg.get("joint_target_scale", cfg.get("joint_delta_scale"))
     reference = cfg.get(
         "joint_target_scale_reference",
@@ -83,6 +98,10 @@ def _setting_from_results(results: dict[str, Any], setting_dir: str) -> dict[str
     temporal_ensemble_decay = cfg.get("temporal_action_ensemble_decay")
     return {
         "setting_dir": os.path.basename(setting_dir),
+        "video_pred_rollout_mode": server_meta.get(
+            "video_pred_rollout_mode",
+            _video_pred_rollout_mode_from_dir(setting_dir),
+        ),
         "replan_every": _float_or_none(cfg.get("replan_every")),
         "action_representation": cfg.get("action_representation"),
         "scale": _float_or_none(scale),
@@ -451,6 +470,7 @@ def _fmt(value: Any, *, digits: int = 3) -> str:
 def print_table(rows: list[dict[str, Any]]) -> None:
     columns = [
         ("dir", "setting_dir"),
+        ("vpred", "video_pred_rollout_mode"),
         ("replan", "replan_every"),
         ("actrep", "action_representation"),
         ("scale", "scale"),

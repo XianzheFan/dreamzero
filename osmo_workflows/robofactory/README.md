@@ -85,7 +85,9 @@ noncausal"`). Override `VIDEO_PRED_ROLLOUT_MODE=action` or
 `VIDEO_PRED_ROLLOUT_MODES=action` when you only want the control-path video
 diagnostic and need to cut runtime. The video-quality analyzer keeps these
 rollout modes separated in `by_video_pred_rollout_mode`, and the checkpoint
-grid summary exposes action/noncausal future-MAE columns directly.
+grid summary exposes action/noncausal future-MAE columns directly. Physical
+best-setting selection uses the action-path row when both modes are present,
+because noncausal rollout mode is a video-only diagnostic.
 
 After downloading eval artifacts, summarize the checkpoint grid:
 

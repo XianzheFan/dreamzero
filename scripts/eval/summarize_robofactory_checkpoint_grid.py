@@ -120,6 +120,30 @@ def best_sweep_row(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
     return max(rows, key=_setting_score)
 
 
+def physical_best_candidate_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return rows eligible for physical best-setting selection.
+
+    Pred-video rollout mode is diagnostic-only: ``noncausal`` changes the
+    saved video diagnostic path but should not define a different physical
+    policy setting. Prefer action-path rows when present, keep legacy rows
+    without the field compatible, and only fall back to all rows if that is all
+    the artifact contains.
+    """
+    action_rows = [
+        row
+        for row in rows
+        if str(row.get("video_pred_rollout_mode") or "").lower() == "action"
+    ]
+    if action_rows:
+        return action_rows
+    legacy_rows = [
+        row
+        for row in rows
+        if row.get("video_pred_rollout_mode") in (None, "")
+    ]
+    return legacy_rows or rows
+
+
 def _video_summary(root: Path) -> dict[str, Any]:
     path = root / "video_pred_quality.json"
     if not path.is_file():
@@ -154,7 +178,8 @@ def summarize_eval_root(root: Path) -> dict[str, Any]:
     manifest_path = root / "checkpoint_eval_manifest.json"
     manifest = _load_json(manifest_path) if manifest_path.is_file() else {}
     rows = _sweep_rows(root)
-    best = best_sweep_row([row for row in rows if isinstance(row, dict)]) or {}
+    typed_rows = [row for row in rows if isinstance(row, dict)]
+    best = best_sweep_row(physical_best_candidate_rows(typed_rows)) or {}
     video = _video_summary(root)
     step = checkpoint_step(manifest, root)
     return {
@@ -191,6 +216,7 @@ def summarize_eval_root(root: Path) -> dict[str, Any]:
         "video_pred_rollout_mode_counts": video.get("video_pred_rollout_mode_counts"),
         "video_pred_wrist_window_mode_counts": video.get("video_pred_wrist_window_mode_counts"),
         "best_setting_dir": best.get("setting_dir"),
+        "best_video_pred_rollout_mode": best.get("video_pred_rollout_mode"),
         "best_replan_every": best.get("replan_every"),
         "best_action_representation": best.get("action_representation"),
         "best_scale": best.get("scale"),
@@ -346,6 +372,7 @@ TABLE_COLUMNS = [
     ("succ", "success_count"),
     ("rate", "success_rate"),
     ("setting", "best_setting_dir"),
+    ("vpred", "best_video_pred_rollout_mode"),
     ("replan", "best_replan_every"),
     ("actrep", "best_action_representation"),
     ("scale", "best_scale"),

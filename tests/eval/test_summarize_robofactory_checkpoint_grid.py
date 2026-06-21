@@ -60,6 +60,7 @@ def _make_eval(
                 },
                 {
                     "setting_dir": "rp12_best",
+                    "video_pred_rollout_mode": "action",
                     "replan_every": 12,
                     "action_representation": "absolute_qpos",
                     "scale": 1.0,
@@ -96,6 +97,21 @@ def _make_eval(
                     "raw_gripper_saturation_frac": 0.7,
                     "joint_clamp_delta_mean": 0.05,
                     "joint_clamp_delta_max": 0.2,
+                },
+                {
+                    "setting_dir": "rp12_noncausal_diagnostic",
+                    "video_pred_rollout_mode": "noncausal",
+                    "replan_every": 12,
+                    "scale": 1.0,
+                    "replan_boundary_blend_steps": 4,
+                    "temporal_action_ensemble_decay": 0.6,
+                    "success_count": success_count + 10,
+                    "success_rate": float(success_count + 10),
+                    "target_min_mean_left": 0.01,
+                    "target_min_mean_right": 0.01,
+                    "barrier_margin_best": 1.0,
+                    "raw_joint_saturation_frac": 0.0,
+                    "max_replan_boundary_joint_jump": 0.0,
                 },
             ]
         },
@@ -166,6 +182,7 @@ def test_summarize_roots_orders_by_checkpoint_and_selects_best_setting(tmp_path)
     assert rows[0]["checkpoint_action_dim"] == 32
     assert rows[0]["checkpoint_global_video_attention_mode"] == "bidirectional"
     assert rows[0]["best_setting_dir"] == "rp12_best"
+    assert rows[0]["best_video_pred_rollout_mode"] == "action"
     assert rows[0]["best_action_representation"] == "absolute_qpos"
     assert rows[0]["raw_joint_saturation_frac"] == 0.7
     assert rows[0]["mean_joint_accel_to_delta_ratio"] == 0.67

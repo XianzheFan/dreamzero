@@ -227,6 +227,7 @@ def test_summarize_sweep_extracts_trace_metrics(tmp_path):
 
     assert [row["scale"] for row in rows] == [1.0, 1.5]
     assert rows[0]["success_count"] == 0
+    assert rows[0]["video_pred_rollout_mode"] is None
     assert rows[0]["replan_every"] == 24.0
     assert rows[0]["action_representation"] == "absolute_qpos"
     assert rows[0]["action_representation_counts"] == {"absolute_qpos": 1}
@@ -265,6 +266,7 @@ def test_summarize_sweep_extracts_trace_metrics(tmp_path):
     assert rows[0]["mean_slew_correction_joint"] == 0.0
     assert rows[0]["right_grasp_episodes"] == 0
     assert rows[1]["success_count"] == 1
+    assert rows[1]["video_pred_rollout_mode"] is None
     assert rows[1]["replan_every"] == 12.0
     assert rows[1]["action_representation"] == "absolute_qpos"
     assert rows[1]["scale_clip"] == 0.25
@@ -311,3 +313,28 @@ def test_summarize_sweep_extracts_trace_metrics(tmp_path):
     assert rows[1]["joint_clamp_delta_mean_left"] == 0.04
     assert rows[1]["joint_clamp_delta_mean_right"] == 0.02
     assert rows[1]["joint_clamp_delta_max"] == 0.12
+
+
+def test_summarize_sweep_tracks_video_pred_rollout_mode(tmp_path):
+    action = tmp_path / "causal_flowmatch_resetcache_vpred_action_rp12_jscale_1p0"
+    noncausal = tmp_path / "causal_flowmatch_resetcache_vpred_noncausal_rp12_jscale_1p0"
+    for path, mode in ((action, "action"), (noncausal, "noncausal")):
+        _write_json(
+            path / "results.json",
+            {
+                "success_rate": 0.0,
+                "results": [{"seed": 1000, "success": False}],
+                "server": {"meta": {"video_pred_rollout_mode": mode}},
+                "eval_config": {
+                    "replan_every": 12,
+                    "joint_target_scale": 1.0,
+                },
+            },
+        )
+
+    rows = summarize_sweep(str(tmp_path), pattern="*_jscale_*")
+
+    assert {row["setting_dir"]: row["video_pred_rollout_mode"] for row in rows} == {
+        action.name: "action",
+        noncausal.name: "noncausal",
+    }
