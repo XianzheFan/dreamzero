@@ -33,6 +33,11 @@ inside the training path because the extra block-causal sparse-hub time mask
 previously produced strong periodic artifacts in predicted video; model tests
 cover that invariant.
 
+The standalone droidwidth teacher workflow also defaults
+`GLOBAL_VIDEO_ATTENTION_MODE=bidirectional` so new 32D teacher runs match the
+dense-teacher side of this curriculum rather than the sparse read-only student
+side.
+
 ## 2k Checkpoint Eval Grid
 
 The droidwidth teacher training workflow saves checkpoints every 2000 optimizer
