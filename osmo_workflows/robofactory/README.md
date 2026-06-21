@@ -27,6 +27,12 @@ with `GLOBAL_VIDEO_ATTENTION_MODE=bidirectional`, while both sparse student
 stages use `GLOBAL_VIDEO_ATTENTION_MODE=read_only` so global video remains
 causal-safe context during policy training.
 
+This is a sparse read-only/global-context student, not a literal Gamma-World
+block-causal sparse-hub student. DreamZero keeps denoised chunks bidirectional
+inside the training path because the extra block-causal sparse-hub time mask
+previously produced strong periodic artifacts in predicted video; model tests
+cover that invariant.
+
 ## 2k Checkpoint Eval Grid
 
 The droidwidth teacher training workflow saves checkpoints every 2000 optimizer

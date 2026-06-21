@@ -973,7 +973,7 @@ workflow:
             echo "Stage1 complete checkpoint selected for stage2 warm-start: $STAGE1_CKPT"
 
             run_training_stage \
-              "sparse-causal-warmup-style" \
+              "sparse-readonly-warmup-style" \
               "$STAGE2_WARMUP_RUN_NAME" \
               "$STAGE2_WARMUP_MAX_STEPS" \
               "true" \
@@ -991,7 +991,7 @@ workflow:
             echo "Stage2 warmup checkpoint selected for self-forcing warm-start: $STAGE2_WARMUP_CKPT"
 
             run_training_stage \
-              "sparse-causal-self-forcing-style" \
+              "sparse-readonly-self-forcing-style" \
               "$STAGE2_RUN_NAME" \
               "$STAGE2_MAX_STEPS" \
               "true" \

@@ -350,8 +350,8 @@ def test_liftbarrier_gamma_staged_workflow_runs_dense_teacher_then_sparse_studen
         "train_status=$?",
         '"dense-teacher-style"',
         '"false"',
-        '"sparse-causal-warmup-style"',
-        '"sparse-causal-self-forcing-style"',
+        '"sparse-readonly-warmup-style"',
+        '"sparse-readonly-self-forcing-style"',
         '"true"',
         'STAGE1_CKPT="$(latest_complete_checkpoint "$STAGE1_OUTPUT_DIR" || true)"',
         'Stage1 complete checkpoint selected for stage2 warm-start',
@@ -380,7 +380,10 @@ def test_liftbarrier_gamma_staged_workflow_runs_dense_teacher_then_sparse_studen
     assert 'cp -an "${resolved}/." "$dest/"' in script
     assert "mv -n -t" not in script
 
-    stage2_warmup_idx = script.index('"sparse-causal-warmup-style"')
+    assert '"sparse-causal-warmup-style"' not in script
+    assert '"sparse-causal-self-forcing-style"' not in script
+
+    stage2_warmup_idx = script.index('"sparse-readonly-warmup-style"')
     stage2_warmup_end = script.index('"stage2_warmup"', stage2_warmup_idx)
     stage2_warmup_block = script[stage2_warmup_idx:stage2_warmup_end]
     assert '"$DREAMZERO_DROID_PRETRAINED_DIR"' in stage2_warmup_block
@@ -395,7 +398,7 @@ def test_liftbarrier_gamma_staged_workflow_runs_dense_teacher_then_sparse_studen
     stage1_block = script[stage1_idx:stage1_end]
     assert '"$STAGE1_GLOBAL_VIDEO_ATTENTION_MODE"' in stage1_block
 
-    stage2_self_forcing_idx = script.index('"sparse-causal-self-forcing-style"')
+    stage2_self_forcing_idx = script.index('"sparse-readonly-self-forcing-style"')
     stage2_self_forcing_end = script.index(
         '"stage2_self_forcing"',
         stage2_self_forcing_idx,
