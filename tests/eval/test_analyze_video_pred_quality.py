@@ -125,6 +125,45 @@ def test_compare_pred_to_future_trace_aligns_after_conditioning_frame():
     assert metrics["best_alignment_mae_rgb"] == 20.0
 
 
+def test_compare_pred_to_future_trace_skips_conditioning_frame():
+    pred = np.stack(
+        [
+            np.full((4, 4, 3), 99, dtype=np.uint8),
+            np.full((4, 4, 3), 10, dtype=np.uint8),
+            np.full((4, 4, 3), 20, dtype=np.uint8),
+        ],
+        axis=0,
+    )
+    future = np.stack(
+        [
+            np.full((4, 4, 3), 99, dtype=np.uint8),
+            np.full((4, 4, 3), 10, dtype=np.uint8),
+            np.full((4, 4, 3), 20, dtype=np.uint8),
+        ],
+        axis=0,
+    )
+    trace = {
+        "path": "episode_1000.npz",
+        "rgb_trace_step": np.asarray([10, 11, 12], dtype=np.int32),
+        "left_rgb": future,
+    }
+
+    metrics = compare_pred_to_future_trace(
+        pred,
+        trace,
+        agent_id=0,
+        env_step=10,
+        includes_conditioning_frame=True,
+    )
+
+    assert metrics["matched_frame_count"] == 2
+    assert metrics["first_matched_step"] == 11
+    assert metrics["last_matched_step"] == 12
+    assert metrics["pred_start_index"] == 1
+    assert metrics["skipped_conditioning_frame"] is True
+    assert metrics["mae_rgb"] == 0.0
+
+
 def test_compare_pred_to_future_trace_scans_alignment_offsets():
     pred = np.stack(
         [
@@ -176,6 +215,7 @@ def test_video_quality_summary_names_condition_window_metric(tmp_path):
                 "env_step": 0,
                 "pred_latent_start_frame": 0,
                 "pred_latent_end_frame": 5,
+                "pred_latent_includes_conditioning_frame": True,
                 "current_start_frame_after_infer": 5,
                 "cached_until_frame": 5,
                 "shared_global_wrist_window_mode": "history-current-first",
@@ -244,6 +284,9 @@ def test_video_quality_summary_names_condition_window_metric(tmp_path):
     assert payload["summary"]["pred_vs_future_best_alignment_mae_rgb_mean"] == 6.5
     assert payload["summary"]["pred_vs_future_best_alignment_improvement_rgb_mean"] == 2.0
     assert payload["summary"]["video_pred_rollout_mode_counts"] == {"noncausal": 1}
+    assert payload["summary"]["pred_latent_includes_conditioning_frame_counts"] == {
+        "True": 1
+    }
     assert payload["summary"]["shared_global_wrist_window_mode_counts"] == {
         "history-current-first": 1
     }
@@ -255,6 +298,7 @@ def test_video_quality_summary_names_condition_window_metric(tmp_path):
     write_text_report(payload, report)
     text = report.read_text(encoding="utf-8")
     assert "video_pred_rollout_mode_counts: {'noncausal': 1}" in text
+    assert "pred_latent_includes_conditioning_frame_counts" in text
     assert "shared_global_wrist_window_mode_counts" in text
     assert "video_pred_wrist_window_mode_counts" in text
     assert "rollout=noncausal/noncausal" in text
@@ -268,6 +312,7 @@ def test_video_quality_summary_names_condition_window_metric(tmp_path):
     assert "condition_window_mae=12.5" in text
     assert "conditioning_t0_mae=4.5" in text
     assert "conditioning_t0_obs_idx=0" in text
+    assert "includes_conditioning=True" in text
     assert "future_mae=8.5" in text
     assert "future_best_offset=1" in text
     assert "future_best_mae=6.5" in text

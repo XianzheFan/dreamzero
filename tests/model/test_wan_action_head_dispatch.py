@@ -11,8 +11,8 @@ diffusion model + scheduler + VAE-shaped inputs) in
 ``test_wan_action_head_multi_agent.py``.
 """
 
-import importlib.util
 import sys
+import types
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -334,6 +334,76 @@ def test_multi_agent_i2v_clean_condition_uses_encode_image_latent():
     assert clean_x.shape == latents.shape
     torch.testing.assert_close(clean_x, torch.full_like(latents, 7.0))
     assert inst._mai_clean_video_cond_source == "encode_image"
+
+
+def test_noncausal_video_pred_marks_anchored_conditioning_frame(monkeypatch):
+    Cls = _maybe_load_head()
+    inst = Cls.__new__(Cls)
+    inst._device = "cpu"
+    inst.seed = 123
+    inst.num_inference_steps = 1
+    inst.sigma_shift = 1.0
+    inst.tiled = False
+    inst.tile_size_height = 1
+    inst.tile_size_width = 1
+    inst.tile_stride_height = 1
+    inst.tile_stride_width = 1
+    inst.config = SimpleNamespace(target_video_height=None, target_video_width=None)
+    inst.scheduler = SimpleNamespace(num_train_timesteps=10)
+    inst.image_encoder = object()
+    inst.vae = object()
+
+    class _ZeroDenoiser:
+        model_type = "i2v"
+        frame_seqlen = 4
+
+        def __call__(self, noisy_video, **kwargs):
+            return torch.zeros_like(noisy_video), torch.zeros_like(kwargs["action"])
+
+    inst.model = _ZeroDenoiser()
+    inst.set_frozen_modules_to_eval_mode = types.MethodType(lambda self: None, inst)
+    inst.encode_prompt = types.MethodType(
+        lambda self, input_ids, attention_mask: torch.zeros(input_ids.shape[0], 2, 3),
+        inst,
+    )
+
+    def _fake_encode_video(self, video, tiled=False, tile_size=None, tile_stride=None):
+        return torch.zeros(video.shape[0], 4, 2, 2, 2)
+
+    def _fake_encode_image(self, image, num_frames, height, width):
+        return (
+            torch.zeros(image.shape[0], 1, 3),
+            torch.zeros(image.shape[0], 8, 2, 2, 2),
+            torch.full((image.shape[0], 4, 1, 2, 2), 7.0),
+        )
+
+    inst.encode_video = types.MethodType(_fake_encode_video, inst)
+    inst.encode_image = types.MethodType(_fake_encode_image, inst)
+    monkeypatch.setenv("MAI_NUM_INFERENCE_STEPS", "1")
+    monkeypatch.delenv("MAI_ANCHOR_I2V_FIRST_FRAME", raising=False)
+
+    action_input = BatchFeature(data={
+        "images": torch.zeros(1, 2, 3, 4, 4, 3),
+        "state": torch.zeros(1, 2, 1, 5),
+        "action": torch.zeros(1, 2, 2, 3),
+        "embodiment_id": torch.zeros(1, dtype=torch.long),
+        "text": torch.zeros(1, 2, dtype=torch.long),
+        "text_attention_mask": torch.ones(1, 2, dtype=torch.long),
+    })
+
+    out = inst._get_action_multi_agent(
+        BatchFeature(data={}),
+        action_input,
+        num_agents=2,
+    )
+
+    assert out["action_pred"].shape == (1, 2, 2, 3)
+    assert inst._last_video_pred_includes_conditioning_frame is True
+    assert inst._last_video_pred_start_frame == 0
+    torch.testing.assert_close(
+        inst._last_video_pred[:, :, :, :1],
+        torch.full((1, 2, 4, 1, 2, 2), 7.0),
+    )
 
 
 def test_write_denoised_context_cache_default_on(monkeypatch):

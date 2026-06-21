@@ -90,7 +90,9 @@ best offset is evidence of a pred-video/eval time-window mismatch rather than
 only poor visual modeling. The `cond_t0` column compares predicted frame 0 with
 the current observed wrist frame when the decoded video includes the conditioning
 frame; high `cond_t0` points to a conditioning/VAE/window issue before future
-dynamics quality is even evaluated.
+dynamics quality is even evaluated. Future MAE starts from the first actual
+future frame, so this conditioning frame is not mixed into the future-quality
+score.
 
 The H100 droidwidth eval template also sweeps `--joint-target-accel-limit`
 over `0` and `0.08` by default. This is eval-only second-order smoothing for

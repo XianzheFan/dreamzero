@@ -3202,7 +3202,9 @@ class WANPolicyHead(ActionHead):
         self._last_video_pred_rollout_mode = "noncausal"
         self._last_video_pred_start_frame = 0
         self._last_video_pred_end_frame = int(noisy_video.shape[3])
-        self._last_video_pred_includes_conditioning_frame = False
+        self._last_video_pred_includes_conditioning_frame = (
+            anchor_video_latent is not None
+        )
         self._mai_rolling_noise = self._use_multi_agent_rolling_noise()
         return BatchFeature(data={"action_pred": noisy_action})
 

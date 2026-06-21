@@ -319,14 +319,17 @@ def compare_pred_to_future_trace(
     if steps.size == 0 or frames.shape[0] != steps.size:
         return None
     step_to_index = {int(step): idx for idx, step in enumerate(steps.tolist())}
-    first_offset = 0 if includes_conditioning_frame else 1
     pred_frames = np.asarray(pred_frames, dtype=np.uint8)
+    pred_start_index = 1 if includes_conditioning_frame else 0
+    if pred_frames.shape[0] <= pred_start_index:
+        return None
 
     def compare_at_offset(alignment_offset: int) -> dict[str, Any] | None:
         future_frames = []
         matched_steps = []
-        for pred_idx in range(pred_frames.shape[0]):
-            target_step = int(env_step) + first_offset + alignment_offset + pred_idx
+        pred_slice = pred_frames[pred_start_index:]
+        for rel_idx in range(pred_slice.shape[0]):
+            target_step = int(env_step) + 1 + alignment_offset + rel_idx
             trace_idx = step_to_index.get(target_step)
             if trace_idx is None:
                 continue
@@ -335,7 +338,7 @@ def compare_pred_to_future_trace(
         if not future_frames:
             return None
         comparison = compare_videos(
-            pred_frames[: len(future_frames)],
+            pred_slice[: len(future_frames)],
             np.stack(future_frames),
         )
         comparison.update(
@@ -343,7 +346,9 @@ def compare_pred_to_future_trace(
                 "alignment_offset": int(alignment_offset),
                 "trace_path": str(trace.get("path", "")),
                 "view_key": view_key,
-                "first_offset": int(first_offset),
+                "first_offset": 1,
+                "pred_start_index": int(pred_start_index),
+                "skipped_conditioning_frame": bool(includes_conditioning_frame),
                 "matched_frame_count": int(len(future_frames)),
                 "first_matched_step": int(matched_steps[0]),
                 "last_matched_step": int(matched_steps[-1]),
@@ -721,6 +726,9 @@ def _aggregate(videos: list[dict[str, Any]]) -> dict[str, Any]:
         "last_video_pred_rollout_mode_counts": count_values(
             "last_video_pred_rollout_mode"
         ),
+        "pred_latent_includes_conditioning_frame_counts": count_values(
+            "pred_latent_includes_conditioning_frame"
+        ),
         "shared_global_wrist_window_mode_counts": count_values(
             "shared_global_wrist_window_mode"
         ),
@@ -811,6 +819,8 @@ def write_text_report(payload: dict[str, Any], path: Path) -> None:
         f"{summary.get('video_pred_rollout_mode_counts', {})}",
         "  last_video_pred_rollout_mode_counts: "
         f"{summary.get('last_video_pred_rollout_mode_counts', {})}",
+        "  pred_latent_includes_conditioning_frame_counts: "
+        f"{summary.get('pred_latent_includes_conditioning_frame_counts', {})}",
         "  shared_global_wrist_window_mode_counts: "
         f"{summary.get('shared_global_wrist_window_mode_counts', {})}",
         "  video_pred_wrist_window_mode_counts: "
@@ -869,6 +879,7 @@ def write_text_report(payload: dict[str, Any], path: Path) -> None:
             f"action_wrist_window={row.get('shared_global_wrist_window_mode')} "
             f"video_wrist_window={row.get('video_pred_wrist_window_mode')} "
             f"reset_cache={row.get('reset_causal_state_each_infer')} "
+            f"includes_conditioning={row.get('pred_latent_includes_conditioning_frame')} "
             f"latent_frames={row.get('pred_latent_start_frame')}:{row.get('pred_latent_end_frame')} "
             f"cache_after={row.get('current_start_frame_after_infer')}/{row.get('cached_until_frame')} "
             f"temporal_mean={metrics['temporal_absdiff']['mean']} "
