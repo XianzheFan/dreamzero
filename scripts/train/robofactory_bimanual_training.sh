@@ -196,7 +196,7 @@ fi
 
 EXTRA_TRAINING_ARGS=()
 if [ -n "$TRAIN_MAX_GRAD_NORM" ]; then
-    EXTRA_TRAINING_ARGS+=(training_args.max_grad_norm="$TRAIN_MAX_GRAD_NORM")
+    EXTRA_TRAINING_ARGS+=(++training_args.max_grad_norm="$TRAIN_MAX_GRAD_NORM")
 fi
 
 torchrun --nproc_per_node $NUM_GPUS --standalone groot/vla/experiment/experiment.py \

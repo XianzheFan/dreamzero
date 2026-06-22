@@ -107,7 +107,7 @@ def test_robofactory_training_script_exposes_gamma_window_ablation_knobs():
         "TRAIN_MAX_GRAD_NORM=${TRAIN_MAX_GRAD_NORM:-}",
         "train_num_frames=$TRAIN_NUM_FRAMES",
         "train_warmup_ratio=$TRAIN_WARMUP_RATIO",
-        'EXTRA_TRAINING_ARGS+=(training_args.max_grad_norm="$TRAIN_MAX_GRAD_NORM")',
+        'EXTRA_TRAINING_ARGS+=(++training_args.max_grad_norm="$TRAIN_MAX_GRAD_NORM")',
         "num_frames=$TRAIN_NUM_FRAMES",
         "action_horizon=$TRAIN_ACTION_HORIZON",
         "num_frame_per_block=$TRAIN_NUM_FRAME_PER_BLOCK",
