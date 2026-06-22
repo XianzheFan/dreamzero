@@ -58,6 +58,7 @@ workflow:
           if [ -n "${VIDEO_PRED_ROLLOUT_MODE:-}" ]; then
             VIDEO_PRED_ROLLOUT_MODES="${VIDEO_PRED_ROLLOUT_MODE}"
           fi
+          ROBOFACTORY_RENDER_PREFLIGHT_TIMEOUT_SECONDS="${ROBOFACTORY_RENDER_PREFLIGHT_TIMEOUT_SECONDS:-600}"
           VIDEO_PRED_WRIST_WINDOW_MODE="${VIDEO_PRED_WRIST_WINDOW_MODE:-action}"
           SHARED_GLOBAL_WRIST_WINDOW_MODE="${SHARED_GLOBAL_WRIST_WINDOW_MODE:-history-current-first}"
           export MAI_WRITE_DENOISED_CONTEXT_CACHE="${MAI_WRITE_DENOISED_CONTEXT_CACHE:-1}"
@@ -158,7 +159,9 @@ workflow:
               CKPT_S3_BASE="$CKPT_S3_BASE" \
               CKPT_AMLFS_BASE="$CKPT_AMLFS_BASE" \
               RUN_S3_ROOT="$RUN_S3_ROOT" \
-              VIDEO_PRED_ROLLOUT_MODE="$VIDEO_PRED_ROLLOUT_MODE" \
+              VIDEO_PRED_ROLLOUT_MODE="${VIDEO_PRED_ROLLOUT_MODE:-}" \
+              VIDEO_PRED_ROLLOUT_MODES="$VIDEO_PRED_ROLLOUT_MODES" \
+              ROBOFACTORY_RENDER_PREFLIGHT_TIMEOUT_SECONDS="$ROBOFACTORY_RENDER_PREFLIGHT_TIMEOUT_SECONDS" \
               VIDEO_PRED_WRIST_WINDOW_MODE="$VIDEO_PRED_WRIST_WINDOW_MODE" \
               SHARED_GLOBAL_WRIST_WINDOW_MODE="$SHARED_GLOBAL_WRIST_WINDOW_MODE" \
               REPLAN_EVERYS="$REPLAN_EVERYS" \
@@ -195,6 +198,8 @@ workflow:
               "CKPT_AMLFS_BASE",
               "RUN_S3_ROOT",
               "VIDEO_PRED_ROLLOUT_MODE",
+              "VIDEO_PRED_ROLLOUT_MODES",
+              "ROBOFACTORY_RENDER_PREFLIGHT_TIMEOUT_SECONDS",
               "VIDEO_PRED_WRIST_WINDOW_MODE",
               "SHARED_GLOBAL_WRIST_WINDOW_MODE",
               "REPLAN_EVERYS",
@@ -822,7 +827,7 @@ workflow:
           cd /workspace/code/dreamzero
           if [ "${ROBOFACTORY_RENDER_PREFLIGHT}" = "1" ]; then
             echo "Preflighting RoboFactory renderer before loading policy server"
-            timeout 180 env CUDA_VISIBLE_DEVICES="${CLIENT_CUDA_VISIBLE_DEVICES}" python - <<'PY'
+            timeout "$ROBOFACTORY_RENDER_PREFLIGHT_TIMEOUT_SECONDS" env CUDA_VISIBLE_DEVICES="${CLIENT_CUDA_VISIBLE_DEVICES}" python - <<'PY'
           import os
           import time
 
