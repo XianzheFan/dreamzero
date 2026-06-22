@@ -455,7 +455,8 @@ workflow:
               "GLOBAL_VIDEO_TIMESTEP_MODE" \
               "GLOBAL_VIDEO_ATTENTION_MODE" \
               "ATTENTION_BACKEND" \
-              "USE_SPARSE_HUB_ATTENTION"
+              "USE_SPARSE_HUB_ATTENTION" \
+              "TRAIN_MAX_GRAD_NORM"
             require_code_marker \
               groot/vla/model/dreamzero/action_head/wan_flow_matching_action_tf.py \
               "gripper_binary_action_loss_weight" \
