@@ -299,8 +299,13 @@ workflow:
           PY
           }
 
+          UPLOAD_ARTIFACTS_DONE=0
           upload_artifacts() {
             local status="${1:-$?}"
+            if [ "${UPLOAD_ARTIFACTS_DONE}" = "1" ]; then
+              exit "$status"
+            fi
+            UPLOAD_ARTIFACTS_DONE=1
             set +e
             mkdir -p /workspace/eval_outputs
             write_eval_manifest "$status" || true
@@ -322,7 +327,15 @@ workflow:
             cleanup
             upload_artifacts "$status"
           }
+          on_signal() {
+            status="${1:-143}"
+            echo "Received termination signal; uploading partial eval artifacts before exit status ${status}"
+            cleanup
+            upload_artifacts "$status"
+          }
           trap on_exit EXIT
+          trap 'on_signal 143' TERM
+          trap 'on_signal 130' INT
 
           export PYTHONUNBUFFERED=1
           export HYDRA_FULL_ERROR=1
@@ -1235,10 +1248,6 @@ workflow:
               2>&1 | tee /workspace/eval_outputs/scale_sweep_summary.txt || true
           fi
 
-          if [ "$overall_status" -ne 0 ]; then
-            exit "$overall_status"
-          fi
-
           SERVE_ROOT="/workspace/eval_outputs_http"
           ARCHIVE="${SERVE_ROOT}/gamma_droidwidth_teacher_${CKPT_SETTING}_slim_eval_h100_1seed_artifacts.tar"
           mkdir -p "$SERVE_ROOT"
@@ -1253,6 +1262,10 @@ workflow:
             python -m http.server 8765 --bind 0.0.0.0 --directory "$SERVE_ROOT"
           else
             echo "HTTP artifact serving disabled; uploaded artifacts and exiting to release H100 resources."
+          fi
+          if [ "$overall_status" -ne 0 ]; then
+            echo "One or more eval variants failed; artifacts were prepared and will be uploaded before exit status ${overall_status}."
+            exit "$overall_status"
           fi
         path: /tmp/run_closedloop_gamma_droidwidth_teacher_c2000_slim_eval_1seed_h100.sh
       image: nvcr.io/nvidian/groot-ci-base-eval:latest@sha256:de6e59614be213f06f95c8c1e8311f0b700c963aed6c39eeec1fb56cd40c6ee7

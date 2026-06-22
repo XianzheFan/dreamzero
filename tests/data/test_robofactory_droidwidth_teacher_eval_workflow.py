@@ -243,6 +243,17 @@ def test_droidwidth_teacher_h100_eval_targets_h100_pool_resources():
     assert '"target_accel_limit": cfg.get("joint_target_accel_limit")' in script
     assert "write_eval_manifest" in script
     assert "checkpoint_eval_manifest.json" in script
+    assert "UPLOAD_ARTIFACTS_DONE=0" in script
+    assert "Received termination signal; uploading partial eval artifacts" in script
+    assert "trap 'on_signal 143' TERM" in script
+    assert "trap 'on_signal 130' INT" in script
+    assert (
+        "One or more eval variants failed; artifacts were prepared and will be uploaded"
+        in script
+    )
+    assert script.index('ARCHIVE="${SERVE_ROOT}/gamma_droidwidth_teacher_') < script.index(
+        "One or more eval variants failed; artifacts were prepared"
+    )
     assert "DREAMZERO_GIT_COMMIT" in script
     assert "CKPT_RUN_NAME" in script
     assert "runtime_provenance.json" in script
