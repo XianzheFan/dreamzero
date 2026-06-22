@@ -214,7 +214,15 @@ def summarize_eval_root(root: Path) -> dict[str, Any]:
             "checkpoint_train_architecture", ""
         ),
         "video_pred_rollout_mode_counts": video.get("video_pred_rollout_mode_counts"),
-        "video_pred_wrist_window_mode_counts": video.get("video_pred_wrist_window_mode_counts"),
+        "video_pred_wrist_window_mode_counts": video.get(
+            "video_pred_wrist_window_mode_counts"
+        ),
+        "video_pred_input_source_counts": video.get(
+            "video_pred_input_source_counts"
+        ),
+        "video_pred_observed_wrist_window_mode_counts": video.get(
+            "video_pred_observed_wrist_window_mode_counts"
+        ),
         "best_setting_dir": best.get("setting_dir"),
         "best_video_pred_rollout_mode": best.get("video_pred_rollout_mode"),
         "best_replan_every": best.get("replan_every"),

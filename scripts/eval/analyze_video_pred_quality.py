@@ -217,6 +217,14 @@ def _current_observed_frame_index(frame_count: int, window_mode: str | None) -> 
     return frame_count - 1
 
 
+def _video_pred_observed_wrist_window_mode(entry: dict[str, Any]) -> str | None:
+    return (
+        entry.get("video_pred_observed_wrist_window_mode")
+        or entry.get("video_pred_wrist_window_mode")
+        or entry.get("shared_global_wrist_window_mode")
+    )
+
+
 def compare_conditioning_frame_to_current_observation(
     pred_frames: np.ndarray,
     observed_frames: np.ndarray,
@@ -572,10 +580,9 @@ def analyze_video_tree(
                             includes_conditioning_frame=entry.get(
                                 "pred_latent_includes_conditioning_frame"
                             ),
-                            observed_window_mode=entry.get(
-                                "video_pred_wrist_window_mode"
-                            )
-                            or entry.get("shared_global_wrist_window_mode"),
+                            observed_window_mode=(
+                                _video_pred_observed_wrist_window_mode(entry)
+                            ),
                         )
                     )
                 future_trace = _select_future_trace(
@@ -646,6 +653,13 @@ def analyze_video_tree(
                     "video_pred_wrist_window_mode": entry.get(
                         "video_pred_wrist_window_mode"
                     ),
+                    "video_pred_input_source": entry.get(
+                        "video_pred_input_source"
+                    ),
+                    "video_pred_observed_wrist_window_mode": entry.get(
+                        "video_pred_observed_wrist_window_mode"
+                    )
+                    or _video_pred_observed_wrist_window_mode(entry),
                     "mai_rolling_noise": entry.get("mai_rolling_noise"),
                     "noise_draw_counts": entry.get("noise_draw_counts"),
                     "observed_path": (
@@ -790,6 +804,12 @@ def _aggregate(
         "video_pred_wrist_window_mode_counts": count_values(
             "video_pred_wrist_window_mode"
         ),
+        "video_pred_input_source_counts": count_values(
+            "video_pred_input_source"
+        ),
+        "video_pred_observed_wrist_window_mode_counts": count_values(
+            "video_pred_observed_wrist_window_mode"
+        ),
         "reset_causal_state_each_infer_counts": count_values(
             "reset_causal_state_each_infer"
         ),
@@ -896,6 +916,10 @@ def write_text_report(payload: dict[str, Any], path: Path) -> None:
         f"{summary.get('shared_global_wrist_window_mode_counts', {})}",
         "  video_pred_wrist_window_mode_counts: "
         f"{summary.get('video_pred_wrist_window_mode_counts', {})}",
+        "  video_pred_input_source_counts: "
+        f"{summary.get('video_pred_input_source_counts', {})}",
+        "  video_pred_observed_wrist_window_mode_counts: "
+        f"{summary.get('video_pred_observed_wrist_window_mode_counts', {})}",
         "  reset_causal_state_each_infer_counts: "
         f"{summary.get('reset_causal_state_each_infer_counts', {})}",
         "aggregate:",
@@ -977,6 +1001,8 @@ def write_text_report(payload: dict[str, Any], path: Path) -> None:
             f"{row.get('last_video_pred_rollout_mode')} "
             f"action_wrist_window={row.get('shared_global_wrist_window_mode')} "
             f"video_wrist_window={row.get('video_pred_wrist_window_mode')} "
+            f"video_input_source={row.get('video_pred_input_source')} "
+            f"video_observed_wrist_window={row.get('video_pred_observed_wrist_window_mode')} "
             f"reset_cache={row.get('reset_causal_state_each_infer')} "
             f"includes_conditioning={row.get('pred_latent_includes_conditioning_frame')} "
             f"future_stride={row.get('video_pred_future_step_stride')} "

@@ -132,6 +132,10 @@ def _make_eval(
             "summary": {
                 "video_pred_rollout_mode_counts": {"action": 8},
                 "video_pred_wrist_window_mode_counts": {"action": 8},
+                "video_pred_input_source_counts": {"action": 8},
+                "video_pred_observed_wrist_window_mode_counts": {
+                    "history-current-first": 8
+                },
                 "pred_vs_future_mae_rgb_mean": 20.0,
                 "pred_conditioning_frame_mae_rgb_mean": 4.0,
                 "pred_conditioning_frame_available_count": 8,
@@ -213,6 +217,10 @@ def test_summarize_roots_orders_by_checkpoint_and_selects_best_setting(tmp_path)
     assert rows[0]["pred_vs_future_mae_rgb_first_to_last_delta_mean"] == 8.0
     assert rows[0]["pred_conditioning_frame_mae_rgb_mean"] == 4.0
     assert rows[0]["pred_conditioning_frame_available_count"] == 8
+    assert rows[0]["video_pred_input_source_counts"] == {"action": 8}
+    assert rows[0]["video_pred_observed_wrist_window_mode_counts"] == {
+        "history-current-first": 8
+    }
     assert rows[0]["pred_vs_future_best_alignment_offset_counts"] == {"1": 2}
     assert rows[0]["pred_vs_future_best_alignment_mae_rgb_mean"] == 10.0
     assert rows[0]["pred_vs_future_best_alignment_improvement_rgb_mean"] == 4.0

@@ -1349,6 +1349,10 @@ class BimanualPolicy:
         )
         sess["last_video_pred_observed_debug"] = sess["last_observed_video_debug"]
         sess["last_video_pred_wrist_window_mode"] = self.shared_global_wrist_window_mode
+        sess["last_video_pred_input_source"] = "action"
+        sess["last_video_pred_observed_wrist_window_mode"] = (
+            self.shared_global_wrist_window_mode
+        )
 
         prompt = self._effective_prompt(sess.get("prompt", ""))
 
@@ -1402,8 +1406,16 @@ class BimanualPolicy:
                             "agent1": np.asarray(pred_agent1_video, dtype=np.uint8),
                         }
                         sess["last_video_pred_wrist_window_mode"] = pred_window_mode
+                        sess["last_video_pred_input_source"] = "override"
+                        sess["last_video_pred_observed_wrist_window_mode"] = (
+                            pred_window_mode
+                        )
                     else:
                         sess["last_video_pred_wrist_window_mode"] = "action"
+                        sess["last_video_pred_input_source"] = "action"
+                        sess["last_video_pred_observed_wrist_window_mode"] = (
+                            self.shared_global_wrist_window_mode
+                        )
                     try:
                         self._run_noncausal_video_pred_rollout(video_pred_inputs_gpu)
                     finally:
@@ -1595,6 +1607,17 @@ class BimanualPolicy:
                 "video_pred_wrist_window_mode": sess.get(
                     "last_video_pred_wrist_window_mode",
                     self.video_pred_wrist_window_mode,
+                ),
+                "video_pred_input_source": sess.get(
+                    "last_video_pred_input_source",
+                    "action",
+                ),
+                "video_pred_observed_wrist_window_mode": sess.get(
+                    "last_video_pred_observed_wrist_window_mode",
+                    sess.get(
+                        "last_video_pred_wrist_window_mode",
+                        self.video_pred_wrist_window_mode,
+                    ),
                 ),
                 "reset_causal_state_each_infer": self.reset_causal_state_each_infer,
                 "video_pred_rollout_mode": self.video_pred_rollout_mode,

@@ -245,7 +245,13 @@ def test_dump_video_pred_manifest_records_future_stride(tmp_path):
     ]
 
     policy._dump_video_pred(
-        {"infer_idx": 3, "last_env_step": 42},
+        {
+            "infer_idx": 3,
+            "last_env_step": 42,
+            "last_video_pred_wrist_window_mode": "action",
+            "last_video_pred_input_source": "action",
+            "last_video_pred_observed_wrist_window_mode": "history-current-first",
+        },
         "session-abcdef123456",
     )
 
@@ -263,6 +269,9 @@ def test_dump_video_pred_manifest_records_future_stride(tmp_path):
     assert entry["num_action_per_block"] == 8
     assert entry["num_frame_per_block"] == 2
     assert entry["video_pred_future_step_stride"] == 2.0
+    assert entry["video_pred_wrist_window_mode"] == "action"
+    assert entry["video_pred_input_source"] == "action"
+    assert entry["video_pred_observed_wrist_window_mode"] == "history-current-first"
 
 
 def test_reset_causal_state_each_infer_resets_action_head():

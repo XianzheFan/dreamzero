@@ -3,6 +3,7 @@ import numpy as np
 from scripts.eval.analyze_video_pred_quality import (
     _aggregate,
     _risk_flags,
+    _video_pred_observed_wrist_window_mode,
     compare_conditioning_frame_to_current_observation,
     compare_pred_to_future_trace,
     compare_videos,
@@ -85,6 +86,16 @@ def test_compare_conditioning_frame_uses_current_observed_frame():
     assert current_first["observed_frame_index"] == 0
     assert current_first["mae_rgb"] == 20.0
     assert unavailable is None
+
+
+def test_manifest_observed_wrist_window_prefers_explicit_actual_mode():
+    entry = {
+        "shared_global_wrist_window_mode": "history-current-first",
+        "video_pred_wrist_window_mode": "action",
+        "video_pred_observed_wrist_window_mode": "history-chronological",
+    }
+
+    assert _video_pred_observed_wrist_window_mode(entry) == "history-chronological"
 
 
 def test_compare_pred_to_future_trace_aligns_after_conditioning_frame():
@@ -285,6 +296,8 @@ def test_video_quality_summary_names_condition_window_metric(tmp_path):
                 "cached_until_frame": 5,
                 "shared_global_wrist_window_mode": "history-current-first",
                 "video_pred_wrist_window_mode": "history-chronological",
+                "video_pred_input_source": "override",
+                "video_pred_observed_wrist_window_mode": "history-chronological",
                 "action_horizon": 8,
                 "predicted_future_frame_count": 4,
                 "video_pred_future_step_stride": 2.0,
@@ -364,6 +377,12 @@ def test_video_quality_summary_names_condition_window_metric(tmp_path):
     assert payload["summary"]["video_pred_wrist_window_mode_counts"] == {
         "history-chronological": 1
     }
+    assert payload["summary"]["video_pred_input_source_counts"] == {
+        "override": 1
+    }
+    assert payload["summary"]["video_pred_observed_wrist_window_mode_counts"] == {
+        "history-chronological": 1
+    }
 
     report = tmp_path / "report.txt"
     write_text_report(payload, report)
@@ -372,9 +391,13 @@ def test_video_quality_summary_names_condition_window_metric(tmp_path):
     assert "pred_latent_includes_conditioning_frame_counts" in text
     assert "shared_global_wrist_window_mode_counts" in text
     assert "video_pred_wrist_window_mode_counts" in text
+    assert "video_pred_input_source_counts" in text
+    assert "video_pred_observed_wrist_window_mode_counts" in text
     assert "rollout=noncausal/noncausal" in text
     assert "action_wrist_window=history-current-first" in text
     assert "video_wrist_window=history-chronological" in text
+    assert "video_input_source=override" in text
+    assert "video_observed_wrist_window=history-chronological" in text
     assert "pred_vs_condition_window_mae_rgb_mean" in text
     assert "pred_conditioning_frame_mae_rgb_mean" in text
     assert "pred_vs_future_mae_rgb_mean" in text
