@@ -175,6 +175,9 @@ def test_droidwidth_teacher_h100_eval_targets_h100_pool_resources():
     assert defaults["joint_target_accel_limits"] == "0 0.08"
     assert defaults["replan_boundary_blend_steps"] == "4"
     assert defaults["temporal_action_ensemble_decays"] == "0.6"
+    assert defaults["smoothing_profile_names"] == "raw smooth"
+    assert defaults["smoothing_profile_blend_steps"] == "0 4"
+    assert defaults["smoothing_profile_ensemble_decays"] == "0 0.6"
     assert task["image"].startswith("nvcr.io/nvidian/groot-ci-base-eval:")
     assert 'RUN_NAME="{{run_name}}"' in script
     assert 'CKPT_RUN_NAME="{{ckpt_run_name}}"' in script
@@ -219,8 +222,13 @@ def test_droidwidth_teacher_h100_eval_targets_h100_pool_resources():
         'TEMPORAL_ACTION_ENSEMBLE_DECAYS="${TEMPORAL_ACTION_ENSEMBLE_DECAYS:-{{temporal_action_ensemble_decays}}}"'
         in script
     )
-    assert 'TEMPORAL_ACTION_ENSEMBLE_DECAYS="${TEMPORAL_ACTION_ENSEMBLE_DECAY}"' in script
-    assert "for TEMPORAL_ACTION_ENSEMBLE_DECAY in ${TEMPORAL_ACTION_ENSEMBLE_DECAYS}; do" in script
+    assert 'SMOOTHING_PROFILE_NAMES="${SMOOTHING_PROFILE_NAMES:-{{smoothing_profile_names}}}"' in script
+    assert 'SMOOTHING_PROFILE_BLEND_STEPS="${SMOOTHING_PROFILE_BLEND_STEPS:-{{smoothing_profile_blend_steps}}}"' in script
+    assert 'SMOOTHING_PROFILE_ENSEMBLE_DECAYS="${SMOOTHING_PROFILE_ENSEMBLE_DECAYS:-{{smoothing_profile_ensemble_decays}}}"' in script
+    assert 'SMOOTHING_PROFILE_NAMES="custom"' in script
+    assert 'read -r -a SMOOTHING_PROFILE_NAME_ARRAY <<< "$SMOOTHING_PROFILE_NAMES"' in script
+    assert 'for SMOOTHING_PROFILE_INDEX in "${!SMOOTHING_PROFILE_NAME_ARRAY[@]}"; do' in script
+    assert '--smoothing-profile "$SMOOTHING_PROFILE"' in script
     assert 'JOINT_DELTA_SCALES="${JOINT_DELTA_SCALES:-{{joint_delta_scales}}}"' in script
     assert 'JOINT_TARGET_ACCEL_LIMITS="${JOINT_TARGET_ACCEL_LIMITS:-{{joint_target_accel_limits}}}"' in script
     assert "for JOINT_TARGET_ACCEL_LIMIT in ${JOINT_TARGET_ACCEL_LIMITS}; do" in script
@@ -229,6 +237,7 @@ def test_droidwidth_teacher_h100_eval_targets_h100_pool_resources():
         in script
     )
     assert '--joint-target-accel-limit "$JOINT_TARGET_ACCEL_LIMIT"' in script
+    assert '"smoothing_profile": cfg.get("smoothing_profile")' in script
     assert '"target_accel_limit": cfg.get("joint_target_accel_limit")' in script
     assert "write_eval_manifest" in script
     assert "checkpoint_eval_manifest.json" in script
@@ -240,6 +249,7 @@ def test_droidwidth_teacher_h100_eval_targets_h100_pool_resources():
     assert "checkpoint_action_dim" in script
     assert "checkpoint_global_video_attention_mode" in script
     assert "TEMPORAL_ACTION_ENSEMBLE_DECAYS" in script
+    assert "SMOOTHING_PROFILE_NAMES" in script
     assert 'write_eval_manifest "$status" || true' in script
     assert "Preflighting RoboFactory renderer before loading policy server" in script
     assert "ROBOFACTORY_RENDER_PREFLIGHT_OK" in script

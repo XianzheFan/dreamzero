@@ -77,8 +77,22 @@ workflow:
           JOINT_TARGET_ACCEL_LIMITS="${JOINT_TARGET_ACCEL_LIMITS:-{{joint_target_accel_limits}}}"
           REPLAN_BOUNDARY_BLEND_STEPS="${REPLAN_BOUNDARY_BLEND_STEPS:-{{replan_boundary_blend_steps}}}"
           TEMPORAL_ACTION_ENSEMBLE_DECAYS="${TEMPORAL_ACTION_ENSEMBLE_DECAYS:-{{temporal_action_ensemble_decays}}}"
-          if [ -n "${TEMPORAL_ACTION_ENSEMBLE_DECAY:-}" ]; then
-            TEMPORAL_ACTION_ENSEMBLE_DECAYS="${TEMPORAL_ACTION_ENSEMBLE_DECAY}"
+          SMOOTHING_PROFILE_NAMES="${SMOOTHING_PROFILE_NAMES:-{{smoothing_profile_names}}}"
+          SMOOTHING_PROFILE_BLEND_STEPS="${SMOOTHING_PROFILE_BLEND_STEPS:-{{smoothing_profile_blend_steps}}}"
+          SMOOTHING_PROFILE_ENSEMBLE_DECAYS="${SMOOTHING_PROFILE_ENSEMBLE_DECAYS:-{{smoothing_profile_ensemble_decays}}}"
+          if [ -n "${TEMPORAL_ACTION_ENSEMBLE_DECAY:-}" ] || [ -n "${REPLAN_BOUNDARY_BLEND_STEP:-}" ]; then
+            CUSTOM_BLEND_STEP="${REPLAN_BOUNDARY_BLEND_STEP:-${REPLAN_BOUNDARY_BLEND_STEPS%% *}}"
+            CUSTOM_ENSEMBLE_DECAY="${TEMPORAL_ACTION_ENSEMBLE_DECAY:-${TEMPORAL_ACTION_ENSEMBLE_DECAYS%% *}}"
+            SMOOTHING_PROFILE_NAMES="custom"
+            SMOOTHING_PROFILE_BLEND_STEPS="$CUSTOM_BLEND_STEP"
+            SMOOTHING_PROFILE_ENSEMBLE_DECAYS="$CUSTOM_ENSEMBLE_DECAY"
+          fi
+          read -r -a SMOOTHING_PROFILE_NAME_ARRAY <<< "$SMOOTHING_PROFILE_NAMES"
+          read -r -a SMOOTHING_PROFILE_BLEND_ARRAY <<< "$SMOOTHING_PROFILE_BLEND_STEPS"
+          read -r -a SMOOTHING_PROFILE_ENSEMBLE_ARRAY <<< "$SMOOTHING_PROFILE_ENSEMBLE_DECAYS"
+          if [ "${#SMOOTHING_PROFILE_NAME_ARRAY[@]}" -ne "${#SMOOTHING_PROFILE_BLEND_ARRAY[@]}" ] || [ "${#SMOOTHING_PROFILE_NAME_ARRAY[@]}" -ne "${#SMOOTHING_PROFILE_ENSEMBLE_ARRAY[@]}" ]; then
+            echo "FATAL: smoothing profile arrays must have equal lengths: names=${SMOOTHING_PROFILE_NAMES}, blend=${SMOOTHING_PROFILE_BLEND_STEPS}, ensemble=${SMOOTHING_PROFILE_ENSEMBLE_DECAYS}" >&2
+            exit 27
           fi
           DUMP_RGB_TRACE="${DUMP_RGB_TRACE:-1}"
           DUMP_RGB_TRACE_FLAG=""
@@ -187,6 +201,9 @@ workflow:
               "JOINT_DELTA_SCALE_REFERENCE",
               "JOINT_TARGET_SLEW_RATES",
               "REPLAN_BOUNDARY_BLEND_STEPS",
+              "SMOOTHING_PROFILE_NAMES",
+              "SMOOTHING_PROFILE_BLEND_STEPS",
+              "SMOOTHING_PROFILE_ENSEMBLE_DECAYS",
               "DUMP_RGB_TRACE",
               "SUCCESS_MODE",
               "NUM_EPISODES",
@@ -1048,19 +1065,22 @@ workflow:
             for JOINT_DELTA_SCALE in ${JOINT_DELTA_SCALES}; do
             for JOINT_TARGET_SLEW_RATE in ${JOINT_TARGET_SLEW_RATES}; do
             for JOINT_TARGET_ACCEL_LIMIT in ${JOINT_TARGET_ACCEL_LIMITS}; do
-            for REPLAN_BOUNDARY_BLEND_STEP in ${REPLAN_BOUNDARY_BLEND_STEPS}; do
-            for TEMPORAL_ACTION_ENSEMBLE_DECAY in ${TEMPORAL_ACTION_ENSEMBLE_DECAYS}; do
+            for SMOOTHING_PROFILE_INDEX in "${!SMOOTHING_PROFILE_NAME_ARRAY[@]}"; do
+            SMOOTHING_PROFILE="${SMOOTHING_PROFILE_NAME_ARRAY[$SMOOTHING_PROFILE_INDEX]}"
+            REPLAN_BOUNDARY_BLEND_STEP="${SMOOTHING_PROFILE_BLEND_ARRAY[$SMOOTHING_PROFILE_INDEX]}"
+            TEMPORAL_ACTION_ENSEMBLE_DECAY="${SMOOTHING_PROFILE_ENSEMBLE_ARRAY[$SMOOTHING_PROFILE_INDEX]}"
             scale_tag="$(echo "${JOINT_DELTA_SCALE}" | tr . p)"
             slew_tag="$(echo "${JOINT_TARGET_SLEW_RATE}" | tr . p)"
             accel_tag="$(echo "${JOINT_TARGET_ACCEL_LIMIT}" | tr . p)"
             clip_tag="$(echo "${JOINT_DELTA_OUTPUT_CLIP}" | tr . p)"
+            profile_tag="$(echo "${SMOOTHING_PROFILE}" | tr .:/ p__)"
             blend_tag="$(echo "${REPLAN_BOUNDARY_BLEND_STEP}" | tr . p)"
             ensemble_tag="$(echo "${TEMPORAL_ACTION_ENSEMBLE_DECAY}" | tr . p)"
             rollout_tag="$(echo "${VIDEO_PRED_ROLLOUT_MODE}" | tr . p)"
             close_tag="lclose${LEFT_GRIPPER_CLOSE_AFTER_STEP}_rclose${RIGHT_GRIPPER_CLOSE_AFTER_STEP}"
-            out_dir="/workspace/eval_outputs/${INFERENCE_MODE}_${RESET_TAG}_vpred_${rollout_tag}_rp${REPLAN_EVERY}_${GRIPPER_OVERRIDE}_${close_tag}_jscale_${scale_tag}_clip_${clip_tag}_slew_${slew_tag}_accel_${accel_tag}_blend_${blend_tag}_ensemble_${ensemble_tag}_${SUCCESS_MODE}"
+            out_dir="/workspace/eval_outputs/${INFERENCE_MODE}_${RESET_TAG}_vpred_${rollout_tag}_rp${REPLAN_EVERY}_${GRIPPER_OVERRIDE}_${close_tag}_jscale_${scale_tag}_clip_${clip_tag}_slew_${slew_tag}_accel_${accel_tag}_smooth_${profile_tag}_blend_${blend_tag}_ensemble_${ensemble_tag}_${SUCCESS_MODE}"
             mkdir -p "${out_dir}/action_dump" "${out_dir}/videos"
-            echo "Running direct closed-loop RoboFactory eval inference_mode=${INFERENCE_MODE}, reset_mode=${RESET_TAG}, video_pred_rollout_mode=${VIDEO_PRED_ROLLOUT_MODE}, replan=${REPLAN_EVERY}, scale=${JOINT_DELTA_SCALE}, server_cuda=${SERVER_CUDA_VISIBLE_DEVICES}, client_cuda=${CLIENT_CUDA_VISIBLE_DEVICES}, render_backend=${ROBOFACTORY_RENDER_BACKEND}, enable_shadow=${ROBOFACTORY_ENABLE_SHADOW}, shader_pack=${ROBOFACTORY_SHADER_PACK}, output_clip=${JOINT_DELTA_OUTPUT_CLIP}, ref=${JOINT_DELTA_SCALE_REFERENCE}, slew_rate=${JOINT_TARGET_SLEW_RATE}, accel_limit=${JOINT_TARGET_ACCEL_LIMIT}, boundary_blend_steps=${REPLAN_BOUNDARY_BLEND_STEP}, temporal_ensemble_decay=${TEMPORAL_ACTION_ENSEMBLE_DECAY}, gripper override ${GRIPPER_OVERRIDE}, left close step ${LEFT_GRIPPER_CLOSE_AFTER_STEP}, right close step ${RIGHT_GRIPPER_CLOSE_AFTER_STEP}, success_mode ${SUCCESS_MODE}, binarize threshold ${GRIPPER_BINARIZE_THRESHOLD}"
+            echo "Running direct closed-loop RoboFactory eval inference_mode=${INFERENCE_MODE}, reset_mode=${RESET_TAG}, video_pred_rollout_mode=${VIDEO_PRED_ROLLOUT_MODE}, replan=${REPLAN_EVERY}, scale=${JOINT_DELTA_SCALE}, server_cuda=${SERVER_CUDA_VISIBLE_DEVICES}, client_cuda=${CLIENT_CUDA_VISIBLE_DEVICES}, render_backend=${ROBOFACTORY_RENDER_BACKEND}, enable_shadow=${ROBOFACTORY_ENABLE_SHADOW}, shader_pack=${ROBOFACTORY_SHADER_PACK}, output_clip=${JOINT_DELTA_OUTPUT_CLIP}, ref=${JOINT_DELTA_SCALE_REFERENCE}, slew_rate=${JOINT_TARGET_SLEW_RATE}, accel_limit=${JOINT_TARGET_ACCEL_LIMIT}, smoothing_profile=${SMOOTHING_PROFILE}, boundary_blend_steps=${REPLAN_BOUNDARY_BLEND_STEP}, temporal_ensemble_decay=${TEMPORAL_ACTION_ENSEMBLE_DECAY}, gripper override ${GRIPPER_OVERRIDE}, left close step ${LEFT_GRIPPER_CLOSE_AFTER_STEP}, right close step ${RIGHT_GRIPPER_CLOSE_AFTER_STEP}, success_mode ${SUCCESS_MODE}, binarize threshold ${GRIPPER_BINARIZE_THRESHOLD}"
             set +e
             timeout 10800 env CUDA_VISIBLE_DEVICES="${CLIENT_CUDA_VISIBLE_DEVICES}" python /workspace/code/dreamzero/scripts/eval/eval_robofactory_ws.py \
               --host 127.0.0.1 \
@@ -1085,6 +1105,7 @@ workflow:
               --joint-delta-scale-reference "$JOINT_DELTA_SCALE_REFERENCE" \
               --joint-target-slew-rate "$JOINT_TARGET_SLEW_RATE" \
               --joint-target-accel-limit "$JOINT_TARGET_ACCEL_LIMIT" \
+              --smoothing-profile "$SMOOTHING_PROFILE" \
               --replan-boundary-blend-steps "$REPLAN_BOUNDARY_BLEND_STEP" \
               --temporal-action-ensemble-decay "$TEMPORAL_ACTION_ENSEMBLE_DECAY" \
               --success-mode "$SUCCESS_MODE" \
@@ -1092,14 +1113,14 @@ workflow:
               --dump-actions "${out_dir}/action_dump" \
               ${DUMP_RGB_TRACE_FLAG} \
               --video-dir "${out_dir}/videos" \
-              2>&1 | tee "/tmp/client_${INFERENCE_MODE}_${RESET_TAG}_${VIDEO_PRED_ROLLOUT_MODE}_rp${REPLAN_EVERY}_${GRIPPER_OVERRIDE}_close${close_tag}_jscale_${scale_tag}_clip_${clip_tag}_slew_${slew_tag}_accel_${accel_tag}_blend_${blend_tag}_ensemble_${ensemble_tag}_${SUCCESS_MODE}.log"
+              2>&1 | tee "/tmp/client_${INFERENCE_MODE}_${RESET_TAG}_${VIDEO_PRED_ROLLOUT_MODE}_rp${REPLAN_EVERY}_${GRIPPER_OVERRIDE}_close${close_tag}_jscale_${scale_tag}_clip_${clip_tag}_slew_${slew_tag}_accel_${accel_tag}_smooth_${profile_tag}_blend_${blend_tag}_ensemble_${ensemble_tag}_${SUCCESS_MODE}.log"
             client_status=${PIPESTATUS[0]}
             set -e
 
-            echo "Client video_pred_rollout_mode=${VIDEO_PRED_ROLLOUT_MODE} replan=${REPLAN_EVERY} scale=${JOINT_DELTA_SCALE} slew_rate=${JOINT_TARGET_SLEW_RATE} accel_limit=${JOINT_TARGET_ACCEL_LIMIT} blend_steps=${REPLAN_BOUNDARY_BLEND_STEP} ensemble_decay=${TEMPORAL_ACTION_ENSEMBLE_DECAY} exit status: ${client_status}"
-            echo "Last 220 client log lines for video_pred_rollout_mode=${VIDEO_PRED_ROLLOUT_MODE} replan=${REPLAN_EVERY} scale=${JOINT_DELTA_SCALE} slew_rate=${JOINT_TARGET_SLEW_RATE} accel_limit=${JOINT_TARGET_ACCEL_LIMIT} blend_steps=${REPLAN_BOUNDARY_BLEND_STEP} ensemble_decay=${TEMPORAL_ACTION_ENSEMBLE_DECAY}:"
-            tail -n 220 "/tmp/client_${INFERENCE_MODE}_${RESET_TAG}_${VIDEO_PRED_ROLLOUT_MODE}_rp${REPLAN_EVERY}_${GRIPPER_OVERRIDE}_close${close_tag}_jscale_${scale_tag}_clip_${clip_tag}_slew_${slew_tag}_accel_${accel_tag}_blend_${blend_tag}_ensemble_${ensemble_tag}_${SUCCESS_MODE}.log" || true
-            cp -f "/tmp/client_${INFERENCE_MODE}_${RESET_TAG}_${VIDEO_PRED_ROLLOUT_MODE}_rp${REPLAN_EVERY}_${GRIPPER_OVERRIDE}_close${close_tag}_jscale_${scale_tag}_clip_${clip_tag}_slew_${slew_tag}_accel_${accel_tag}_blend_${blend_tag}_ensemble_${ensemble_tag}_${SUCCESS_MODE}.log" "${out_dir}/client.log"
+            echo "Client video_pred_rollout_mode=${VIDEO_PRED_ROLLOUT_MODE} replan=${REPLAN_EVERY} scale=${JOINT_DELTA_SCALE} slew_rate=${JOINT_TARGET_SLEW_RATE} accel_limit=${JOINT_TARGET_ACCEL_LIMIT} smoothing_profile=${SMOOTHING_PROFILE} blend_steps=${REPLAN_BOUNDARY_BLEND_STEP} ensemble_decay=${TEMPORAL_ACTION_ENSEMBLE_DECAY} exit status: ${client_status}"
+            echo "Last 220 client log lines for video_pred_rollout_mode=${VIDEO_PRED_ROLLOUT_MODE} replan=${REPLAN_EVERY} scale=${JOINT_DELTA_SCALE} slew_rate=${JOINT_TARGET_SLEW_RATE} accel_limit=${JOINT_TARGET_ACCEL_LIMIT} smoothing_profile=${SMOOTHING_PROFILE} blend_steps=${REPLAN_BOUNDARY_BLEND_STEP} ensemble_decay=${TEMPORAL_ACTION_ENSEMBLE_DECAY}:"
+            tail -n 220 "/tmp/client_${INFERENCE_MODE}_${RESET_TAG}_${VIDEO_PRED_ROLLOUT_MODE}_rp${REPLAN_EVERY}_${GRIPPER_OVERRIDE}_close${close_tag}_jscale_${scale_tag}_clip_${clip_tag}_slew_${slew_tag}_accel_${accel_tag}_smooth_${profile_tag}_blend_${blend_tag}_ensemble_${ensemble_tag}_${SUCCESS_MODE}.log" || true
+            cp -f "/tmp/client_${INFERENCE_MODE}_${RESET_TAG}_${VIDEO_PRED_ROLLOUT_MODE}_rp${REPLAN_EVERY}_${GRIPPER_OVERRIDE}_close${close_tag}_jscale_${scale_tag}_clip_${clip_tag}_slew_${slew_tag}_accel_${accel_tag}_smooth_${profile_tag}_blend_${blend_tag}_ensemble_${ensemble_tag}_${SUCCESS_MODE}.log" "${out_dir}/client.log"
             if [ "$client_status" -ne 0 ]; then
               overall_status="$client_status"
             fi
@@ -1113,7 +1134,6 @@ workflow:
             else
               echo "No action dump episode files found for replan=${REPLAN_EVERY} scale=${JOINT_DELTA_SCALE} slew_rate=${JOINT_TARGET_SLEW_RATE} accel_limit=${JOINT_TARGET_ACCEL_LIMIT} blend_steps=${REPLAN_BOUNDARY_BLEND_STEP}"
             fi
-            done
             done
             done
             done
@@ -1176,6 +1196,7 @@ workflow:
                       "output_clip": cfg.get("joint_delta_output_clip"),
                       "target_slew_rate": cfg.get("joint_target_slew_rate"),
                       "target_accel_limit": cfg.get("joint_target_accel_limit"),
+                      "smoothing_profile": cfg.get("smoothing_profile"),
                       "replan_boundary_blend_steps": cfg.get("replan_boundary_blend_steps"),
                       "temporal_action_ensemble_decay": cfg.get("temporal_action_ensemble_decay"),
                       "effective_scale": cfg.get("effective_joint_delta_scale"),
@@ -1273,3 +1294,6 @@ default-values:
   joint_target_accel_limits: "0 0.08"
   replan_boundary_blend_steps: "4"
   temporal_action_ensemble_decays: "0.6"
+  smoothing_profile_names: "raw smooth"
+  smoothing_profile_blend_steps: "0 4"
+  smoothing_profile_ensemble_decays: "0 0.6"

@@ -144,14 +144,17 @@ The H100 droidwidth eval template saves both action-path and noncausal
 diagnostic predicted videos by default (`VIDEO_PRED_ROLLOUT_MODES="action
 noncausal"`). The standing 2k checkpoint curve intentionally does not amplify
 actions by default: `replan=24/12`, `scale=1.0`, `accel_limit=0/0.08`,
-`blend=4`, and `temporal_ensemble=0.6` for 8 total settings across the two
+and paired smoothing profiles `raw=(blend=0, temporal_ensemble=0)` and
+`smooth=(blend=4, temporal_ensemble=0.6)` for 16 total settings across the two
 video rollout modes. This keeps the routine curve focused on model quality and
-low-jitter execution rather than hiding errors behind action scaling. Override
+low-jitter execution while preserving a no-smoothing baseline that separates
+model jitter from eval-only smoothing effects. Override
 `VIDEO_PRED_ROLLOUT_MODE=action` or `VIDEO_PRED_ROLLOUT_MODES=action` when you
 only want the control-path video diagnostic and need to cut runtime. Override
 the sweep defaults with `--set-string replan_everys=...
 joint_delta_scales=... joint_target_accel_limits=...
-replan_boundary_blend_steps=... temporal_action_ensemble_decays=...` for
+smoothing_profile_names=... smoothing_profile_blend_steps=...
+smoothing_profile_ensemble_decays=...` for
 deeper one-off diagnostics; use `joint_delta_scales=2.0` only as an explicit
 action-amplification diagnostic, not as the standing eval default. The
 video-quality analyzer keeps these rollout modes separated in

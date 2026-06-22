@@ -1097,6 +1097,11 @@ def main():
         ),
     )
     ap.add_argument(
+        "--smoothing-profile",
+        default="",
+        help="Optional label recorded in eval_config for paired smoothing sweeps.",
+    )
+    ap.add_argument(
         "--left-joint-target-scale",
         "--left-joint-delta-scale",
         dest="left_joint_target_scale",
@@ -1328,6 +1333,7 @@ def main():
                         "joint_delta_output_clip": args.joint_target_scale_clip,
                         "joint_target_slew_rate": args.joint_target_slew_rate,
                         "joint_target_accel_limit": args.joint_target_accel_limit,
+                        "smoothing_profile": args.smoothing_profile or None,
                         "replan_boundary_blend_steps": args.replan_boundary_blend_steps,
                         "temporal_action_ensemble_decay": args.temporal_action_ensemble_decay,
                         "effective_joint_delta_scale": args.joint_target_scale,

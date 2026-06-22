@@ -66,6 +66,7 @@ def _make_eval(
                     "scale": 1.0,
                     "target_slew_rate": 0.35,
                     "target_accel_limit": 0.08,
+                    "smoothing_profile": "smooth",
                     "replan_boundary_blend_steps": 4,
                     "temporal_action_ensemble_decay": 0.6,
                     "success_count": success_count,
@@ -106,6 +107,7 @@ def _make_eval(
                     "replan_every": 12,
                     "scale": 1.0,
                     "replan_boundary_blend_steps": 4,
+                    "smoothing_profile": "smooth",
                     "temporal_action_ensemble_decay": 0.6,
                     "success_count": success_count + 10,
                     "success_rate": float(success_count + 10),
@@ -197,6 +199,7 @@ def test_summarize_roots_orders_by_checkpoint_and_selects_best_setting(tmp_path)
     assert rows[0]["pred_chunk_joint_delta_sign_flip_frac"] == 0.35
     assert rows[0]["max_model_replan_boundary_joint_jump"] == 0.07
     assert rows[0]["best_accel_limit"] == 0.08
+    assert rows[0]["best_smoothing_profile"] == "smooth"
     assert rows[0]["mean_accel_limiter_correction_joint"] == 0.012
     assert rows[0]["pred_vs_future_mae_rgb_first_to_last_delta_mean"] == 8.0
     assert rows[0]["pred_conditioning_frame_mae_rgb_mean"] == 4.0

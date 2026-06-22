@@ -25,6 +25,7 @@ def test_summarize_sweep_extracts_trace_metrics(tmp_path):
                 "joint_target_scale_clip": 0.25,
                 "joint_target_slew_rate": 0.35,
                 "joint_target_accel_limit": 0.08,
+                "smoothing_profile": "smooth",
                 "replan_boundary_blend_steps": 4,
                 "temporal_action_ensemble_decay": 0.6,
             },
@@ -134,6 +135,7 @@ def test_summarize_sweep_extracts_trace_metrics(tmp_path):
                 "joint_delta_scale_clip": 0.25,
                 "joint_target_slew_rate": 0.35,
                 "joint_target_accel_limit": 0.0,
+                "smoothing_profile": "raw",
                 "replan_boundary_blend_steps": 0,
                 "temporal_action_ensemble_decay": 0.0,
             },
@@ -241,6 +243,7 @@ def test_summarize_sweep_extracts_trace_metrics(tmp_path):
     assert rows[0]["action_representation_counts"] == {"absolute_qpos": 1}
     assert rows[0]["target_slew_rate"] == 0.35
     assert rows[0]["target_accel_limit"] == 0.0
+    assert rows[0]["smoothing_profile"] == "raw"
     assert rows[0]["replan_boundary_blend_steps"] == 0.0
     assert rows[0]["temporal_action_ensemble_decay"] == 0.0
     assert rows[0]["first_cmd_delta_mean"] == 0.02
@@ -284,6 +287,7 @@ def test_summarize_sweep_extracts_trace_metrics(tmp_path):
     assert rows[1]["scale_clip"] == 0.25
     assert rows[1]["target_slew_rate"] == 0.35
     assert rows[1]["target_accel_limit"] == 0.08
+    assert rows[1]["smoothing_profile"] == "smooth"
     assert rows[1]["replan_boundary_blend_steps"] == 4.0
     assert rows[1]["temporal_action_ensemble_decay"] == 0.6
     assert rows[1]["target_min_mean_right"] == 0.08

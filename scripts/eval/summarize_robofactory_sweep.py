@@ -109,6 +109,7 @@ def _setting_from_results(results: dict[str, Any], setting_dir: str) -> dict[str
         "scale_clip": _float_or_none(clip),
         "target_slew_rate": _float_or_none(cfg.get("joint_target_slew_rate")),
         "target_accel_limit": _float_or_none(cfg.get("joint_target_accel_limit")),
+        "smoothing_profile": cfg.get("smoothing_profile"),
         "replan_boundary_blend_steps": _float_or_none(boundary_blend_steps),
         "temporal_action_ensemble_decay": _float_or_none(temporal_ensemble_decay),
     }
@@ -488,6 +489,7 @@ def print_table(rows: list[dict[str, Any]]) -> None:
         ("scale", "scale"),
         ("clip", "scale_clip"),
         ("slew", "target_slew_rate"),
+        ("profile", "smoothing_profile"),
         ("blend", "replan_boundary_blend_steps"),
         ("ens", "temporal_action_ensemble_decay"),
         ("succ", "success_count"),
