@@ -463,6 +463,8 @@ workflow:
               "_compute_gripper_binary_action_loss" \
               "_compute_action_delta_loss" \
               "_compute_action_jerk_loss" \
+              "valid_action_dims" \
+              "action_agent0_loss" \
               "multi_agent_shuffle_agents" \
               "global_video_dropout_prob"
             require_code_marker \

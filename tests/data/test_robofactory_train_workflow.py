@@ -357,6 +357,8 @@ def test_liftbarrier_gamma_staged_workflow_runs_dense_teacher_then_sparse_studen
         "stop_checkpoint_slimmer()",
         "slim_checkpoint_once()",
         "copy_minimal_checkpoint()",
+        "valid_action_dims",
+        "action_agent0_loss",
         'export CHECKPOINT_SLIM_INTERVAL_SECONDS="${CHECKPOINT_SLIM_INTERVAL_SECONDS:-30}"',
         'echo "Started checkpoint slimmer pid=${CHECKPOINT_SLIMMER_PID}, interval=${CHECKPOINT_SLIM_INTERVAL_SECONDS}, output_dir=${OUTPUT_DIR}"',
         'echo "Started periodic checkpoint uploader pid=${PERIODIC_UPLOADER_PID}, interval=${CHECKPOINT_UPLOAD_INTERVAL_SECONDS}, run=${RUN_NAME}, output_dir=${OUTPUT_DIR}"',
@@ -542,6 +544,8 @@ def test_liftbarrier_gamma_droidwidth_teacher_workflow_preserves_droid_base_head
         "Droidwidth Gamma teacher training complete.",
         'osmo data upload "${BASE_LOG_S3_URI}/" /tmp/train_liftbarrier_gamma_droidwidth_teacher.log',
         "bash scripts/train/robofactory_bimanual_training.sh",
+        "valid_action_dims",
+        "action_agent0_loss",
         REQUIRE_CURRENT_CODE_CACHE_MESSAGE,
         "Pass --set-string code_s3_uri=... expected_code_commit=...",
     ):
