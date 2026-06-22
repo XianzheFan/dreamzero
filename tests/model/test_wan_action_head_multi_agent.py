@@ -673,6 +673,66 @@ def test_compute_multi_agent_losses_aggregates_video_and_action_terms():
     assert out["action_jerk_loss"].item() == 0.0
 
 
+def test_compute_multi_agent_action_loss_normalizes_by_valid_action_dims():
+    Cls = _load_head_cls()
+    head = Cls.__new__(Cls)
+    torch.nn.Module.__init__(head)
+    from groot.vla.model.dreamzero.modules.flow_match_scheduler import (
+        FlowMatchScheduler,
+    )
+
+    head._device = "cpu"
+    head.scheduler = FlowMatchScheduler(shift=5, sigma_min=0.0, extra_one_step=True)
+    head.scheduler.set_timesteps(1000, training=True)
+    head.config = types.SimpleNamespace(
+        dynamics_loss_weight=0.0,
+        action_loss_weight=1.0,
+        gripper_action_loss_weight=1.0,
+        gripper_close_action_loss_weight=1.0,
+        gripper_close_threshold=0.0,
+        action_prefix_loss_weight=1.0,
+        action_prefix_loss_len=0,
+        joint_prefix_loss_weight=1.0,
+        joint_prefix_loss_len=0,
+        first_close_joint_loss_weight=1.0,
+        first_close_joint_loss_window_before=0,
+        first_close_joint_loss_window_after=0,
+        pre_close_joint_loss_weight=1.0,
+        pre_close_joint_loss_window_before=0,
+        open_phase_joint_loss_weight=1.0,
+        gripper_clean_action_loss_weight=0.0,
+        gripper_binary_action_loss_weight=0.0,
+        action_delta_loss_weight=0.0,
+        action_jerk_loss_weight=0.0,
+        gripper_action_dims=[1],
+    )
+
+    timestep = head.scheduler.timesteps[torch.tensor([[1, 2, 3]])]
+    timestep_action = head.scheduler.timesteps[torch.tensor([[1, 2, 3, 4]])]
+    action_mask = torch.tensor(
+        [[[[1, 1, 0, 0]] * 4, [[1, 1, 0, 0]] * 4]],
+        dtype=torch.float32,
+    )
+    out = head._compute_multi_agent_losses(
+        video_noise_pred=torch.zeros(1, 2, 1, 3, 1, 1),
+        action_noise_pred=torch.zeros(1, 2, 4, 4),
+        training_target=torch.zeros(1, 2, 1, 3, 1, 1),
+        training_target_action=torch.ones(1, 2, 4, 4),
+        timestep=timestep,
+        timestep_action=timestep_action,
+        timestep_action_bpt=timestep_action.unsqueeze(1).expand(1, 2, 4),
+        noisy_actions=torch.zeros(1, 2, 4, 4),
+        actions=torch.zeros(1, 2, 4, 4),
+        action_mask=action_mask,
+        has_real_action=torch.ones(1, dtype=torch.bool),
+    )
+
+    expected_action = head.scheduler.training_weight(timestep_action.flatten()).mean()
+    torch.testing.assert_close(out["action_loss"], expected_action)
+    torch.testing.assert_close(out["action_agent0_loss"], expected_action)
+    torch.testing.assert_close(out["action_agent1_loss"], expected_action)
+
+
 def test_self_forcing_train_gate_prefers_env_override(monkeypatch):
     Cls = _load_head_cls()
     head = Cls.__new__(Cls)

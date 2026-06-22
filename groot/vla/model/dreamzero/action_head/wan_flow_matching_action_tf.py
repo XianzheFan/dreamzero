@@ -1344,8 +1344,12 @@ class WANPolicyHead(ActionHead):
                 .unflatten(0, (B, T_a))
                 .to(self._device)
             )
-            weight_action = action_loss_per_sample.mean(dim=3) * train_w_action.unsqueeze(1)
+            valid_action_dims = action_mask.float().sum(dim=3).clamp_min(1.0)
+            weight_action = (
+                action_loss_per_sample.sum(dim=3) / valid_action_dims
+            ) * train_w_action.unsqueeze(1)
             weighted_action_loss = weight_action.mean()
+            per_agent_action_loss = weight_action.mean(dim=(0, 2))
             gripper_clean_action_loss = torch.tensor(0.0, device=self._device)
             gripper_binary_action_loss = torch.tensor(0.0, device=self._device)
             action_delta_loss = torch.tensor(0.0, device=self._device)
@@ -1422,7 +1426,7 @@ class WANPolicyHead(ActionHead):
             action_jerk_loss = torch.tensor(0.0, device=self._device)
             loss = weighted_dynamics_loss
 
-        return {
+        loss_dict = {
             "loss": loss,
             "dynamics_loss": weighted_dynamics_loss,
             "unscaled_dynamics_loss": unscaled_dynamics_loss,
@@ -1432,6 +1436,10 @@ class WANPolicyHead(ActionHead):
             "action_delta_loss": action_delta_loss,
             "action_jerk_loss": action_jerk_loss,
         }
+        if actions.numel() > 0:
+            for agent_idx, agent_loss in enumerate(per_agent_action_loss):
+                loss_dict[f"action_agent{agent_idx}_loss"] = agent_loss
+        return loss_dict
 
     def _reconstruct_clean_sample_from_flow_target(
         self,
@@ -3441,7 +3449,10 @@ class WANPolicyHead(ActionHead):
                     action_loss_per_sample,
                     actions=actions,
                 )
-                weight_action = action_loss_per_sample.mean(dim=2) * self.scheduler.training_weight(
+                valid_action_dims = action_mask.float().sum(dim=2).clamp_min(1.0)
+                weight_action = (
+                    action_loss_per_sample.sum(dim=2) / valid_action_dims
+                ) * self.scheduler.training_weight(
                     timestep_action.flatten(0, 1),
                 ).unflatten(0, (noise_action.shape[0], noise_action.shape[1])).to(self._device)
                 weighted_action_loss = weight_action.mean()

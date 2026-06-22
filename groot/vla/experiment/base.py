@@ -181,7 +181,7 @@ class LossLoggerCallback(TrainerCallback):
         if not state.is_world_process_zero or logs is None:
             return
         entry = {"step": state.global_step}
-        for key in (
+        static_log_keys = {
             "loss",
             "dynamics_loss_avg",
             "unscaled_dynamics_loss_avg",
@@ -191,7 +191,10 @@ class LossLoggerCallback(TrainerCallback):
             "action_delta_loss_avg",
             "action_jerk_loss_avg",
             "learning_rate",
-        ):
+        }
+        for key in sorted(logs):
+            if key not in static_log_keys and not key.endswith("_loss_avg"):
+                continue
             if key in logs:
                 entry[key] = logs[key]
         if len(entry) > 1:  # more than just "step"
