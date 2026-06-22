@@ -188,6 +188,20 @@ python scripts/eval/summarize_robofactory_checkpoint_grid.py \
   --json-out checkpoint_grid.json
 ```
 
+Then quantify whether the curve is actually moving in the right direction:
+
+```bash
+python scripts/eval/analyze_robofactory_checkpoint_trend.py \
+  checkpoint_grid.json \
+  --json-out checkpoint_trend.json
+```
+
+The trend analyzer reports first/last values and a slope per 2k checkpoint for
+success, action jitter, raw action saturation, and predicted-video quality
+metrics. It intentionally marks metrics with fewer than three checkpoints as
+`insufficient`, so an early `checkpoint-2000`/`checkpoint-4000` pair is treated
+as a sanity signal rather than a reliable training trend.
+
 The summary table compares the best physical setting per checkpoint, including
 success, reach/grasp margins, action saturation/clamping, boundary jumps, and
 predicted-video future MAE/drift. The video-quality report also scans a small
