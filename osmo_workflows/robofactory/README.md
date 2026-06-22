@@ -22,10 +22,9 @@ osmo workflow submit osmo_workflows/robofactory/train_liftbarrier_gamma_droidwid
 ## Staged Gamma Curriculum
 
 The staged LiftBarrier workflow follows the Gamma-World teacher/student split
-more closely than the standalone teacher workflow: stage1 uses dense attention
-with `GLOBAL_VIDEO_ATTENTION_MODE=bidirectional`, while both sparse student
-stages use `GLOBAL_VIDEO_ATTENTION_MODE=read_only` so global video remains
-causal-safe context during policy training.
+in curriculum shape, but keeps the shared global observation causal-safe across
+all stages by default: stage1, stage2 warmup, and stage2 self-forcing use
+`GLOBAL_VIDEO_ATTENTION_MODE=read_only` unless explicitly overridden.
 
 This is a sparse read-only/global-context student, not a literal Gamma-World
 block-causal sparse-hub student. DreamZero keeps denoised chunks bidirectional
@@ -33,22 +32,25 @@ inside the training path because the extra block-causal sparse-hub time mask
 previously produced strong periodic artifacts in predicted video; model tests
 cover that invariant.
 
-The standalone droidwidth teacher workflow also defaults
-`GLOBAL_VIDEO_ATTENTION_MODE=bidirectional` so new 32D teacher runs match the
-dense-teacher side of this curriculum rather than the sparse read-only student
-side.
-It also keeps `GLOBAL_VIDEO_DROPOUT_PROB=0.0` by default, matching the
-teacher-style objective where the available shared global observation should
-remain clean context for video planning.
+The standalone droidwidth teacher workflow defaults to the same causal-safe
+shared-global context:
+`GLOBAL_VIDEO_ATTENTION_MODE=read_only`,
+`GLOBAL_VIDEO_TIMESTEP_MODE=clean`, and
+`GLOBAL_VIDEO_DROPOUT_PROB=0.1`. This matches the current Gamma branch's
+global-latent-as-clean-context design while still starting from the released
+DreamZero-DROID backbone. To run a dense bidirectional/no-dropout ablation,
+override `GLOBAL_VIDEO_ATTENTION_MODE=bidirectional` and
+`GLOBAL_VIDEO_DROPOUT_PROB=0.0` explicitly at submission time.
 
-The standalone droidwidth teacher default is a 50k bidirectional-teacher run:
+The standalone droidwidth teacher default is a 50k read-only shared-global run:
 `run_name=dz-rf-sg-gamma-dwteacher-actionlossfix2-lb500-50k-xz-20260622`, with
 the actual training stage saved under the `-teacher` suffix. The H100 slim eval
 templates and 2k checkpoint grid point at that stage run, so the default train
 workflow must produce checkpoints through `checkpoint-50000`. This standing
 curve intentionally follows the action-loss normalization fix for padded 32D
 DROID-width heads; do not point routine 2k evals back at the earlier
-`bidir-nodrop` run, which was started before that fix.
+`bidir-nodrop` run, which was started before the current shared-global defaults
+and action-loss workflow cleanup.
 
 Gamma-World's released bidirectional teacher trains on a much longer video
 window than the current DreamZero RoboFactory default. The current droidwidth
