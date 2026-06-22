@@ -210,6 +210,8 @@ def test_droidwidth_teacher_h100_eval_targets_h100_pool_resources():
     assert "EVAL_WINDOW_VALIDATION_OK" in script
     assert "eval_action_horizon mismatch" in script
     assert 'ROBOFACTORY_RENDER_BACKEND="${ROBOFACTORY_RENDER_BACKEND:-sapien_cuda:0}"' in script
+    assert 'SERVER_CUDA_VISIBLE_DEVICES="1"' in script
+    assert 'CLIENT_CUDA_VISIBLE_DEVICES="0"' in script
     assert 'ROBOFACTORY_ENABLE_SHADOW="${ROBOFACTORY_ENABLE_SHADOW:-0}"' in script
     assert 'ROBOFACTORY_SHADER_PACK="${ROBOFACTORY_SHADER_PACK:-default}"' in script
     assert 'ROBOFACTORY_RENDER_PREFLIGHT="${ROBOFACTORY_RENDER_PREFLIGHT:-1}"' in script
@@ -275,9 +277,10 @@ def test_droidwidth_teacher_h100_eval_targets_h100_pool_resources():
 
     resources = workflow["workflow"]["resources"]["default"]
     assert resources["platform"] == "dgx-h100"
-    assert resources["gpu"] == 8
-    assert resources["cpu"] == 84
-    assert resources["memory"] == "1681Gi"
+    assert resources["gpu"] == 2
+    assert resources["cpu"] == 32
+    assert resources["memory"] == "512Gi"
+    assert resources["storage"] == "384Gi"
 
 
 def test_droidwidth_teacher_h100_eval_embedded_script_is_valid_bash():

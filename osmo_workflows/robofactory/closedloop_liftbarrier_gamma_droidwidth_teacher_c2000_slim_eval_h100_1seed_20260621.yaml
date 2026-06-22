@@ -104,7 +104,7 @@ workflow:
             DUMP_RGB_TRACE_FLAG="--dump-rgb-trace"
           fi
           SERVE_HTTP_ARTIFACTS="${SERVE_HTTP_ARTIFACTS:-0}"
-          SERVER_CUDA_VISIBLE_DEVICES="4"
+          SERVER_CUDA_VISIBLE_DEVICES="1"
           CLIENT_CUDA_VISIBLE_DEVICES="0"
           export ROBOFACTORY_RENDER_BACKEND="${ROBOFACTORY_RENDER_BACKEND:-sapien_cuda:0}"
           export ROBOFACTORY_ENABLE_SHADOW="${ROBOFACTORY_ENABLE_SHADOW:-0}"
@@ -1274,9 +1274,9 @@ workflow:
   name: "{{workflow_name}}"
   resources:
     default:
-      cpu: 84
-      gpu: 8
-      memory: 1681Gi
+      cpu: 32
+      gpu: 2
+      memory: 512Gi
       nodesExcluded:
       - aks-gpu-61109112-vmss00000v
       - aks-gpu-61109112-vmss000012
@@ -1293,7 +1293,7 @@ workflow:
       - aks-gpu-92777625-vmss00002g
       - aks-gpu-92777625-vmss00007h
       platform: dgx-h100
-      storage: 620Gi
+      storage: 384Gi
   timeout:
     exec_timeout: 10h
     queue_timeout: 2h
