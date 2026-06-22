@@ -227,6 +227,8 @@ def test_droidwidth_teacher_h100_eval_targets_h100_pool_resources():
     assert 'SMOOTHING_PROFILE_ENSEMBLE_DECAYS="${SMOOTHING_PROFILE_ENSEMBLE_DECAYS:-{{smoothing_profile_ensemble_decays}}}"' in script
     assert 'SMOOTHING_PROFILE_NAMES="custom"' in script
     assert 'read -r -a SMOOTHING_PROFILE_NAME_ARRAY <<< "$SMOOTHING_PROFILE_NAMES"' in script
+    assert "{#" not in script
+    assert 'SMOOTHING_PROFILE_NAME_COUNT="$(wc -w <<< "$SMOOTHING_PROFILE_NAMES" | tr -d \' \')"' in script
     assert 'for SMOOTHING_PROFILE_INDEX in "${!SMOOTHING_PROFILE_NAME_ARRAY[@]}"; do' in script
     assert '--smoothing-profile "$SMOOTHING_PROFILE"' in script
     assert 'JOINT_DELTA_SCALES="${JOINT_DELTA_SCALES:-{{joint_delta_scales}}}"' in script
