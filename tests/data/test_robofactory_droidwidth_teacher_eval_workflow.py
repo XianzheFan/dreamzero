@@ -149,23 +149,23 @@ def test_droidwidth_teacher_h100_eval_targets_h100_pool_resources():
     defaults = workflow["default-values"]
     assert workflow["workflow"]["name"] == "{{workflow_name}}"
     assert defaults["workflow_name"] == (
-        "dz-rf-sg-gamma-dwteacher-bidir-nodrop-50k-c2000-slim-eval-h100-1seed1000-xz-20260622"
+        "dz-rf-gamma-dw-af2-lb500-50k-c2000-eval-h100-s1000-xz-20260622"
     )
     assert defaults["run_name"] == (
-        "dz-rf-sg-gamma-dwteacher-bidir-nodrop-50k-c2000-slim-eval-h100-1seed1000-xz-20260622"
+        "dz-rf-gamma-dw-af2-lb500-50k-c2000-eval-h100-s1000-xz-20260622"
     )
     assert defaults["ckpt_run_name"] == (
-        "dz-rf-sg-gamma-dwteacher-bidir-nodrop-lb500-50k-xz-20260622-teacher"
+        "dz-rf-sg-gamma-dwteacher-actionlossfix2-lb500-50k-xz-20260622-teacher"
     )
     assert defaults["ckpt_s3_base"] == (
         "s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/"
-        "dz-rf-sg-gamma-dwteacher-bidir-nodrop-lb500-50k-xz-20260622-teacher/checkpoints/"
-        "dz-rf-sg-gamma-dwteacher-bidir-nodrop-lb500-50k-xz-20260622-teacher"
+        "dz-rf-sg-gamma-dwteacher-actionlossfix2-lb500-50k-xz-20260622-teacher/checkpoints/"
+        "dz-rf-sg-gamma-dwteacher-actionlossfix2-lb500-50k-xz-20260622-teacher"
     )
     assert defaults["ckpt_setting"] == "checkpoint-2000"
     assert (
         defaults["local_eval_ckpt_root"]
-        == "gamma_droidwidth_teacher_bidir_nodrop_50k_c2000_slim_eval_h100_1seed1000"
+        == "gamma_droidwidth_teacher_actionlossfix2_lb500_50k_c2000_slim_eval_h100_1seed1000"
     )
     assert defaults["eval_num_frames"] == "33"
     assert defaults["eval_action_horizon"] == "24"

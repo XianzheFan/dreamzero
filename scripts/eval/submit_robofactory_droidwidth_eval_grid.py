@@ -5,6 +5,10 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import errno
+import os
+import pty
+import select
 import shlex
 import subprocess
 import sys
@@ -19,15 +23,17 @@ DEFAULT_WORKFLOW = (
 )
 DEFAULT_POOL = "groot-h100-01"
 DEFAULT_NAME_TEMPLATE = (
-    "dz-rf-sg-gamma-dwteacher-bidir-nodrop-50k-c{step}-slim-eval-h100-1seed1000-xz-{tag}"
+    "dz-rf-gamma-dw-af2-lb500-50k-c{step}-eval-h100-s1000-xz-{tag}"
 )
 DEFAULT_LOCAL_ROOT_TEMPLATE = (
-    "gamma_droidwidth_teacher_bidir_nodrop_50k_c{step}_slim_eval_h100_1seed1000"
+    "gamma_droidwidth_teacher_actionlossfix2_lb500_50k_c{step}_slim_eval_h100_1seed1000"
 )
-DEFAULT_CKPT_RUN_NAME = "dz-rf-sg-gamma-dwteacher-bidir-nodrop-lb500-50k-xz-20260622-teacher"
+DEFAULT_CKPT_RUN_NAME = "dz-rf-sg-gamma-dwteacher-actionlossfix2-lb500-50k-xz-20260622-teacher"
 DEFAULT_CKPT_S3_RUNS_PREFIX = "s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs"
 DEFAULT_CKPT_AMLFS_RUNS_PREFIX = "/mnt/amlfs-01/home/xianzhef/osmo_cache/dreamzero/checkpoints"
 DEFAULT_DREAMZERO_GIT_REF = "gamma"
+DEFAULT_READY_TRAIN_TASK = "train"
+DEFAULT_READY_TRAIN_OUTPUT_DIR = "/workspace/outputs/robofactory_liftbarrier_gamma_droidwidth_teacher/teacher"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MODEL_MARKERS = ("model.safetensors", "model.safetensors.index.json")
 
@@ -43,6 +49,57 @@ class ExistingWorkflowCheck(NamedTuple):
     name: str
     exists: bool
     reason: str
+
+
+def run_command_with_pty(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
+    """Run a command behind a PTY for CLIs that require terminal sizing."""
+    master_fd, slave_fd = pty.openpty()
+    chunks: list[bytes] = []
+    process: subprocess.Popen[bytes] | None = None
+    try:
+        process = subprocess.Popen(
+            list(command),
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            close_fds=True,
+        )
+        os.close(slave_fd)
+        slave_fd = -1
+        while True:
+            if process.poll() is not None:
+                break
+            readable, _, _ = select.select([master_fd], [], [], 0.2)
+            if master_fd not in readable:
+                continue
+            try:
+                data = os.read(master_fd, 8192)
+            except OSError as exc:
+                if exc.errno == errno.EIO:
+                    break
+                raise
+            if not data:
+                break
+            chunks.append(data)
+        while True:
+            try:
+                data = os.read(master_fd, 8192)
+            except OSError as exc:
+                if exc.errno == errno.EIO:
+                    break
+                raise
+            if not data:
+                break
+            chunks.append(data)
+        returncode = process.wait()
+        stdout = b"".join(chunks).decode(errors="replace")
+        return subprocess.CompletedProcess(list(command), returncode, stdout=stdout, stderr="")
+    finally:
+        if process is not None and process.poll() is None:
+            process.terminate()
+        if slave_fd >= 0:
+            os.close(slave_fd)
+        os.close(master_fd)
 
 
 def current_git_head(repo_root: Path = REPO_ROOT) -> str:
@@ -130,11 +187,14 @@ def check_checkpoint_ready(*, osmo_binary: str, ckpt_s3_base_value: str, step: i
     )
     listing = "\n".join(part for part in (result.stdout, result.stderr) if part)
     if result.returncode != 0:
+        reason = " ".join(line.strip() for line in listing.splitlines() if line.strip())
+        if len(reason) > 240:
+            reason = reason[:237] + "..."
         return ReadyCheck(
             step=step,
             uri=uri,
             ready=False,
-            reason=f"osmo data list failed with status {result.returncode}",
+            reason=f"osmo data list failed with status {result.returncode}: {reason}",
         )
     if listing_has_ready_checkpoint(listing):
         return ReadyCheck(step=step, uri=uri, ready=True, reason="ready")
@@ -143,6 +203,59 @@ def check_checkpoint_ready(*, osmo_binary: str, ckpt_s3_base_value: str, step: i
         uri=uri,
         ready=False,
         reason="missing model/trainer_state/experiment_cfg ready markers",
+    )
+
+
+def check_checkpoint_ready_from_train_workflow(
+    *,
+    osmo_binary: str,
+    workflow_name: str,
+    task_name: str,
+    output_dir: str,
+    step: int,
+) -> ReadyCheck:
+    ckpt_dir = f"{output_dir.rstrip('/')}/checkpoint-{step}"
+    script = f"""
+set -euo pipefail
+ckpt_dir={shlex.quote(ckpt_dir)}
+if [ ! -d "$ckpt_dir" ]; then
+  echo "missing checkpoint directory: $ckpt_dir"
+  exit 3
+fi
+has_model=0
+if [ -f "$ckpt_dir/model.safetensors" ] || [ -f "$ckpt_dir/model.safetensors.index.json" ]; then
+  has_model=1
+fi
+if [ "$has_model" -eq 1 ] && [ -f "$ckpt_dir/trainer_state.json" ] && [ -f "$ckpt_dir/experiment_cfg/conf.yaml" ]; then
+  echo "ready: $ckpt_dir"
+  exit 0
+fi
+echo "incomplete checkpoint: $ckpt_dir"
+find "$ckpt_dir" -maxdepth 2 -type f | sed "s#^$ckpt_dir/##" | sort | head -80
+exit 4
+""".strip()
+    result = run_command_with_pty(
+        [
+            osmo_binary,
+            "workflow",
+            "exec",
+            workflow_name,
+            task_name,
+            "--entry",
+            f"/bin/bash -lc {shlex.quote(script)}",
+        ]
+    )
+    output = "\n".join(part for part in (result.stdout, result.stderr) if part)
+    reason = " ".join(line.strip() for line in output.splitlines() if line.strip())
+    if len(reason) > 240:
+        reason = reason[:237] + "..."
+    if result.returncode == 0:
+        return ReadyCheck(step=step, uri=ckpt_dir, ready=True, reason="ready")
+    return ReadyCheck(
+        step=step,
+        uri=ckpt_dir,
+        ready=False,
+        reason=reason or f"osmo workflow exec failed with status {result.returncode}",
     )
 
 
@@ -305,6 +418,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="Only emit/submit checkpoints whose S3 directory already contains complete checkpoint markers.",
     )
     parser.add_argument(
+        "--ready-check-source",
+        default="s3",
+        choices=("s3", "train-workflow"),
+        help=(
+            "Where --only-ready checks checkpoint completeness. Use train-workflow for an active "
+            "training run when local S3 credentials are unavailable."
+        ),
+    )
+    parser.add_argument(
+        "--ready-train-workflow",
+        help="Training workflow name used when --ready-check-source=train-workflow.",
+    )
+    parser.add_argument(
+        "--ready-train-task",
+        default=DEFAULT_READY_TRAIN_TASK,
+        help="Training task name used when --ready-check-source=train-workflow.",
+    )
+    parser.add_argument(
+        "--ready-train-output-dir",
+        default=DEFAULT_READY_TRAIN_OUTPUT_DIR,
+        help="Checkpoint output directory inside the active training task.",
+    )
+    parser.add_argument(
         "--fail-if-none-ready",
         action="store_true",
         help="With --only-ready, return exit code 2 when no requested checkpoint is ready.",
@@ -348,13 +484,24 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "Use --allow-off-grid-steps only for one-off diagnostics."
             )
     if args.only_ready:
+        if args.ready_check_source == "train-workflow" and not args.ready_train_workflow:
+            parser.error("--ready-train-workflow is required with --ready-check-source=train-workflow")
         ready_steps: list[int] = []
         for step in steps:
-            check = check_checkpoint_ready(
-                osmo_binary=args.osmo_binary,
-                ckpt_s3_base_value=ckpt_s3_base_value,
-                step=step,
-            )
+            if args.ready_check_source == "train-workflow":
+                check = check_checkpoint_ready_from_train_workflow(
+                    osmo_binary=args.osmo_binary,
+                    workflow_name=args.ready_train_workflow,
+                    task_name=args.ready_train_task,
+                    output_dir=args.ready_train_output_dir,
+                    step=step,
+                )
+            else:
+                check = check_checkpoint_ready(
+                    osmo_binary=args.osmo_binary,
+                    ckpt_s3_base_value=ckpt_s3_base_value,
+                    step=step,
+                )
             if check.ready:
                 print(f"READY checkpoint-{step}: {check.uri}", file=sys.stderr, flush=True)
                 ready_steps.append(step)

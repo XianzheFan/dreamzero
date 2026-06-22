@@ -42,10 +42,13 @@ teacher-style objective where the available shared global observation should
 remain clean context for video planning.
 
 The standalone droidwidth teacher default is a 50k bidirectional-teacher run:
-`run_name=dz-rf-sg-gamma-dwteacher-bidir-nodrop-lb500-50k-xz-20260622`, with the
-actual training stage saved under the `-teacher` suffix. The H100 slim eval
+`run_name=dz-rf-sg-gamma-dwteacher-actionlossfix2-lb500-50k-xz-20260622`, with
+the actual training stage saved under the `-teacher` suffix. The H100 slim eval
 templates and 2k checkpoint grid point at that stage run, so the default train
-workflow must produce checkpoints through `checkpoint-50000`.
+workflow must produce checkpoints through `checkpoint-50000`. This standing
+curve intentionally follows the action-loss normalization fix for padded 32D
+DROID-width heads; do not point routine 2k evals back at the earlier
+`bidir-nodrop` run, which was started before that fix.
 
 Gamma-World's released bidirectional teacher trains on a much longer video
 window than the current DreamZero RoboFactory default. The current droidwidth
@@ -110,6 +113,19 @@ python scripts/eval/submit_robofactory_droidwidth_eval_grid.py \
   --steps 2000,4000,6000 \
   --only-ready \
   --skip-existing \
+  --submit
+```
+
+If local `s3://GearHome` credentials are unavailable but the training workflow
+is still running, check readiness from the active train pod instead:
+
+```bash
+python scripts/eval/submit_robofactory_droidwidth_eval_grid.py \
+  --tag actionlossfix2-20260622 \
+  --only-ready \
+  --skip-existing \
+  --ready-check-source train-workflow \
+  --ready-train-workflow dz-rf-sg-gamma-dwteacher-actionlossfix2-lb500-50k-xz-20260622-1 \
   --submit
 ```
 

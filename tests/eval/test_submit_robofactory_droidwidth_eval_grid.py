@@ -1,5 +1,6 @@
 from pathlib import Path
 import importlib.util
+import subprocess
 
 import pytest
 
@@ -62,25 +63,25 @@ def test_build_submit_command_uses_checkpoint_specific_names():
     assert "ckpt_setting=checkpoint-4000" in command
     assert "ckpt_setting=checkpoint-2500" not in command
     assert (
-        "workflow_name=dz-rf-sg-gamma-dwteacher-bidir-nodrop-50k-c4000-slim-eval-h100-1seed1000-xz-20260621"
+        "workflow_name=dz-rf-gamma-dw-af2-lb500-50k-c4000-eval-h100-s1000-xz-20260621"
         in command
     )
     assert (
-        "run_name=dz-rf-sg-gamma-dwteacher-bidir-nodrop-50k-c4000-slim-eval-h100-1seed1000-xz-20260621"
+        "run_name=dz-rf-gamma-dw-af2-lb500-50k-c4000-eval-h100-s1000-xz-20260621"
         in command
     )
     assert (
-        "ckpt_run_name=dz-rf-sg-gamma-dwteacher-bidir-nodrop-lb500-50k-xz-20260622-teacher"
+        "ckpt_run_name=dz-rf-sg-gamma-dwteacher-actionlossfix2-lb500-50k-xz-20260622-teacher"
         in command
     )
     assert (
         "ckpt_s3_base=s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/"
-        "dz-rf-sg-gamma-dwteacher-bidir-nodrop-lb500-50k-xz-20260622-teacher/checkpoints/"
-        "dz-rf-sg-gamma-dwteacher-bidir-nodrop-lb500-50k-xz-20260622-teacher"
+        "dz-rf-sg-gamma-dwteacher-actionlossfix2-lb500-50k-xz-20260622-teacher/checkpoints/"
+        "dz-rf-sg-gamma-dwteacher-actionlossfix2-lb500-50k-xz-20260622-teacher"
         in command
     )
     assert (
-        "local_eval_ckpt_root=gamma_droidwidth_teacher_bidir_nodrop_50k_c4000_slim_eval_h100_1seed1000"
+        "local_eval_ckpt_root=gamma_droidwidth_teacher_actionlossfix2_lb500_50k_c4000_slim_eval_h100_1seed1000"
         in command
     )
     assert "dreamzero_git_ref=gamma" in command
@@ -138,7 +139,7 @@ def test_main_prints_dry_run_commands_without_submitting(monkeypatch, capsys):
     assert "ckpt_setting=checkpoint-6000" in out
     assert "ckpt_setting=checkpoint-2500" not in out
     assert "--pool groot-h100-01" in out
-    assert "ckpt_run_name=dz-rf-sg-gamma-dwteacher-bidir-nodrop-lb500-50k-xz-20260622-teacher" in out
+    assert "ckpt_run_name=dz-rf-sg-gamma-dwteacher-actionlossfix2-lb500-50k-xz-20260622-teacher" in out
     assert "dreamzero_git_ref=gamma" in out
     assert "dreamzero_expected_git_commit=abc123" in out
 
@@ -250,6 +251,146 @@ def test_main_only_ready_filters_unavailable_steps(monkeypatch, capsys):
             "--steps",
             "2000,4000",
             "--only-ready",
+        ]
+    )
+
+    assert status == 0
+    captured = capsys.readouterr()
+    assert "ckpt_setting=checkpoint-4000" in captured.out
+    assert "ckpt_setting=checkpoint-2000" not in captured.out
+    assert "SKIP checkpoint-2000" in captured.err
+    assert "READY checkpoint-4000" in captured.err
+
+
+def test_train_workflow_ready_check_uses_remote_checkpoint_markers(monkeypatch):
+    module = _load_module()
+    calls = []
+
+    def fake_run(command):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="ready: /outputs/checkpoint-2000\n", stderr="")
+
+    monkeypatch.setattr(module, "run_command_with_pty", fake_run)
+
+    result = module.check_checkpoint_ready_from_train_workflow(
+        osmo_binary="osmo",
+        workflow_name="train-wf",
+        task_name="train",
+        output_dir="/outputs",
+        step=2000,
+    )
+
+    assert result == module.ReadyCheck(
+        step=2000,
+        uri="/outputs/checkpoint-2000",
+        ready=True,
+        reason="ready",
+    )
+    assert calls == [
+        [
+            "osmo",
+            "workflow",
+            "exec",
+            "train-wf",
+            "train",
+            "--entry",
+            calls[0][-1],
+        ]
+    ]
+    assert "checkpoint-2000" in calls[0][-1]
+    assert "trainer_state.json" in calls[0][-1]
+    assert "experiment_cfg/conf.yaml" in calls[0][-1]
+
+
+def test_train_workflow_ready_check_reports_incomplete_checkpoint(monkeypatch):
+    module = _load_module()
+
+    def fake_run(command):
+        return subprocess.CompletedProcess(
+            command,
+            4,
+            stdout="incomplete checkpoint: /outputs/checkpoint-4000\nmodel.safetensors\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(module, "run_command_with_pty", fake_run)
+
+    result = module.check_checkpoint_ready_from_train_workflow(
+        osmo_binary="osmo",
+        workflow_name="train-wf",
+        task_name="train",
+        output_dir="/outputs",
+        step=4000,
+    )
+
+    assert result.step == 4000
+    assert result.uri == "/outputs/checkpoint-4000"
+    assert not result.ready
+    assert "incomplete checkpoint" in result.reason
+    assert "model.safetensors" in result.reason
+
+
+def test_main_train_workflow_ready_check_requires_workflow_name():
+    module = _load_module()
+
+    with pytest.raises(SystemExit):
+        module.main(
+            [
+                "--workflow",
+                "eval.yaml",
+                "--tag",
+                "20260621",
+                "--steps",
+                "2000",
+                "--only-ready",
+                "--ready-check-source",
+                "train-workflow",
+            ]
+        )
+
+
+def test_main_only_ready_can_use_train_workflow_source(monkeypatch, capsys):
+    module = _load_module()
+
+    def fake_check_checkpoint_ready_from_train_workflow(
+        *,
+        osmo_binary,
+        workflow_name,
+        task_name,
+        output_dir,
+        step,
+    ):
+        assert workflow_name == "active-train"
+        assert task_name == "train"
+        assert output_dir == "/outputs"
+        return module.ReadyCheck(
+            step=step,
+            uri=f"{output_dir}/checkpoint-{step}",
+            ready=step == 4000,
+            reason="ready" if step == 4000 else "missing checkpoint directory",
+        )
+
+    monkeypatch.setattr(
+        module,
+        "check_checkpoint_ready_from_train_workflow",
+        fake_check_checkpoint_ready_from_train_workflow,
+    )
+
+    status = module.main(
+        [
+            "--workflow",
+            "eval.yaml",
+            "--tag",
+            "20260621",
+            "--steps",
+            "2000,4000",
+            "--only-ready",
+            "--ready-check-source",
+            "train-workflow",
+            "--ready-train-workflow",
+            "active-train",
+            "--ready-train-output-dir",
+            "/outputs",
         ]
     )
 

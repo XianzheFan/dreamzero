@@ -1298,15 +1298,15 @@ workflow:
     exec_timeout: 5h
     queue_timeout: 2h
 default-values:
-  workflow_name: dz-rf-sg-gamma-dwteacher-bidir-nodrop-50k-c2000-slim-eval-h100-1seed1000-xz-20260622
-  run_name: dz-rf-sg-gamma-dwteacher-bidir-nodrop-50k-c2000-slim-eval-h100-1seed1000-xz-20260622
-  ckpt_run_name: dz-rf-sg-gamma-dwteacher-bidir-nodrop-lb500-50k-xz-20260622-teacher
-  ckpt_s3_base: s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/dz-rf-sg-gamma-dwteacher-bidir-nodrop-lb500-50k-xz-20260622-teacher/checkpoints/dz-rf-sg-gamma-dwteacher-bidir-nodrop-lb500-50k-xz-20260622-teacher
-  ckpt_amlfs_base: /mnt/amlfs-01/home/xianzhef/osmo_cache/dreamzero/checkpoints/dz-rf-sg-gamma-dwteacher-bidir-nodrop-lb500-50k-xz-20260622-teacher/dz-rf-sg-gamma-dwteacher-bidir-nodrop-lb500-50k-xz-20260622-teacher
+  workflow_name: dz-rf-gamma-dw-af2-lb500-50k-c2000-eval-h100-s1000-xz-20260622
+  run_name: dz-rf-gamma-dw-af2-lb500-50k-c2000-eval-h100-s1000-xz-20260622
+  ckpt_run_name: dz-rf-sg-gamma-dwteacher-actionlossfix2-lb500-50k-xz-20260622-teacher
+  ckpt_s3_base: s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/dz-rf-sg-gamma-dwteacher-actionlossfix2-lb500-50k-xz-20260622-teacher/checkpoints/dz-rf-sg-gamma-dwteacher-actionlossfix2-lb500-50k-xz-20260622-teacher
+  ckpt_amlfs_base: /mnt/amlfs-01/home/xianzhef/osmo_cache/dreamzero/checkpoints/dz-rf-sg-gamma-dwteacher-actionlossfix2-lb500-50k-xz-20260622-teacher/dz-rf-sg-gamma-dwteacher-actionlossfix2-lb500-50k-xz-20260622-teacher
   ckpt_setting: checkpoint-2000
   dreamzero_git_ref: gamma
   dreamzero_expected_git_commit: ""
-  local_eval_ckpt_root: gamma_droidwidth_teacher_bidir_nodrop_50k_c2000_slim_eval_h100_1seed1000
+  local_eval_ckpt_root: gamma_droidwidth_teacher_actionlossfix2_lb500_50k_c2000_slim_eval_h100_1seed1000
   eval_num_frames: "33"
   eval_action_horizon: "24"
   video_pred_rollout_modes: "action noncausal"
