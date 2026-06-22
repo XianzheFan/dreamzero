@@ -29,6 +29,7 @@ def test_summarize_sweep_extracts_trace_metrics(tmp_path):
                 "replan_boundary_blend_steps": 4,
                 "temporal_action_ensemble_decay": 0.6,
             },
+            "server": {"meta": {"action_horizon": 24}},
         },
     )
     _write_json(
@@ -139,6 +140,7 @@ def test_summarize_sweep_extracts_trace_metrics(tmp_path):
                 "replan_boundary_blend_steps": 0,
                 "temporal_action_ensemble_decay": 0.0,
             },
+            "server": {"meta": {"action_horizon": 24}},
         },
     )
     _write_json(
@@ -239,6 +241,7 @@ def test_summarize_sweep_extracts_trace_metrics(tmp_path):
     assert rows[0]["success_count"] == 0
     assert rows[0]["video_pred_rollout_mode"] is None
     assert rows[0]["replan_every"] == 24.0
+    assert rows[0]["action_horizon"] == 24.0
     assert rows[0]["action_representation"] == "absolute_qpos"
     assert rows[0]["action_representation_counts"] == {"absolute_qpos": 1}
     assert rows[0]["target_slew_rate"] == 0.35
@@ -246,6 +249,8 @@ def test_summarize_sweep_extracts_trace_metrics(tmp_path):
     assert rows[0]["smoothing_profile"] == "raw"
     assert rows[0]["replan_boundary_blend_steps"] == 0.0
     assert rows[0]["temporal_action_ensemble_decay"] == 0.0
+    assert rows[0]["temporal_action_ensemble_active"] is False
+    assert rows[0]["temporal_action_ensemble_overlap_steps"] == 0.0
     assert rows[0]["first_cmd_delta_mean"] == 0.02
     assert rows[0]["first_cmd_delta_max"] == 0.06
     assert rows[0]["target_min_mean_left"] == 0.13
@@ -283,6 +288,7 @@ def test_summarize_sweep_extracts_trace_metrics(tmp_path):
     assert rows[1]["success_count"] == 1
     assert rows[1]["video_pred_rollout_mode"] is None
     assert rows[1]["replan_every"] == 12.0
+    assert rows[1]["action_horizon"] == 24.0
     assert rows[1]["action_representation"] == "absolute_qpos"
     assert rows[1]["scale_clip"] == 0.25
     assert rows[1]["target_slew_rate"] == 0.35
@@ -290,6 +296,8 @@ def test_summarize_sweep_extracts_trace_metrics(tmp_path):
     assert rows[1]["smoothing_profile"] == "smooth"
     assert rows[1]["replan_boundary_blend_steps"] == 4.0
     assert rows[1]["temporal_action_ensemble_decay"] == 0.6
+    assert rows[1]["temporal_action_ensemble_active"] is True
+    assert rows[1]["temporal_action_ensemble_overlap_steps"] == 12.0
     assert rows[1]["target_min_mean_right"] == 0.08
     assert rows[1]["barrier_margin_best"] == -0.02
     assert rows[1]["mean_joint_step_accel"] == 0.03

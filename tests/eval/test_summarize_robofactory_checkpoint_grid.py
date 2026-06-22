@@ -62,6 +62,7 @@ def _make_eval(
                     "setting_dir": "rp12_best",
                     "video_pred_rollout_mode": "action",
                     "replan_every": 12,
+                    "action_horizon": 24,
                     "action_representation": "absolute_qpos",
                     "scale": 1.0,
                     "target_slew_rate": 0.35,
@@ -69,6 +70,8 @@ def _make_eval(
                     "smoothing_profile": "smooth",
                     "replan_boundary_blend_steps": 4,
                     "temporal_action_ensemble_decay": 0.6,
+                    "temporal_action_ensemble_active": True,
+                    "temporal_action_ensemble_overlap_steps": 12,
                     "success_count": success_count,
                     "success_rate": float(success_count),
                     "target_min_mean_left": 0.08,
@@ -105,10 +108,13 @@ def _make_eval(
                     "setting_dir": "rp12_noncausal_diagnostic",
                     "video_pred_rollout_mode": "noncausal",
                     "replan_every": 12,
+                    "action_horizon": 24,
                     "scale": 1.0,
                     "replan_boundary_blend_steps": 4,
                     "smoothing_profile": "smooth",
                     "temporal_action_ensemble_decay": 0.6,
+                    "temporal_action_ensemble_active": True,
+                    "temporal_action_ensemble_overlap_steps": 12,
                     "success_count": success_count + 10,
                     "success_rate": float(success_count + 10),
                     "target_min_mean_left": 0.01,
@@ -187,6 +193,7 @@ def test_summarize_roots_orders_by_checkpoint_and_selects_best_setting(tmp_path)
     assert rows[0]["checkpoint_global_video_attention_mode"] == "bidirectional"
     assert rows[0]["best_setting_dir"] == "rp12_best"
     assert rows[0]["best_video_pred_rollout_mode"] == "action"
+    assert rows[0]["best_action_horizon"] == 24
     assert rows[0]["best_action_representation"] == "absolute_qpos"
     assert rows[0]["raw_joint_saturation_frac"] == 0.7
     assert rows[0]["mean_joint_step_jerk"] == 0.018
@@ -200,6 +207,8 @@ def test_summarize_roots_orders_by_checkpoint_and_selects_best_setting(tmp_path)
     assert rows[0]["max_model_replan_boundary_joint_jump"] == 0.07
     assert rows[0]["best_accel_limit"] == 0.08
     assert rows[0]["best_smoothing_profile"] == "smooth"
+    assert rows[0]["best_ensemble_active"] is True
+    assert rows[0]["best_ensemble_overlap_steps"] == 12
     assert rows[0]["mean_accel_limiter_correction_joint"] == 0.012
     assert rows[0]["pred_vs_future_mae_rgb_first_to_last_delta_mean"] == 8.0
     assert rows[0]["pred_conditioning_frame_mae_rgb_mean"] == 4.0

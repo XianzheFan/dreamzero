@@ -59,6 +59,20 @@ def _video_pred_rollout_mode_from_dir(setting_dir: str) -> str | None:
     return mode or None
 
 
+def _temporal_ensemble_overlap(
+    *,
+    decay: float | None,
+    replan_every: float | None,
+    action_horizon: float | None,
+) -> tuple[bool | None, float | None]:
+    if decay is None or decay <= 0.0:
+        return False, 0.0
+    if replan_every is None or action_horizon is None:
+        return None, None
+    overlap = max(0.0, action_horizon - replan_every)
+    return overlap > 0.0, overlap
+
+
 def _mean_finite(values: list[Any]) -> float | None:
     floats = [
         value
@@ -96,13 +110,22 @@ def _setting_from_results(results: dict[str, Any], setting_dir: str) -> dict[str
     clip = cfg.get("joint_target_scale_clip", cfg.get("joint_delta_scale_clip"))
     boundary_blend_steps = cfg.get("replan_boundary_blend_steps")
     temporal_ensemble_decay = cfg.get("temporal_action_ensemble_decay")
+    replan_every = _float_or_none(cfg.get("replan_every"))
+    action_horizon = _float_or_none(server_meta.get("action_horizon"))
+    ensemble_decay = _float_or_none(temporal_ensemble_decay)
+    ensemble_active, ensemble_overlap = _temporal_ensemble_overlap(
+        decay=ensemble_decay,
+        replan_every=replan_every,
+        action_horizon=action_horizon,
+    )
     return {
         "setting_dir": os.path.basename(setting_dir),
         "video_pred_rollout_mode": server_meta.get(
             "video_pred_rollout_mode",
             _video_pred_rollout_mode_from_dir(setting_dir),
         ),
-        "replan_every": _float_or_none(cfg.get("replan_every")),
+        "replan_every": replan_every,
+        "action_horizon": action_horizon,
         "action_representation": cfg.get("action_representation"),
         "scale": _float_or_none(scale),
         "scale_reference": reference,
@@ -111,7 +134,9 @@ def _setting_from_results(results: dict[str, Any], setting_dir: str) -> dict[str
         "target_accel_limit": _float_or_none(cfg.get("joint_target_accel_limit")),
         "smoothing_profile": cfg.get("smoothing_profile"),
         "replan_boundary_blend_steps": _float_or_none(boundary_blend_steps),
-        "temporal_action_ensemble_decay": _float_or_none(temporal_ensemble_decay),
+        "temporal_action_ensemble_decay": ensemble_decay,
+        "temporal_action_ensemble_active": ensemble_active,
+        "temporal_action_ensemble_overlap_steps": ensemble_overlap,
     }
 
 
@@ -485,6 +510,7 @@ def print_table(rows: list[dict[str, Any]]) -> None:
         ("dir", "setting_dir"),
         ("vpred", "video_pred_rollout_mode"),
         ("replan", "replan_every"),
+        ("horizon", "action_horizon"),
         ("actrep", "action_representation"),
         ("scale", "scale"),
         ("clip", "scale_clip"),
@@ -492,6 +518,8 @@ def print_table(rows: list[dict[str, Any]]) -> None:
         ("profile", "smoothing_profile"),
         ("blend", "replan_boundary_blend_steps"),
         ("ens", "temporal_action_ensemble_decay"),
+        ("ens_active", "temporal_action_ensemble_active"),
+        ("ens_overlap", "temporal_action_ensemble_overlap_steps"),
         ("succ", "success_count"),
         ("eps", "episodes"),
         ("first_delta", "first_cmd_delta_mean"),
