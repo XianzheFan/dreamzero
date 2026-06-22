@@ -406,6 +406,9 @@ def test_video_quality_summary_names_condition_window_metric(tmp_path):
     assert "pred_vs_future_step_stride_mean" in text
     assert "video_pred_future_step_stride_mean" in text
     assert "by video_pred_rollout_mode:" in text
+    assert "by video_pred_wrist_window_mode:" in text
+    assert "by video_pred_input_source:" in text
+    assert "by video_pred_observed_wrist_window_mode:" in text
     assert "  noncausal: videos=1" in text
     assert "    pred_vs_future_mae_rgb_mean: 8.5" in text
     assert "condition_window_mae=12.5" in text
@@ -422,14 +425,26 @@ def test_video_quality_summary_names_condition_window_metric(tmp_path):
     assert "latent_frames=0:5" in text
 
 
-def test_video_quality_summary_groups_metrics_by_rollout_mode():
-    def row(mode, future_mae, best_mae, temporal_mean, lap_mean):
+def test_video_quality_summary_groups_metrics_by_diagnostic_modes():
+    def row(
+        mode,
+        future_mae,
+        best_mae,
+        temporal_mean,
+        lap_mean,
+        *,
+        wrist_window="action",
+        input_source="action",
+        observed_wrist_window="history-current-first",
+    ):
         return {
             "video_pred_rollout_mode": mode,
             "last_video_pred_rollout_mode": mode,
             "pred_latent_includes_conditioning_frame": False,
             "shared_global_wrist_window_mode": "history-current-first",
-            "video_pred_wrist_window_mode": "action",
+            "video_pred_wrist_window_mode": wrist_window,
+            "video_pred_input_source": input_source,
+            "video_pred_observed_wrist_window_mode": observed_wrist_window,
             "video_pred_future_step_stride": 1.0,
             "reset_causal_state_each_infer": True,
             "metrics": {
@@ -457,7 +472,16 @@ def test_video_quality_summary_groups_metrics_by_rollout_mode():
         [
             row("action", 30.0, 25.0, 12.0, 20.0),
             row("action", 10.0, 8.0, 8.0, 40.0),
-            row("noncausal", 6.0, 4.0, 3.0, 70.0),
+            row(
+                "noncausal",
+                6.0,
+                4.0,
+                3.0,
+                70.0,
+                wrist_window="history-current-first",
+                input_source="override",
+                observed_wrist_window="history-current-first",
+            ),
         ]
     )
 
@@ -475,3 +499,16 @@ def test_video_quality_summary_groups_metrics_by_rollout_mode():
     assert by_mode["noncausal"]["pred_vs_future_mae_rgb_mean"] == 6.0
     assert by_mode["noncausal"]["pred_vs_future_best_alignment_mae_rgb_mean"] == 4.0
     assert "by_video_pred_rollout_mode" not in by_mode["action"]
+
+    by_wrist = summary["by_video_pred_wrist_window_mode"]
+    assert by_wrist["action"]["video_count"] == 2
+    assert by_wrist["action"]["pred_vs_future_mae_rgb_mean"] == 20.0
+    assert by_wrist["history-current-first"]["video_count"] == 1
+    assert by_wrist["history-current-first"]["pred_vs_future_mae_rgb_mean"] == 6.0
+
+    by_source = summary["by_video_pred_input_source"]
+    assert by_source["action"]["video_count"] == 2
+    assert by_source["override"]["video_count"] == 1
+
+    by_observed = summary["by_video_pred_observed_wrist_window_mode"]
+    assert by_observed["history-current-first"]["video_count"] == 3

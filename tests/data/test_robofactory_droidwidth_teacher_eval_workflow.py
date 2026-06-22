@@ -170,6 +170,7 @@ def test_droidwidth_teacher_h100_eval_targets_h100_pool_resources():
     assert defaults["eval_num_frames"] == "33"
     assert defaults["eval_action_horizon"] == "24"
     assert defaults["video_pred_rollout_modes"] == "action noncausal"
+    assert defaults["video_pred_wrist_window_mode"] == "action"
     assert defaults["replan_everys"] == "24 12"
     assert defaults["joint_delta_scales"] == "1.0"
     assert defaults["joint_target_accel_limits"] == "0 0.08"
@@ -183,7 +184,10 @@ def test_droidwidth_teacher_h100_eval_targets_h100_pool_resources():
     assert 'CKPT_RUN_NAME="{{ckpt_run_name}}"' in script
     assert 'CKPT_S3_BASE="${CKPT_S3_BASE:-{{ckpt_s3_base}}}"' in script
     assert 'CKPT_AMLFS_BASE="${CKPT_AMLFS_BASE:-{{ckpt_amlfs_base}}}"' in script
-    assert 'VIDEO_PRED_WRIST_WINDOW_MODE="${VIDEO_PRED_WRIST_WINDOW_MODE:-action}"' in script
+    assert (
+        'VIDEO_PRED_WRIST_WINDOW_MODE="${VIDEO_PRED_WRIST_WINDOW_MODE:-{{video_pred_wrist_window_mode}}}"'
+        in script
+    )
     assert 'VIDEO_PRED_ROLLOUT_MODES="${VIDEO_PRED_ROLLOUT_MODES:-{{video_pred_rollout_modes}}}"' in script
     assert 'VIDEO_PRED_ROLLOUT_MODES="${VIDEO_PRED_ROLLOUT_MODE}"' in script
     assert "for VIDEO_PRED_ROLLOUT_MODE in ${VIDEO_PRED_ROLLOUT_MODES}; do" in script

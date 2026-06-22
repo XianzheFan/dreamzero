@@ -895,6 +895,18 @@ def _aggregate(
             videos,
             "last_video_pred_rollout_mode",
         )
+        summary["by_video_pred_wrist_window_mode"] = _aggregate_by(
+            videos,
+            "video_pred_wrist_window_mode",
+        )
+        summary["by_video_pred_input_source"] = _aggregate_by(
+            videos,
+            "video_pred_input_source",
+        )
+        summary["by_video_pred_observed_wrist_window_mode"] = _aggregate_by(
+            videos,
+            "video_pred_observed_wrist_window_mode",
+        )
     return summary
 
 
@@ -961,10 +973,23 @@ def write_text_report(payload: dict[str, Any], path: Path) -> None:
         "  video_pred_future_step_stride_mean: "
         f"{summary.get('video_pred_future_step_stride_mean')}",
     ]
-    by_rollout = summary.get("by_video_pred_rollout_mode")
-    if isinstance(by_rollout, dict) and by_rollout:
-        lines.extend(["", "by video_pred_rollout_mode:"])
-        for mode, mode_summary in sorted(by_rollout.items()):
+    breakdown_specs = [
+        ("video_pred_rollout_mode", summary.get("by_video_pred_rollout_mode")),
+        (
+            "video_pred_wrist_window_mode",
+            summary.get("by_video_pred_wrist_window_mode"),
+        ),
+        ("video_pred_input_source", summary.get("by_video_pred_input_source")),
+        (
+            "video_pred_observed_wrist_window_mode",
+            summary.get("by_video_pred_observed_wrist_window_mode"),
+        ),
+    ]
+    for label, breakdown in breakdown_specs:
+        if not isinstance(breakdown, dict) or not breakdown:
+            continue
+        lines.extend(["", f"by {label}:"])
+        for mode, mode_summary in sorted(breakdown.items()):
             if not isinstance(mode_summary, dict):
                 continue
             lines.extend(
