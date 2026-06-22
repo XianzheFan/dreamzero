@@ -274,6 +274,7 @@ def test_liftbarrier_gamma_staged_workflow_runs_dense_teacher_then_sparse_studen
     assert defaults["workflow_name"] == "dz-rf-sg-gamma-staged-lb500-xianzhef-20260621"
     assert defaults["run_name"] == "dz-rf-sg-gamma-staged-lb500-xianzhef-20260621"
     assert defaults["restore_run_name"] == ""
+    assert defaults["stage1_external_run_name"] == ""
     assert defaults["code_s3_uri"] == ""
     assert defaults["expected_code_commit"] == ""
     assert defaults["stage1_max_steps"] == "10000"
@@ -290,6 +291,9 @@ def test_liftbarrier_gamma_staged_workflow_runs_dense_teacher_then_sparse_studen
         'STAGE1_MAX_STEPS="${STAGE1_MAX_STEPS:-{{stage1_max_steps}}}"',
         'STAGE2_WARMUP_MAX_STEPS="${STAGE2_WARMUP_MAX_STEPS:-{{stage2_warmup_max_steps}}}"',
         'STAGE2_MAX_STEPS="${STAGE2_MAX_STEPS:-{{stage2_max_steps}}}"',
+        'STAGE1_EXTERNAL_RUN_NAME="${STAGE1_EXTERNAL_RUN_NAME:-{{stage1_external_run_name}}}"',
+        'STAGE1_EXTERNAL_S3_URI="${STAGE1_EXTERNAL_S3_URI:-s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/${STAGE1_EXTERNAL_RUN_NAME}/checkpoints}"',
+        'STAGE1_EXTERNAL_CACHE_S3_URI="${STAGE1_EXTERNAL_CACHE_S3_URI:-s3://GearHome/users/xianzhef/oci-migration/dreamzero_s3cache/bootstrap_checkpoints/${STAGE1_EXTERNAL_RUN_NAME}}"',
         'export STAGE1_DYNAMICS_LOSS_WEIGHT="${STAGE1_DYNAMICS_LOSS_WEIGHT:-2.0}"',
         'export STAGE1_ACTION_LOSS_WEIGHT="${STAGE1_ACTION_LOSS_WEIGHT:-1.0}"',
         'export STAGE1_GRIPPER_BINARY_ACTION_LOSS_WEIGHT="${STAGE1_GRIPPER_BINARY_ACTION_LOSS_WEIGHT:-1.0}"',
@@ -314,6 +318,13 @@ def test_liftbarrier_gamma_staged_workflow_runs_dense_teacher_then_sparse_studen
         'export STAGE2_SELF_FORCING_WARMUP_STEPS="${STAGE2_SELF_FORCING_WARMUP_STEPS:-0}"',
         'export STAGE2_SELF_FORCING_FAST_WRITEBACK="${STAGE2_SELF_FORCING_FAST_WRITEBACK:-false}"',
         "latest_complete_checkpoint()",
+        "restore_stage1_external_checkpoint_from_s3()",
+        "restore_stage1_external_checkpoint()",
+        "Using external stage1 teacher checkpoint for stage2 warm-start",
+        "External teacher LoRA will be loaded through PRETRAINED_LORA_DIR on top of DreamZero-DROID.",
+        'restore_stage1_external_checkpoint_from_s3 "$STAGE1_EXTERNAL_CACHE_S3_URI" "external_stage1_cache"',
+        'restore_stage1_external_checkpoint_from_s3 "$STAGE1_EXTERNAL_S3_URI" "external_stage1_primary"',
+        "STAGE1_CKPT=\"$STAGE1_EXTERNAL_CKPT\"",
         'sort -V',
         'export PRETRAINED_DIR="$stage_pretrained_dir"',
         'export PRETRAINED_LORA_DIR="$stage_lora_dir"',

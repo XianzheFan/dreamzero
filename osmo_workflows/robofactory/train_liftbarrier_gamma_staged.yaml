@@ -47,6 +47,7 @@ workflow:
             STAGE2_WARMUP_MAX_STEPS="${STAGE2_WARMUP_MAX_STEPS:-{{stage2_warmup_max_steps}}}"
             STAGE2_MAX_STEPS="${STAGE2_MAX_STEPS:-{{stage2_max_steps}}}"
             RESTORE_RUN_NAME="${RESTORE_RUN_NAME:-{{restore_run_name}}}"
+            STAGE1_EXTERNAL_RUN_NAME="${STAGE1_EXTERNAL_RUN_NAME:-{{stage1_external_run_name}}}"
             CODE_S3_URI="${CODE_S3_URI:-{{code_s3_uri}}}"
             EXPECTED_CODE_COMMIT="${EXPECTED_CODE_COMMIT:-{{expected_code_commit}}}"
             DATA_VARIANT="${DATA_VARIANT:-{{data_variant}}}"
@@ -66,6 +67,13 @@ workflow:
               RESTORE_S3_URI="${RESTORE_S3_URI:-}"
               RESTORE_CACHE_S3_URI="${RESTORE_CACHE_S3_URI:-}"
             fi
+            if [ -n "$STAGE1_EXTERNAL_RUN_NAME" ]; then
+              STAGE1_EXTERNAL_S3_URI="${STAGE1_EXTERNAL_S3_URI:-s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/${STAGE1_EXTERNAL_RUN_NAME}/checkpoints}"
+              STAGE1_EXTERNAL_CACHE_S3_URI="${STAGE1_EXTERNAL_CACHE_S3_URI:-s3://GearHome/users/xianzhef/oci-migration/dreamzero_s3cache/bootstrap_checkpoints/${STAGE1_EXTERNAL_RUN_NAME}}"
+            else
+              STAGE1_EXTERNAL_S3_URI="${STAGE1_EXTERNAL_S3_URI:-}"
+              STAGE1_EXTERNAL_CACHE_S3_URI="${STAGE1_EXTERNAL_CACHE_S3_URI:-}"
+            fi
             CHECKPOINT_UPLOAD_INTERVAL_SECONDS="${CHECKPOINT_UPLOAD_INTERVAL_SECONDS:-900}"
 
             if [ -z "$CODE_S3_URI" ] || [ -z "$EXPECTED_CODE_COMMIT" ]; then
@@ -74,7 +82,7 @@ workflow:
               exit 64
             fi
 
-            for uri in "$CODE_S3_URI" "$DATA_S3_URI" "$MODEL_CACHE_S3_URI" "$RUN_S3_ROOT" "$OUTPUT_S3_URI" "$LOG_S3_URI" "$CACHE_OUTPUT_S3_URI" "$RESTORE_S3_URI" "$RESTORE_CACHE_S3_URI"; do
+            for uri in "$CODE_S3_URI" "$DATA_S3_URI" "$MODEL_CACHE_S3_URI" "$RUN_S3_ROOT" "$OUTPUT_S3_URI" "$LOG_S3_URI" "$CACHE_OUTPUT_S3_URI" "$RESTORE_S3_URI" "$RESTORE_CACHE_S3_URI" "$STAGE1_EXTERNAL_S3_URI" "$STAGE1_EXTERNAL_CACHE_S3_URI"; do
               [ -n "$uri" ] || continue
               case "$uri" in
                 s3://GearHome/users/xianzhef/*) ;;
@@ -806,6 +814,64 @@ workflow:
               return 1
             }
 
+            restore_stage1_external_checkpoint_from_s3() {
+              src_uri="$1"
+              label="$2"
+              if [ -z "$src_uri" ]; then
+                return 1
+              fi
+              import_dir="/workspace/stage1_external_import/${label}"
+              rm -rf "$import_dir"
+              mkdir -p "$import_dir"
+              echo "Restoring external stage1 teacher checkpoints from ${src_uri}/ into ${import_dir}"
+              set +e
+              osmo data download --resume "${src_uri}/" "$import_dir"
+              restore_status=$?
+              set -e
+              if [ "$restore_status" -ne 0 ]; then
+                echo "External stage1 restore from ${src_uri}/ failed with status=${restore_status}."
+                return 1
+              fi
+
+              latest=""
+              while IFS= read -r ckpt_dir; do
+                [ -n "$ckpt_dir" ] || continue
+                if is_complete_minimal_checkpoint "$ckpt_dir"; then
+                  latest="$ckpt_dir"
+                else
+                  echo "Skipping incomplete external stage1 checkpoint ${ckpt_dir}; need model weights, trainer_state.json, and experiment_cfg/conf.yaml."
+                fi
+              done < <(find "$import_dir" -type d -name 'checkpoint-*' | sort -V)
+
+              if [ -z "$latest" ]; then
+                echo "No usable external stage1 checkpoint-* directories found under ${src_uri}/."
+                return 1
+              fi
+              STAGE1_EXTERNAL_CKPT="$latest"
+              export STAGE1_EXTERNAL_CKPT
+              echo "Selected external stage1 teacher checkpoint: ${STAGE1_EXTERNAL_CKPT}"
+              return 0
+            }
+
+            restore_stage1_external_checkpoint() {
+              if [ -z "$STAGE1_EXTERNAL_RUN_NAME" ]; then
+                return 1
+              fi
+
+              echo "Using external stage1 teacher checkpoint for stage2 warm-start: ${STAGE1_EXTERNAL_RUN_NAME}"
+              echo "External teacher LoRA will be loaded through PRETRAINED_LORA_DIR on top of DreamZero-DROID."
+              if restore_stage1_external_checkpoint_from_s3 "$STAGE1_EXTERNAL_CACHE_S3_URI" "external_stage1_cache"; then
+                echo "Restored external stage1 teacher from cache URI ${STAGE1_EXTERNAL_CACHE_S3_URI}."
+                return 0
+              fi
+              if restore_stage1_external_checkpoint_from_s3 "$STAGE1_EXTERNAL_S3_URI" "external_stage1_primary"; then
+                echo "Restored external stage1 teacher from primary URI ${STAGE1_EXTERNAL_S3_URI}."
+                return 0
+              fi
+              echo "ERROR: STAGE1_EXTERNAL_RUN_NAME was set, but no usable teacher checkpoint could be restored." >&2
+              exit 12
+            }
+
             configure_stage_paths() {
               stage_run_name="$1"
               RUN_NAME="$stage_run_name"
@@ -955,21 +1021,26 @@ workflow:
             require_wandb
 
             DREAMZERO_DROID_PRETRAINED_DIR="$PRETRAINED_DIR"
-            run_training_stage \
-              "dense-teacher-style" \
-              "$STAGE1_RUN_NAME" \
-              "$STAGE1_MAX_STEPS" \
-              "false" \
-              "$STAGE1_GLOBAL_VIDEO_ATTENTION_MODE" \
-              "$DREAMZERO_DROID_PRETRAINED_DIR" \
-              "" \
-              "$STAGE1_OUTPUT_DIR" \
-              "stage1"
+            if [ -n "$STAGE1_EXTERNAL_RUN_NAME" ]; then
+              restore_stage1_external_checkpoint
+              STAGE1_CKPT="$STAGE1_EXTERNAL_CKPT"
+            else
+              run_training_stage \
+                "dense-teacher-style" \
+                "$STAGE1_RUN_NAME" \
+                "$STAGE1_MAX_STEPS" \
+                "false" \
+                "$STAGE1_GLOBAL_VIDEO_ATTENTION_MODE" \
+                "$DREAMZERO_DROID_PRETRAINED_DIR" \
+                "" \
+                "$STAGE1_OUTPUT_DIR" \
+                "stage1"
 
-            STAGE1_CKPT="$(latest_complete_checkpoint "$STAGE1_OUTPUT_DIR" || true)"
-            if [ -z "$STAGE1_CKPT" ]; then
-              echo "ERROR: stage1 did not produce a complete checkpoint." >&2
-              exit 9
+              STAGE1_CKPT="$(latest_complete_checkpoint "$STAGE1_OUTPUT_DIR" || true)"
+              if [ -z "$STAGE1_CKPT" ]; then
+                echo "ERROR: stage1 did not produce a complete checkpoint." >&2
+                exit 9
+              fi
             fi
             echo "Stage1 complete checkpoint selected for stage2 warm-start: $STAGE1_CKPT"
 
@@ -1008,6 +1079,7 @@ default-values:
   workflow_name: dz-rf-sg-gamma-staged-lb500-xianzhef-20260621
   run_name: dz-rf-sg-gamma-staged-lb500-xianzhef-20260621
   restore_run_name: ""
+  stage1_external_run_name: ""
   code_s3_uri: ""
   expected_code_commit: ""
   data_variant: LiftBarrier-rf-500
