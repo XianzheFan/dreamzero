@@ -246,11 +246,19 @@ exit 4
         ]
     )
     output = "\n".join(part for part in (result.stdout, result.stderr) if part)
-    reason = " ".join(line.strip() for line in output.splitlines() if line.strip())
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    reason = " ".join(lines)
     if len(reason) > 240:
         reason = reason[:237] + "..."
-    if result.returncode == 0:
+    ready_marker = f"ready: {ckpt_dir}"
+    if any(line == ready_marker for line in lines):
         return ReadyCheck(step=step, uri=ckpt_dir, ready=True, reason="ready")
+    if result.returncode == 0:
+        reason = (
+            f"osmo workflow exec returned status 0 without ready marker: {reason}"
+            if reason
+            else "osmo workflow exec returned status 0 without ready marker"
+        )
     return ReadyCheck(
         step=step,
         uri=ckpt_dir,
@@ -263,7 +271,7 @@ def workflow_name_for_step(*, name_template: str, step: int, tag: str) -> str:
     return name_template.format(step=step, tag=tag)
 
 
-def check_workflow_exists(*, osmo_binary: str, workflow_name: str) -> ExistingWorkflowCheck:
+def _query_workflow_exists(*, osmo_binary: str, workflow_name: str) -> ExistingWorkflowCheck:
     result = subprocess.run(
         [osmo_binary, "workflow", "query", workflow_name, "--format-type", "json"],
         check=False,
@@ -274,6 +282,29 @@ def check_workflow_exists(*, osmo_binary: str, workflow_name: str) -> ExistingWo
         return ExistingWorkflowCheck(name=workflow_name, exists=True, reason="exists")
     reason = result.stderr.strip() or result.stdout.strip() or f"query status {result.returncode}"
     return ExistingWorkflowCheck(name=workflow_name, exists=False, reason=reason)
+
+
+def check_workflow_exists(
+    *,
+    osmo_binary: str,
+    workflow_name: str,
+    suffix_scan_limit: int = 20,
+) -> ExistingWorkflowCheck:
+    if suffix_scan_limit < 0:
+        raise ValueError("suffix_scan_limit must be non-negative")
+    exact = _query_workflow_exists(osmo_binary=osmo_binary, workflow_name=workflow_name)
+    if exact.exists:
+        return exact
+    for suffix in range(1, suffix_scan_limit + 1):
+        candidate = f"{workflow_name}-{suffix}"
+        check = _query_workflow_exists(osmo_binary=osmo_binary, workflow_name=candidate)
+        if check.exists:
+            return ExistingWorkflowCheck(
+                name=check.name,
+                exists=True,
+                reason=f"exists as {check.name}",
+            )
+    return exact
 
 
 def build_submit_command(
@@ -451,6 +482,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Skip steps whose generated OSMO workflow name already exists.",
     )
     parser.add_argument(
+        "--existing-suffix-scan-limit",
+        type=int,
+        default=20,
+        help=(
+            "With --skip-existing, also query OSMO auto-suffixed names "
+            "<workflow>-1..<workflow>-N. Defaults to 20."
+        ),
+    )
+    parser.add_argument(
         "--submit",
         action="store_true",
         help="Actually submit the generated workflows. Without this flag, commands are printed only.",
@@ -524,10 +564,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 step=step,
                 tag=args.tag,
             )
-            check = check_workflow_exists(osmo_binary=args.osmo_binary, workflow_name=workflow_name)
+            check = check_workflow_exists(
+                osmo_binary=args.osmo_binary,
+                workflow_name=workflow_name,
+                suffix_scan_limit=args.existing_suffix_scan_limit,
+            )
             if check.exists:
                 print(
-                    f"SKIP checkpoint-{step}: workflow already exists: {workflow_name}",
+                    f"SKIP checkpoint-{step}: workflow already exists: {check.name}",
                     file=sys.stderr,
                     flush=True,
                 )

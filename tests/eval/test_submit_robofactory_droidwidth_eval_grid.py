@@ -330,6 +330,34 @@ def test_train_workflow_ready_check_reports_incomplete_checkpoint(monkeypatch):
     assert "model.safetensors" in result.reason
 
 
+def test_train_workflow_ready_check_requires_ready_marker_even_when_cli_status_is_zero(monkeypatch):
+    module = _load_module()
+
+    def fake_run(command):
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout="missing checkpoint directory: /outputs/checkpoint-2000\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(module, "run_command_with_pty", fake_run)
+
+    result = module.check_checkpoint_ready_from_train_workflow(
+        osmo_binary="osmo",
+        workflow_name="train-wf",
+        task_name="train",
+        output_dir="/outputs",
+        step=2000,
+    )
+
+    assert result.step == 2000
+    assert result.uri == "/outputs/checkpoint-2000"
+    assert not result.ready
+    assert "without ready marker" in result.reason
+    assert "missing checkpoint directory" in result.reason
+
+
 def test_main_train_workflow_ready_check_requires_workflow_name():
     module = _load_module()
 
@@ -437,7 +465,8 @@ def test_main_only_ready_can_fail_when_none_ready(monkeypatch, capsys):
 def test_main_skip_existing_filters_existing_workflow(monkeypatch, capsys):
     module = _load_module()
 
-    def fake_check_workflow_exists(*, osmo_binary, workflow_name):
+    def fake_check_workflow_exists(*, osmo_binary, workflow_name, suffix_scan_limit):
+        assert suffix_scan_limit == 20
         return module.ExistingWorkflowCheck(
             name=workflow_name,
             exists="c2000" in workflow_name,
@@ -466,10 +495,43 @@ def test_main_skip_existing_filters_existing_workflow(monkeypatch, capsys):
     assert "NEW checkpoint-4000" in captured.err
 
 
+def test_main_skip_existing_reports_suffixed_workflow(monkeypatch, capsys):
+    module = _load_module()
+
+    def fake_check_workflow_exists(*, osmo_binary, workflow_name, suffix_scan_limit):
+        return module.ExistingWorkflowCheck(
+            name=f"{workflow_name}-2",
+            exists=True,
+            reason=f"exists as {workflow_name}-2",
+        )
+
+    monkeypatch.setattr(module, "check_workflow_exists", fake_check_workflow_exists)
+
+    status = module.main(
+        [
+            "--workflow",
+            "eval.yaml",
+            "--tag",
+            "20260621",
+            "--steps",
+            "2000",
+            "--skip-existing",
+        ]
+    )
+
+    assert status == 0
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert (
+        "SKIP checkpoint-2000: workflow already exists: "
+        "dz-rf-gamma-dw-af2-lb500-50k-c2000-eval-h100-s1000-xz-20260621-2"
+    ) in captured.err
+
+
 def test_main_skip_existing_noops_when_all_exist(monkeypatch, capsys):
     module = _load_module()
 
-    def fake_check_workflow_exists(*, osmo_binary, workflow_name):
+    def fake_check_workflow_exists(*, osmo_binary, workflow_name, suffix_scan_limit):
         return module.ExistingWorkflowCheck(name=workflow_name, exists=True, reason="exists")
 
     monkeypatch.setattr(module, "check_workflow_exists", fake_check_workflow_exists)
@@ -490,3 +552,53 @@ def test_main_skip_existing_noops_when_all_exist(monkeypatch, capsys):
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "No new checkpoint eval workflows matched the requested grid." in captured.err
+
+
+def test_check_workflow_exists_accepts_exact_match(monkeypatch):
+    module = _load_module()
+    queries = []
+
+    def fake_run(command, check, capture_output, text):
+        queries.append(command[3])
+        return subprocess.CompletedProcess(command, 0, stdout="{}", stderr="")
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+
+    result = module.check_workflow_exists(
+        osmo_binary="osmo",
+        workflow_name="eval-wf",
+        suffix_scan_limit=3,
+    )
+
+    assert result == module.ExistingWorkflowCheck(name="eval-wf", exists=True, reason="exists")
+    assert queries == ["eval-wf"]
+
+
+def test_check_workflow_exists_scans_osmo_auto_suffixes(monkeypatch):
+    module = _load_module()
+    queries = []
+
+    def fake_run(command, check, capture_output, text):
+        workflow_name = command[3]
+        queries.append(workflow_name)
+        return subprocess.CompletedProcess(
+            command,
+            0 if workflow_name == "eval-wf-2" else 1,
+            stdout="{}" if workflow_name == "eval-wf-2" else "",
+            stderr="" if workflow_name == "eval-wf-2" else "not found",
+        )
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+
+    result = module.check_workflow_exists(
+        osmo_binary="osmo",
+        workflow_name="eval-wf",
+        suffix_scan_limit=3,
+    )
+
+    assert result == module.ExistingWorkflowCheck(
+        name="eval-wf-2",
+        exists=True,
+        reason="exists as eval-wf-2",
+    )
+    assert queries == ["eval-wf", "eval-wf-1", "eval-wf-2"]
