@@ -109,6 +109,79 @@ def _make_rope(head_dim=126, agent_dim=16, V=4, alpha=1.0):
     )
 
 
+def _gamma_world_reference_freqs_cis(dim: int, end: int, theta: float = 10000.0):
+    freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: dim // 2].double() / dim))
+    freqs = torch.outer(torch.arange(end, device=freqs.device), freqs)
+    return torch.polar(torch.ones_like(freqs), freqs)
+
+
+def _gamma_world_reference_simplex_agent_freqs(
+    num_agents: int,
+    dim_agent: int,
+    scale: float = 1.0,
+):
+    d = dim_agent // 2
+    if num_agents == 1:
+        return torch.ones(1, d, dtype=torch.complex64)
+    if num_agents <= d + 1:
+        vecs = torch.eye(num_agents, d, dtype=torch.float64)
+    else:
+        gen = torch.Generator().manual_seed(0)
+        random_mat = torch.randn(d, num_agents, dtype=torch.float64, generator=gen)
+        q, _ = torch.linalg.qr(random_mat)
+        vecs = q.T[:num_agents].contiguous()
+    vecs = vecs - vecs.mean(dim=0, keepdim=True)
+    vecs = vecs / vecs.norm(dim=1, keepdim=True)
+    angles = vecs * scale
+    return torch.polar(torch.ones_like(angles), angles).to(torch.complex64)
+
+
+def _gamma_world_reference_build_multi_agent_freqs(
+    *,
+    head_dim: int,
+    f: int,
+    h: int,
+    w: int,
+    agent_pool_indices: list[int],
+    num_agents_in_pool: int,
+    agent_scale: float = 1.0,
+):
+    dim_spatial = head_dim // 3
+    dim_temporal = head_dim - 2 * dim_spatial
+    dim_th = (dim_temporal // 2 // 2) * 2
+    if dim_th == 0:
+        dim_th = 2
+    dim_agent = dim_temporal - dim_th
+    if dim_agent % 2 == 1:
+        dim_th += 1
+        dim_agent -= 1
+
+    freqs_th = _gamma_world_reference_freqs_cis(dim_th, f)
+    freqs_agent = _gamma_world_reference_simplex_agent_freqs(
+        num_agents_in_pool,
+        dim_agent,
+        agent_scale,
+    )
+    freqs_h = _gamma_world_reference_freqs_cis(dim_spatial, h)
+    freqs_w = _gamma_world_reference_freqs_cis(dim_spatial, w)
+
+    all_freqs = []
+    for agent_idx in agent_pool_indices:
+        agent_freqs = torch.cat(
+            [
+                freqs_th[:f].view(f, 1, 1, -1).expand(f, h, w, -1),
+                freqs_agent[agent_idx : agent_idx + 1]
+                .view(1, 1, 1, -1)
+                .expand(f, h, w, -1),
+                freqs_h[:h].view(1, h, 1, -1).expand(f, h, w, -1),
+                freqs_w[:w].view(1, 1, w, -1).expand(f, h, w, -1),
+            ],
+            dim=-1,
+        )
+        all_freqs.append(agent_freqs.reshape(f * h * w, 1, -1))
+    return torch.cat(all_freqs, dim=0)
+
+
 def test_rope_output_shape():
     rope = _make_rope()
     freqs = rope.forward(f=3, p=2, h=4, w=5)
@@ -155,6 +228,35 @@ def test_agent_permutation_swaps_per_agent_slices():
     torch.testing.assert_close(cos_a[1], cos_b[0])
     torch.testing.assert_close(sin_a[0], sin_b[1])
     torch.testing.assert_close(sin_a[1], sin_b[0])
+
+
+def test_gamma_agent_dim_matches_gamma_world_reference_layout():
+    """agent_dim='gamma' should exactly mirror Gamma-World's 4D simplex RoPE."""
+    head_dim = 128
+    f, p, h, w = 3, 2, 2, 3
+    agent_perm = torch.tensor([2, 0])
+    rope = SimplexRotaryPositionEmbedding4D(
+        num_heads=8,
+        head_dim=head_dim,
+        simplex_pool_size=4,
+        agent_dim="gamma",
+        alpha=1.0,
+        polar_output=True,
+    )
+
+    got = rope.forward(f=f, p=p, h=h, w=w, agent_perm=agent_perm)
+    expected = _gamma_world_reference_build_multi_agent_freqs(
+        head_dim=head_dim,
+        f=f,
+        h=h,
+        w=w,
+        agent_pool_indices=agent_perm.tolist(),
+        num_agents_in_pool=4,
+        agent_scale=1.0,
+    )
+
+    assert got.shape == expected.shape
+    torch.testing.assert_close(got, expected.to(dtype=got.dtype), atol=1e-6, rtol=1e-6)
 
 
 def test_active_temporal_band_independent_of_p():
