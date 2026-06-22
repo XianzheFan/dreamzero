@@ -156,13 +156,27 @@ def _video_summary(root: Path) -> dict[str, Any]:
 
 
 def _video_mode_metric(video_summary: dict[str, Any], mode: str, key: str) -> Any:
-    by_mode = video_summary.get("by_video_pred_rollout_mode")
-    if not isinstance(by_mode, dict):
+    return _video_breakdown_metric(
+        video_summary,
+        "by_video_pred_rollout_mode",
+        mode,
+        key,
+    )
+
+
+def _video_breakdown_metric(
+    video_summary: dict[str, Any],
+    breakdown_key: str,
+    label: str,
+    metric_key: str,
+) -> Any:
+    breakdown = video_summary.get(breakdown_key)
+    if not isinstance(breakdown, dict):
         return None
-    mode_summary = by_mode.get(mode)
-    if not isinstance(mode_summary, dict):
+    label_summary = breakdown.get(label)
+    if not isinstance(label_summary, dict):
         return None
-    return mode_summary.get(key)
+    return label_summary.get(metric_key)
 
 
 def _sweep_rows(root: Path) -> list[dict[str, Any]]:
@@ -357,6 +371,46 @@ def summarize_eval_root(root: Path) -> dict[str, Any]:
             "noncausal",
             "laplacian_var_mean",
         ),
+        "vwin_action_pred_vs_future_mae_rgb_mean": _video_breakdown_metric(
+            video,
+            "by_video_pred_wrist_window_mode",
+            "action",
+            "pred_vs_future_mae_rgb_mean",
+        ),
+        "vwin_history_current_first_pred_vs_future_mae_rgb_mean": (
+            _video_breakdown_metric(
+                video,
+                "by_video_pred_wrist_window_mode",
+                "history-current-first",
+                "pred_vs_future_mae_rgb_mean",
+            )
+        ),
+        "vwin_action_temporal_absdiff_mean": _video_breakdown_metric(
+            video,
+            "by_video_pred_wrist_window_mode",
+            "action",
+            "temporal_absdiff_mean",
+        ),
+        "vwin_history_current_first_temporal_absdiff_mean": (
+            _video_breakdown_metric(
+                video,
+                "by_video_pred_wrist_window_mode",
+                "history-current-first",
+                "temporal_absdiff_mean",
+            )
+        ),
+        "vsrc_action_pred_vs_future_mae_rgb_mean": _video_breakdown_metric(
+            video,
+            "by_video_pred_input_source",
+            "action",
+            "pred_vs_future_mae_rgb_mean",
+        ),
+        "vsrc_override_pred_vs_future_mae_rgb_mean": _video_breakdown_metric(
+            video,
+            "by_video_pred_input_source",
+            "override",
+            "pred_vs_future_mae_rgb_mean",
+        ),
         "temporal_absdiff_mean": video.get("temporal_absdiff_mean"),
         "temporal_freeze_frac_mean": video.get("temporal_freeze_frac_mean"),
         "laplacian_var_mean": video.get("laplacian_var_mean"),
@@ -436,6 +490,12 @@ TABLE_COLUMNS = [
     ("tempdiff", "temporal_absdiff_mean"),
     ("act_temp", "action_temporal_absdiff_mean"),
     ("noncausal_temp", "noncausal_temporal_absdiff_mean"),
+    ("vwin_action_future", "vwin_action_pred_vs_future_mae_rgb_mean"),
+    ("vwin_hcf_future", "vwin_history_current_first_pred_vs_future_mae_rgb_mean"),
+    ("vwin_action_temp", "vwin_action_temporal_absdiff_mean"),
+    ("vwin_hcf_temp", "vwin_history_current_first_temporal_absdiff_mean"),
+    ("vsrc_action_future", "vsrc_action_pred_vs_future_mae_rgb_mean"),
+    ("vsrc_override_future", "vsrc_override_pred_vs_future_mae_rgb_mean"),
 ]
 
 

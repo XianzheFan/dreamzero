@@ -162,6 +162,28 @@ def _make_eval(
                         "laplacian_var_mean": 45.0,
                     },
                 },
+                "by_video_pred_wrist_window_mode": {
+                    "action": {
+                        "video_count": 4,
+                        "pred_vs_future_mae_rgb_mean": 32.0,
+                        "temporal_absdiff_mean": 24.0,
+                    },
+                    "history-current-first": {
+                        "video_count": 4,
+                        "pred_vs_future_mae_rgb_mean": 16.0,
+                        "temporal_absdiff_mean": 12.0,
+                    },
+                },
+                "by_video_pred_input_source": {
+                    "action": {
+                        "video_count": 4,
+                        "pred_vs_future_mae_rgb_mean": 31.0,
+                    },
+                    "override": {
+                        "video_count": 4,
+                        "pred_vs_future_mae_rgb_mean": 11.0,
+                    },
+                },
                 "temporal_absdiff_mean": 18.0,
                 "temporal_freeze_frac_mean": 0.0,
                 "laplacian_var_mean": 40.0,
@@ -232,6 +254,12 @@ def test_summarize_roots_orders_by_checkpoint_and_selects_best_setting(tmp_path)
     assert rows[0]["noncausal_temporal_absdiff_mean"] == 14.0
     assert rows[0]["action_laplacian_var_mean"] == 35.0
     assert rows[0]["noncausal_laplacian_var_mean"] == 45.0
+    assert rows[0]["vwin_action_pred_vs_future_mae_rgb_mean"] == 32.0
+    assert rows[0]["vwin_history_current_first_pred_vs_future_mae_rgb_mean"] == 16.0
+    assert rows[0]["vwin_action_temporal_absdiff_mean"] == 24.0
+    assert rows[0]["vwin_history_current_first_temporal_absdiff_mean"] == 12.0
+    assert rows[0]["vsrc_action_pred_vs_future_mae_rgb_mean"] == 31.0
+    assert rows[0]["vsrc_override_pred_vs_future_mae_rgb_mean"] == 11.0
     assert rows[1]["success_count"] == 1
     assert rows[1]["raw_joint_saturation_frac_left"] == 0.21000000000000002
     assert rows[1]["pred_vs_future_mae_rgb_first_to_last_delta_mean"] == 3.0
