@@ -38,7 +38,7 @@ workflow:
           CKPT_S3_BASE="${CKPT_S3_BASE:-{{ckpt_s3_base}}}"
           CKPT_AMLFS_BASE="${CKPT_AMLFS_BASE:-{{ckpt_amlfs_base}}}"
           CKPT_SETTING="{{ckpt_setting}}"
-          CKPT_WAIT_TIMEOUT_SECONDS=5400
+          CKPT_WAIT_TIMEOUT_SECONDS="${CKPT_WAIT_TIMEOUT_SECONDS:-{{ckpt_wait_timeout_seconds}}}"
           CKPT_WAIT_INTERVAL_SECONDS=120
           LOCAL_EVAL_CKPT_ROOT="/workspace/eval_ckpts/{{local_eval_ckpt_root}}"
           EVAL_NUM_FRAMES="{{eval_num_frames}}"
@@ -1295,7 +1295,7 @@ workflow:
       platform: dgx-h100
       storage: 620Gi
   timeout:
-    exec_timeout: 5h
+    exec_timeout: 10h
     queue_timeout: 2h
 default-values:
   workflow_name: dz-rf-gamma-dw-af2-lb500-50k-c2000-eval-h100-s1000-xz-20260622
@@ -1304,6 +1304,7 @@ default-values:
   ckpt_s3_base: s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/dz-rf-sg-gamma-dwteacher-actionlossfix2-lb500-50k-xz-20260622-teacher/checkpoints/dz-rf-sg-gamma-dwteacher-actionlossfix2-lb500-50k-xz-20260622-teacher
   ckpt_amlfs_base: /mnt/amlfs-01/home/xianzhef/osmo_cache/dreamzero/checkpoints/dz-rf-sg-gamma-dwteacher-actionlossfix2-lb500-50k-xz-20260622-teacher/dz-rf-sg-gamma-dwteacher-actionlossfix2-lb500-50k-xz-20260622-teacher
   ckpt_setting: checkpoint-2000
+  ckpt_wait_timeout_seconds: "21600"
   dreamzero_git_ref: gamma
   dreamzero_expected_git_commit: ""
   local_eval_ckpt_root: gamma_droidwidth_teacher_actionlossfix2_lb500_50k_c2000_slim_eval_h100_1seed1000
