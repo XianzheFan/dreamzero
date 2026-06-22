@@ -304,7 +304,7 @@ def test_liftbarrier_gamma_staged_workflow_runs_dense_teacher_then_sparse_studen
         'export STAGE2_WARMUP_OUTPUT_DIR="${STAGE2_WARMUP_OUTPUT_DIR:-${BASE_OUTPUT_DIR}/sparse_warmup}"',
         'export STAGE2_OUTPUT_DIR="${STAGE2_OUTPUT_DIR:-${BASE_OUTPUT_DIR}/sparse_student}"',
         'export ATTENTION_BACKEND="${ATTENTION_BACKEND:-flex}"',
-        'export STAGE1_GLOBAL_VIDEO_ATTENTION_MODE="${STAGE1_GLOBAL_VIDEO_ATTENTION_MODE:-${GLOBAL_VIDEO_ATTENTION_MODE:-bidirectional}}"',
+        'export STAGE1_GLOBAL_VIDEO_ATTENTION_MODE="${STAGE1_GLOBAL_VIDEO_ATTENTION_MODE:-${GLOBAL_VIDEO_ATTENTION_MODE:-read_only}}"',
         'export STAGE2_WARMUP_GLOBAL_VIDEO_ATTENTION_MODE="${STAGE2_WARMUP_GLOBAL_VIDEO_ATTENTION_MODE:-${GLOBAL_VIDEO_ATTENTION_MODE:-read_only}}"',
         'export STAGE2_GLOBAL_VIDEO_ATTENTION_MODE="${STAGE2_GLOBAL_VIDEO_ATTENTION_MODE:-${GLOBAL_VIDEO_ATTENTION_MODE:-read_only}}"',
         'export GLOBAL_VIDEO_ATTENTION_MODE="$STAGE1_GLOBAL_VIDEO_ATTENTION_MODE"',
@@ -490,11 +490,9 @@ def test_liftbarrier_gamma_droidwidth_teacher_workflow_preserves_droid_base_head
         'export TRAIN_MAX_CHUNK_SIZE="${TRAIN_MAX_CHUNK_SIZE:-{{train_max_chunk_size}}}"',
         'export TRAIN_MAX_GRAD_NORM="${TRAIN_MAX_GRAD_NORM:-{{train_max_grad_norm}}}"',
         'export BASE_ACTION_JERK_LOSS_WEIGHT="${ACTION_JERK_LOSS_WEIGHT:-{{action_jerk_loss_weight}}}"',
-        'export GLOBAL_VIDEO_DROPOUT_PROB="${GLOBAL_VIDEO_DROPOUT_PROB:-0.0}"',
-        'export GLOBAL_VIDEO_ATTENTION_MODE="${GLOBAL_VIDEO_ATTENTION_MODE:-bidirectional}"',
-        "droidwidth teacher requires GLOBAL_VIDEO_ATTENTION_MODE=bidirectional",
-        "ALLOW_NONBIDIRECTIONAL_TEACHER=true",
-        "Set ALLOW_NONBIDIRECTIONAL_TEACHER=true only for explicit ablations.",
+        'export GLOBAL_VIDEO_DROPOUT_PROB="${GLOBAL_VIDEO_DROPOUT_PROB:-0.1}"',
+        'export GLOBAL_VIDEO_ATTENTION_MODE="${GLOBAL_VIDEO_ATTENTION_MODE:-read_only}"',
+        "GLOBAL_VIDEO_ATTENTION_MODE must be bidirectional or read_only",
         'export STAGE_LABEL="$stage_label"',
         'export PRESERVE_LOCAL_DEEPSPEED_CHECKPOINTS="${PRESERVE_LOCAL_DEEPSPEED_CHECKPOINTS:-true}"',
         'export UPLOAD_STRICT_RESUME_CHECKPOINTS="${UPLOAD_STRICT_RESUME_CHECKPOINTS:-true}"',
@@ -552,7 +550,8 @@ def test_liftbarrier_gamma_droidwidth_teacher_workflow_preserves_droid_base_head
         assert marker in script
 
     assert '"sparse-causal-student-style"' not in script
-    assert 'GLOBAL_VIDEO_ATTENTION_MODE="${GLOBAL_VIDEO_ATTENTION_MODE:-read_only}"' not in script
+    assert "droidwidth teacher requires GLOBAL_VIDEO_ATTENTION_MODE=bidirectional" not in script
+    assert "ALLOW_NONBIDIRECTIONAL_TEACHER" not in script
     assert "Stage1 complete checkpoint selected for stage2 warm-start" not in script
     assert "RESTORE_RUN_NAME is ignored by the droidwidth teacher workflow" not in script
     assert "Restored checkpoints will be staged under STAGE1_OUTPUT_DIR" not in script

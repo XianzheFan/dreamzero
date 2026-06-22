@@ -579,10 +579,9 @@ workflow:
             export MULTI_AGENT_SAMPLE_AGENT_POOL="${MULTI_AGENT_SAMPLE_AGENT_POOL:-true}"
             export GLOBAL_VIDEO_DROPOUT_PROB="${GLOBAL_VIDEO_DROPOUT_PROB:-0.1}"
             export GLOBAL_VIDEO_TIMESTEP_MODE="${GLOBAL_VIDEO_TIMESTEP_MODE:-clean}"
-            # Match Gamma-World's curriculum: a stronger bidirectional teacher
-            # first, then causal-safe student stages that treat global video as
-            # read-only context.
-            export STAGE1_GLOBAL_VIDEO_ATTENTION_MODE="${STAGE1_GLOBAL_VIDEO_ATTENTION_MODE:-${GLOBAL_VIDEO_ATTENTION_MODE:-bidirectional}}"
+            # Match Gamma-World's curriculum while keeping the extra
+            # shared-global observation stream as clean read-only context.
+            export STAGE1_GLOBAL_VIDEO_ATTENTION_MODE="${STAGE1_GLOBAL_VIDEO_ATTENTION_MODE:-${GLOBAL_VIDEO_ATTENTION_MODE:-read_only}}"
             export STAGE2_WARMUP_GLOBAL_VIDEO_ATTENTION_MODE="${STAGE2_WARMUP_GLOBAL_VIDEO_ATTENTION_MODE:-${GLOBAL_VIDEO_ATTENTION_MODE:-read_only}}"
             export STAGE2_GLOBAL_VIDEO_ATTENTION_MODE="${STAGE2_GLOBAL_VIDEO_ATTENTION_MODE:-${GLOBAL_VIDEO_ATTENTION_MODE:-read_only}}"
             export GLOBAL_VIDEO_ATTENTION_MODE="$STAGE1_GLOBAL_VIDEO_ATTENTION_MODE"

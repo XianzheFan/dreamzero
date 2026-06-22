@@ -591,9 +591,9 @@ workflow:
             export ROPE_AGENT_DIM="${ROPE_AGENT_DIM:-gamma}"
             export MULTI_AGENT_SHUFFLE_AGENTS="${MULTI_AGENT_SHUFFLE_AGENTS:-true}"
             export MULTI_AGENT_SAMPLE_AGENT_POOL="${MULTI_AGENT_SAMPLE_AGENT_POOL:-true}"
-            export GLOBAL_VIDEO_DROPOUT_PROB="${GLOBAL_VIDEO_DROPOUT_PROB:-0.0}"
+            export GLOBAL_VIDEO_DROPOUT_PROB="${GLOBAL_VIDEO_DROPOUT_PROB:-0.1}"
             export GLOBAL_VIDEO_TIMESTEP_MODE="${GLOBAL_VIDEO_TIMESTEP_MODE:-clean}"
-            export GLOBAL_VIDEO_ATTENTION_MODE="${GLOBAL_VIDEO_ATTENTION_MODE:-bidirectional}"
+            export GLOBAL_VIDEO_ATTENTION_MODE="${GLOBAL_VIDEO_ATTENTION_MODE:-read_only}"
             export ATTENTION_BACKEND="${ATTENTION_BACKEND:-flex}"
             export CHECKPOINT_SLIM_INTERVAL_SECONDS="${CHECKPOINT_SLIM_INTERVAL_SECONDS:-30}"
             export PRESERVE_LOCAL_DEEPSPEED_CHECKPOINTS="${PRESERVE_LOCAL_DEEPSPEED_CHECKPOINTS:-true}"
@@ -960,13 +960,13 @@ workflow:
               export WANDB_RUN_ID="$RUN_NAME"
               mkdir -p "$OUTPUT_DIR"
 
-              if [ "$USE_SPARSE_HUB_ATTENTION" = "false" ] && \
-                 [ "$GLOBAL_VIDEO_ATTENTION_MODE" != "bidirectional" ] && \
-                 ! is_truthy "${ALLOW_NONBIDIRECTIONAL_TEACHER:-false}"; then
-                echo "ERROR: droidwidth teacher requires GLOBAL_VIDEO_ATTENTION_MODE=bidirectional; got ${GLOBAL_VIDEO_ATTENTION_MODE}." >&2
-                echo "Set ALLOW_NONBIDIRECTIONAL_TEACHER=true only for explicit ablations." >&2
-                exit 66
-              fi
+              case "$GLOBAL_VIDEO_ATTENTION_MODE" in
+                bidirectional|read_only) ;;
+                *)
+                  echo "ERROR: GLOBAL_VIDEO_ATTENTION_MODE must be bidirectional or read_only; got ${GLOBAL_VIDEO_ATTENTION_MODE}." >&2
+                  exit 66
+                  ;;
+              esac
 
               echo "Launching DreamZero RoboFactory LiftBarrier staged Gamma training: ${stage_label}"
               echo "BASE_RUN_NAME=$BASE_RUN_NAME"
