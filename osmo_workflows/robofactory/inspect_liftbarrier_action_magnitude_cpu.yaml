@@ -1,0 +1,445 @@
+workflow:
+  timeout:
+    queue_timeout: 1h
+    exec_timeout: 4h
+  name: "{{workflow_name}}"
+  resources:
+    default:
+      cpu: "{{resource_cpu}}"
+      gpu: 0
+      memory: "{{resource_memory}}"
+      storage: "{{resource_storage}}"
+  tasks:
+    - name: inspect-action-magnitude
+      image: nvcr.io/nvidian/gear-h100-train:latest
+      credentials:
+        gear-aws-cred:
+          AWS_ACCESS_KEY_ID: aws_access_key_id
+          AWS_SECRET_ACCESS_KEY: aws_secret_access_key
+          AWS_DEFAULT_REGION: aws_default_region
+          AWS_ENDPOINT_URL: aws_endpoint_url
+        gear-data-credentials:
+          GEAR_DATA_CREDENTIALS: data_credentials
+      command: ["bash"]
+      environment:
+        ACCEPT_EULA: "Y"
+        NO_NUCLEUS: "Y"
+      args: ["/tmp/inspect_liftbarrier_action_magnitude.sh"]
+      files:
+        - path: /tmp/inspect_liftbarrier_action_magnitude.sh
+          contents: |
+            #!/usr/bin/env bash
+            set -euo pipefail
+
+            exec > >(tee /tmp/inspect_liftbarrier_action_magnitude.log) 2>&1
+
+            RUN_NAME="${RUN_NAME:-{{run_name}}}"
+            export RUN_NAME
+            DATA_S3_URI="${DATA_S3_URI:-{{data_s3_uri}}}"
+            DATA_VARIANT="${DATA_VARIANT:-{{data_variant}}}"
+            HORIZON="${HORIZON:-{{horizon}}}"
+            SAMPLE_EPISODES="${SAMPLE_EPISODES:-{{sample_episodes}}}"
+            DOWNLOAD_REGEX="${DOWNLOAD_REGEX:-{{download_regex}}}"
+            RUN_S3_ROOT="s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/${RUN_NAME}"
+            OUT_S3_URI="${RUN_S3_ROOT}/action_magnitude"
+
+            for uri in "$DATA_S3_URI" "$RUN_S3_ROOT" "$OUT_S3_URI"; do
+              case "$uri" in
+                s3://GearHome/users/xianzhef/*) ;;
+                swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/*) ;;
+                *)
+                  echo "Refusing non-xianzhef URI: $uri" >&2
+                  exit 64
+                  ;;
+              esac
+            done
+
+            upload_outputs() {
+              status=$?
+              set +e
+              mkdir -p /workspace/action_magnitude_outputs
+              cp -f /tmp/inspect_liftbarrier_action_magnitude.log /workspace/action_magnitude_outputs/inspect_liftbarrier_action_magnitude.log
+              if [ ! -f /workspace/action_magnitude_outputs/summary.txt ]; then
+                {
+                  echo "workflow=${RUN_NAME}"
+                  echo "data_s3_uri=${DATA_S3_URI}"
+                  echo "data_variant=${DATA_VARIANT}"
+                  echo "horizon=${HORIZON}"
+                  echo "sample_episodes=${SAMPLE_EPISODES}"
+                  echo "status=${status}"
+                } > /workspace/action_magnitude_outputs/summary.txt
+              fi
+              osmo data upload "${OUT_S3_URI}/" /workspace/action_magnitude_outputs || true
+              exit "$status"
+            }
+            trap upload_outputs EXIT
+
+            cat > /tmp/inspect_robofactory_action_magnitude.py <<'PY'
+            from __future__ import annotations
+
+            import argparse
+            import json
+            from pathlib import Path
+            from typing import Any
+
+            import numpy as np
+            import pandas as pd
+
+
+            def load_json(path: Path) -> dict[str, Any]:
+                if not path.is_file():
+                    raise FileNotFoundError(f"missing JSON file: {path}")
+                return json.loads(path.read_text())
+
+
+            def load_jsonl(path: Path) -> list[dict[str, Any]]:
+                if not path.is_file():
+                    raise FileNotFoundError(f"missing JSONL file: {path}")
+                rows = []
+                with path.open() as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            rows.append(json.loads(line))
+                return rows
+
+
+            def episode_path(root: Path, info: dict[str, Any], episode_index: int) -> Path:
+                data_path = info.get("data_path")
+                if not isinstance(data_path, str):
+                    raise ValueError("meta/info.json missing data_path")
+                chunks_size = int(info.get("chunks_size", 1000))
+                rel = data_path.format(
+                    episode_chunk=episode_index // chunks_size,
+                    episode_index=episode_index,
+                )
+                return root / rel
+
+
+            def stack_column(df: pd.DataFrame, column: str) -> np.ndarray:
+                if column not in df:
+                    raise ValueError(f"missing parquet column {column}")
+                values = df[column].to_numpy()
+                return np.stack([np.asarray(v, dtype=np.float32) for v in values], axis=0)
+
+
+            def summary(values: np.ndarray) -> dict[str, Any]:
+                arr = np.asarray(values, dtype=np.float64).reshape(-1)
+                if arr.size == 0:
+                    return {"count": 0}
+                return {
+                    "count": int(arr.size),
+                    "mean": float(np.mean(arr)),
+                    "std": float(np.std(arr)),
+                    "min": float(np.min(arr)),
+                    "p50": float(np.quantile(arr, 0.50)),
+                    "p75": float(np.quantile(arr, 0.75)),
+                    "p90": float(np.quantile(arr, 0.90)),
+                    "p95": float(np.quantile(arr, 0.95)),
+                    "p99": float(np.quantile(arr, 0.99)),
+                    "max": float(np.max(arr)),
+                }
+
+
+            def per_dim_summary(values: np.ndarray, dims: list[int]) -> list[dict[str, Any]]:
+                arr = np.asarray(values, dtype=np.float64)
+                if arr.ndim != 2:
+                    arr = arr.reshape(-1, len(dims))
+                rows = []
+                for i, dim in enumerate(dims):
+                    item = summary(arr[:, i])
+                    item["dim"] = int(dim)
+                    rows.append(item)
+                return rows
+
+
+            def joint_spans(modality: dict[str, Any], gripper_dims: tuple[int, ...]) -> list[tuple[str, int, int]]:
+                spans = []
+                for name, meta in modality.get("action", {}).items():
+                    if "joint" in name:
+                        spans.append((name, int(meta["start"]), int(meta["end"])))
+                if spans:
+                    return sorted(spans, key=lambda item: item[1])
+                action_dim = max(int(meta["end"]) for meta in modality.get("action", {}).values())
+                dims = [dim for dim in range(action_dim) if dim not in set(gripper_dims)]
+                return [("joint_without_grippers", min(dims), max(dims) + 1)]
+
+
+            def span_dims(spans: list[tuple[str, int, int]]) -> list[int]:
+                dims = []
+                for _, start, end in spans:
+                    dims.extend(range(start, end))
+                return dims
+
+
+            def stats_vector(stats: dict[str, Any], key: str, stat_name: str, dim: int) -> np.ndarray | None:
+                try:
+                    arr = np.asarray(stats[key][stat_name], dtype=np.float64)
+                except KeyError:
+                    return None
+                if arr.shape != (dim,):
+                    raise ValueError(f"stats {key}.{stat_name} shape {arr.shape}, expected {(dim,)}")
+                return arr
+
+
+            def normalize_q99(x: np.ndarray, q01: np.ndarray, q99: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+                x = np.asarray(x, dtype=np.float64)
+                denom = q99 - q01
+                mask = denom != 0
+                raw = np.zeros_like(x, dtype=np.float64)
+                raw[..., mask] = 2.0 * (x[..., mask] - q01[mask]) / denom[mask] - 1.0
+                raw[..., ~mask] = x[..., ~mask]
+                return raw, np.clip(raw, -1.0, 1.0)
+
+
+            def denormalize_q99(x: np.ndarray, q01: np.ndarray, q99: np.ndarray) -> np.ndarray:
+                return (x + 1.0) / 2.0 * (q99 - q01) + q01
+
+
+            def roundtrip(x: np.ndarray, q01: np.ndarray, q99: np.ndarray) -> dict[str, Any]:
+                raw_norm, clipped_norm = normalize_q99(x, q01, q99)
+                recovered = denormalize_q99(clipped_norm, q01, q99)
+                return {
+                    "values_abs": summary(np.abs(x)),
+                    "normalized_abs": summary(np.abs(raw_norm)),
+                    "clip_fraction": float(np.mean(np.abs(raw_norm) > 1.0)),
+                    "roundtrip_abs_error": summary(np.abs(recovered - x)),
+                }
+
+
+            def inspect(root: Path, horizon: int, sample_episodes: int, close_threshold: float) -> dict[str, Any]:
+                info = load_json(root / "meta/info.json")
+                modality = load_json(root / "meta/modality.json")
+                stats = load_json(root / "meta/stats.json")
+                rel_path = root / "meta/relative_stats_dreamzero.json"
+                rel_stats = load_json(rel_path) if rel_path.is_file() else {}
+                episodes = load_jsonl(root / "meta/episodes.jsonl")
+                selected = episodes[:sample_episodes] if sample_episodes > 0 else episodes
+
+                action_dim = int(info["features"]["action"]["shape"][0])
+                state_dim = int(info["features"]["observation.state"]["shape"][0])
+                gripper_dims = (7, 15)
+                spans = joint_spans(modality, gripper_dims)
+                joint_dims = span_dims(spans)
+
+                one_step_abs = []
+                horizon_abs = []
+                by_offset = [[] for _ in range(horizon)]
+                action_all = []
+                state_all = []
+                grippers = []
+                first_close = []
+                rel_by_span = {name: [] for name, _, _ in spans}
+
+                for episode in selected:
+                    ep_idx = int(episode["episode_index"])
+                    df = pd.read_parquet(episode_path(root, info, ep_idx))
+                    action = stack_column(df, "action")
+                    state = stack_column(df, "observation.state")
+                    action_all.append(action)
+                    state_all.append(state)
+                    grippers.append(action[:, list(gripper_dims)])
+
+                    one_step_abs.append(np.abs(action[:, joint_dims] - state[:, joint_dims]))
+                    close_mask = np.any(action[:, list(gripper_dims)] < close_threshold, axis=1)
+                    close_idx = np.flatnonzero(close_mask)
+                    if close_idx.size:
+                        first_close.append(int(close_idx[0]))
+
+                    usable = max(0, len(action) - horizon)
+                    for start in range(usable):
+                        chunk = action[start : start + horizon, joint_dims] - state[start, joint_dims]
+                        abs_chunk = np.abs(chunk)
+                        horizon_abs.append(abs_chunk)
+                        for offset in range(horizon):
+                            by_offset[offset].append(abs_chunk[offset])
+                    for name, start_dim, end_dim in spans:
+                        for start in range(usable):
+                            rel_by_span[name].append(
+                                action[start : start + horizon, start_dim:end_dim]
+                                - state[start, start_dim:end_dim]
+                            )
+
+                one_step = np.concatenate(one_step_abs, axis=0)
+                horizon_values = np.concatenate([x.reshape(-1, len(joint_dims)) for x in horizon_abs], axis=0)
+                action_values = np.concatenate(action_all, axis=0)
+                state_values = np.concatenate(state_all, axis=0)
+                gripper_values = np.concatenate(grippers, axis=0)
+
+                action_q01 = stats_vector(stats, "action", "q01", action_dim)
+                action_q99 = stats_vector(stats, "action", "q99", action_dim)
+                state_q01 = stats_vector(stats, "observation.state", "q01", state_dim)
+                state_q99 = stats_vector(stats, "observation.state", "q99", state_dim)
+
+                rel_report = {}
+                for name, arrays in rel_by_span.items():
+                    values = np.concatenate([x.reshape(-1, x.shape[-1]) for x in arrays], axis=0)
+                    entry = {
+                        "target_current_abs": summary(np.abs(values)),
+                        "target_current_abs_per_dim": per_dim_summary(np.abs(values), list(range(values.shape[-1]))),
+                    }
+                    if name in rel_stats:
+                        q01 = np.asarray(rel_stats[name]["q01"], dtype=np.float64)
+                        q99 = np.asarray(rel_stats[name]["q99"], dtype=np.float64)
+                        entry["q99_roundtrip"] = roundtrip(values, q01, q99)
+                    else:
+                        entry["q99_roundtrip"] = None
+                    rel_report[name] = entry
+
+                return {
+                    "root": str(root),
+                    "episodes_total": len(episodes),
+                    "episodes_read": len(selected),
+                    "horizon": horizon,
+                    "action_dim": action_dim,
+                    "state_dim": state_dim,
+                    "joint_spans": [{"name": n, "start": s, "end": e} for n, s, e in spans],
+                    "joint_dims": joint_dims,
+                    "one_step_target_current_abs": summary(one_step),
+                    "one_step_target_current_abs_per_dim": per_dim_summary(one_step, joint_dims),
+                    "horizon_target_current_abs": summary(horizon_values),
+                    "horizon_target_current_abs_per_dim": per_dim_summary(horizon_values, joint_dims),
+                    "horizon_target_current_abs_by_offset": [
+                        {"offset": i, **summary(np.concatenate(items, axis=0) if items else np.zeros((0,), dtype=np.float32))}
+                        for i, items in enumerate(by_offset)
+                    ],
+                    "gripper": {
+                        "close_threshold": close_threshold,
+                        "close_fraction_any_arm": float(np.mean(np.any(gripper_values < close_threshold, axis=1))),
+                        "first_close_step": summary(np.asarray(first_close, dtype=np.float64)),
+                        "values": summary(gripper_values),
+                    },
+                    "absolute_action_q99_roundtrip": (
+                        roundtrip(action_values, action_q01, action_q99)
+                        if action_q01 is not None and action_q99 is not None
+                        else None
+                    ),
+                    "state_q99_roundtrip": (
+                        roundtrip(state_values, state_q01, state_q99)
+                        if state_q01 is not None and state_q99 is not None
+                        else None
+                    ),
+                    "relative_stats_present": bool(rel_stats),
+                    "relative_stats_path": str(rel_path),
+                    "relative_action_q99_roundtrip": rel_report,
+                }
+
+
+            def main() -> None:
+                parser = argparse.ArgumentParser()
+                parser.add_argument("--root", type=Path, required=True)
+                parser.add_argument("--horizon", type=int, default=24)
+                parser.add_argument("--sample-episodes", type=int, default=0)
+                parser.add_argument("--close-threshold", type=float, default=0.5)
+                parser.add_argument("--output", type=Path, required=True)
+                args = parser.parse_args()
+                payload = inspect(args.root.resolve(), args.horizon, args.sample_episodes, args.close_threshold)
+                args.output.parent.mkdir(parents=True, exist_ok=True)
+                args.output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+                print(json.dumps(payload, indent=2, sort_keys=True))
+
+
+            if __name__ == "__main__":
+                main()
+            PY
+
+            python -m py_compile /tmp/inspect_robofactory_action_magnitude.py
+            python - <<'PY'
+            import pandas
+            print("pandas", pandas.__version__)
+            try:
+                import pyarrow
+                print("pyarrow", pyarrow.__version__)
+            except Exception as exc:
+                print("pyarrow_import_error", repr(exc))
+            PY
+
+            DATA_PARENT="/workspace/data/robofactory_lerobot_v2"
+            DATA_ROOT="${DATA_PARENT}/${DATA_VARIANT}"
+            mkdir -p "$DATA_PARENT" /workspace/action_magnitude_outputs
+
+            echo "Downloading ${DATA_S3_URI}/ to ${DATA_PARENT} with regex ${DOWNLOAD_REGEX}"
+            osmo data download --resume --regex "$DOWNLOAD_REGEX" "${DATA_S3_URI}/" "$DATA_PARENT"
+
+            if [ -d "$DATA_ROOT/meta" ]; then
+              :
+            elif [ -d "${DATA_PARENT}/meta" ]; then
+              DATA_ROOT="$DATA_PARENT"
+            else
+              found_meta="$(find "$DATA_PARENT" -maxdepth 4 -type d -name meta -print | sort | head -n 1)"
+              if [ -n "$found_meta" ]; then
+                DATA_ROOT="$(dirname "$found_meta")"
+              fi
+            fi
+            if [ ! -d "$DATA_ROOT/meta" ]; then
+              echo "ERROR: did not find LeRobot meta directory under ${DATA_PARENT}" >&2
+              find "$DATA_PARENT" -maxdepth 5 -type d | sed -n '1,200p'
+              exit 3
+            fi
+
+            echo "Resolved DATA_ROOT=${DATA_ROOT}"
+            find "$DATA_ROOT/meta" -maxdepth 1 -type f -print | sort
+
+            python /tmp/inspect_robofactory_action_magnitude.py \
+              --root "$DATA_ROOT" \
+              --horizon "$HORIZON" \
+              --sample-episodes "$SAMPLE_EPISODES" \
+              --output /workspace/action_magnitude_outputs/liftbarrier_action_magnitude.json \
+              > /workspace/action_magnitude_outputs/liftbarrier_action_magnitude.stdout.json
+
+            python - <<'PY'
+            import json
+            import os
+            from pathlib import Path
+
+            p = Path("/workspace/action_magnitude_outputs/liftbarrier_action_magnitude.json")
+            data = json.loads(p.read_text())
+            lines = [
+                f"workflow={os.environ.get('RUN_NAME', '')}",
+                f"root={data['root']}",
+                f"episodes_read={data['episodes_read']}",
+                f"horizon={data['horizon']}",
+                f"one_step_p50={data['one_step_target_current_abs']['p50']:.6f}",
+                f"one_step_p95={data['one_step_target_current_abs']['p95']:.6f}",
+                f"horizon_p50={data['horizon_target_current_abs']['p50']:.6f}",
+                f"horizon_p95={data['horizon_target_current_abs']['p95']:.6f}",
+                f"relative_stats_present={data['relative_stats_present']}",
+            ]
+            action_rt = data.get("absolute_action_q99_roundtrip")
+            if action_rt:
+                lines.append(f"absolute_action_q99_clip_fraction={action_rt['clip_fraction']:.6f}")
+                lines.append(
+                    "absolute_action_roundtrip_p99_error="
+                    f"{action_rt['roundtrip_abs_error']['p99']:.8f}"
+                )
+            rel = data.get("relative_action_q99_roundtrip", {})
+            for name, payload in rel.items():
+                lines.append(f"{name}_horizon_target_p95={payload['target_current_abs']['p95']:.6f}")
+                rt = payload.get("q99_roundtrip")
+                if rt:
+                    lines.append(f"{name}_relative_q99_clip_fraction={rt['clip_fraction']:.6f}")
+                    lines.append(
+                        f"{name}_relative_roundtrip_p99_error="
+                        f"{rt['roundtrip_abs_error']['p99']:.8f}"
+                    )
+            text = "\n".join(lines) + "\n"
+            Path("/workspace/action_magnitude_outputs/summary.txt").write_text(text)
+            print("=== summary.txt ===")
+            print(text)
+            PY
+
+            echo "Uploading outputs to ${OUT_S3_URI}/"
+            osmo data upload "${OUT_S3_URI}/" /workspace/action_magnitude_outputs
+            echo "LiftBarrier action magnitude inspection complete."
+
+default-values:
+  workflow_name: dz-rf-liftbarrier-action-magnitude-cpu-xz-20260625-v2
+  run_name: dz-rf-liftbarrier-action-magnitude-cpu-xz-20260625-v2
+  data_variant: LiftBarrier-rf-500
+  data_s3_uri: s3://GearHome/users/xianzhef/oci-migration/data/robofactory_lerobot_v2/LiftBarrier-rf-500
+  horizon: "24"
+  sample_episodes: "0"
+  download_regex: ".*(meta/.*|data/.*\\.parquet)$"
+  resource_cpu: "8"
+  resource_memory: 64Gi
+  resource_storage: 250Gi

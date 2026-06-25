@@ -1,0 +1,428 @@
+workflow:
+  timeout:
+    queue_timeout: 1h
+    exec_timeout: 2h
+  name: "{{workflow_name}}"
+  resources:
+    default:
+      cpu: "{{resource_cpu}}"
+      gpu: 0
+      memory: "{{resource_memory}}"
+      storage: "{{resource_storage}}"
+  tasks:
+    - name: analyze-liftbarrier-trace
+      image: nvcr.io/nvidian/gear-h100-train:latest
+      credentials:
+        gear-aws-cred:
+          AWS_ACCESS_KEY_ID: aws_access_key_id
+          AWS_SECRET_ACCESS_KEY: aws_secret_access_key
+          AWS_DEFAULT_REGION: aws_default_region
+          AWS_ENDPOINT_URL: aws_endpoint_url
+        gear-data-credentials:
+          GEAR_DATA_CREDENTIALS: data_credentials
+      command: ["bash"]
+      environment:
+        ACCEPT_EULA: "Y"
+        NO_NUCLEUS: "Y"
+      args: ["/tmp/analyze_liftbarrier_trace.sh"]
+      files:
+        - path: /tmp/analyze_liftbarrier_trace.sh
+          contents: |
+            #!/usr/bin/env bash
+            set -euo pipefail
+
+            exec > >(tee /tmp/analyze_liftbarrier_trace.log) 2>&1
+
+            RUN_NAME="${RUN_NAME:-{{run_name}}}"
+            export RUN_NAME
+            EVAL_S3_URI="${EVAL_S3_URI:-{{eval_s3_uri}}}"
+            EVAL_DOWNLOAD_REGEX="${EVAL_DOWNLOAD_REGEX:-{{eval_download_regex}}}"
+            CONTACT_THRESHOLD="${CONTACT_THRESHOLD:-{{contact_threshold}}}"
+            DECISIVE_THRESHOLD="${DECISIVE_THRESHOLD:-{{decisive_threshold}}}"
+            STEP_MARKS="${STEP_MARKS:-{{step_marks}}}"
+            RUN_S3_ROOT="s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/${RUN_NAME}"
+            OUT_S3_URI="${RUN_S3_ROOT}/trace_diagnostics"
+
+            for uri in "$EVAL_S3_URI" "$RUN_S3_ROOT" "$OUT_S3_URI"; do
+              case "$uri" in
+                s3://GearHome/users/xianzhef/*) ;;
+                swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/*) ;;
+                *)
+                  echo "Refusing non-xianzhef URI: $uri" >&2
+                  exit 64
+                  ;;
+              esac
+            done
+
+            upload_outputs() {
+              status=$?
+              set +e
+              mkdir -p /workspace/trace_diagnostics_outputs
+              cp -f /tmp/analyze_liftbarrier_trace.log /workspace/trace_diagnostics_outputs/analyze_liftbarrier_trace.log
+              if [ ! -f /workspace/trace_diagnostics_outputs/summary.txt ]; then
+                {
+                  echo "workflow=${RUN_NAME}"
+                  echo "eval_s3_uri=${EVAL_S3_URI}"
+                  echo "status=${status}"
+                } > /workspace/trace_diagnostics_outputs/summary.txt
+              fi
+              osmo data upload "${OUT_S3_URI}/" /workspace/trace_diagnostics_outputs || true
+              exit "$status"
+            }
+            trap upload_outputs EXIT
+
+            EVAL_PARENT=/workspace/eval_artifacts
+            mkdir -p "$EVAL_PARENT" /workspace/trace_diagnostics_outputs
+
+            echo "Downloading eval artifacts from ${EVAL_S3_URI}/ with regex ${EVAL_DOWNLOAD_REGEX}"
+            osmo data download --resume --regex "$EVAL_DOWNLOAD_REGEX" "${EVAL_S3_URI}/" "$EVAL_PARENT"
+
+            echo "Eval action dump file count:"
+            find "$EVAL_PARENT" -path "*/action_dump/episode_*.npz" -type f | wc -l
+
+            python /tmp/analyze_liftbarrier_trace_diagnostics.py \
+              --eval-root "$EVAL_PARENT" \
+              --output /workspace/trace_diagnostics_outputs/liftbarrier_trace_diagnostics.json \
+              --summary /workspace/trace_diagnostics_outputs/summary.txt \
+              --contact-threshold "$CONTACT_THRESHOLD" \
+              --decisive-threshold "$DECISIVE_THRESHOLD" \
+              --step-marks "$STEP_MARKS"
+
+            echo "=== summary.txt ==="
+            cat /workspace/trace_diagnostics_outputs/summary.txt
+            echo "Uploading outputs to ${OUT_S3_URI}/"
+            osmo data upload "${OUT_S3_URI}/" /workspace/trace_diagnostics_outputs
+            echo "LiftBarrier trace diagnostics complete."
+
+        - path: /tmp/analyze_liftbarrier_trace_diagnostics.py
+          contents: |
+            from __future__ import annotations
+
+            import argparse
+            import json
+            import re
+            from pathlib import Path
+            from typing import Any
+
+            import numpy as np
+
+            TARGET_COLS = {
+                "left": "left_tcp_to_grasp_target",
+                "right": "right_tcp_to_grasp_target",
+            }
+            CMD_COLS = {"left": "cmd_left_gripper", "right": "cmd_right_gripper"}
+            GRASP_COLS = {"left": "left_grasping", "right": "right_grasping"}
+
+
+            def summary(values) -> dict[str, Any]:
+                arr = np.asarray(values, dtype=np.float64).reshape(-1)
+                arr = arr[np.isfinite(arr)]
+                if arr.size == 0:
+                    return {"count": 0}
+                return {
+                    "count": int(arr.size),
+                    "mean": float(np.mean(arr)),
+                    "std": float(np.std(arr)),
+                    "min": float(np.min(arr)),
+                    "p50": float(np.quantile(arr, 0.50)),
+                    "p75": float(np.quantile(arr, 0.75)),
+                    "p90": float(np.quantile(arr, 0.90)),
+                    "p95": float(np.quantile(arr, 0.95)),
+                    "max": float(np.max(arr)),
+                }
+
+
+            def safe_float(value):
+                if value is None:
+                    return None
+                value = float(value)
+                return value if np.isfinite(value) else None
+
+
+            def columns(data) -> dict[str, int]:
+                labels = [str(x) for x in np.asarray(data["env_trace_columns"]).reshape(-1)]
+                return {label: idx for idx, label in enumerate(labels)}
+
+
+            def finite_series(trace, cols, key):
+                steps = trace[:, cols["step"]].astype(np.float64)
+                values = trace[:, cols[key]].astype(np.float64)
+                mask = np.isfinite(steps) & np.isfinite(values)
+                return steps[mask], values[mask]
+
+
+            def first_true_step(trace, cols, key, predicate):
+                steps, values = finite_series(trace, cols, key)
+                idx = np.where(predicate(values))[0]
+                return int(round(float(steps[idx[0]]))) if idx.size else None
+
+
+            def value_at_or_before(steps, values, step):
+                if step is None:
+                    return None
+                idx = np.where(steps <= step)[0]
+                return safe_float(values[idx[-1]]) if idx.size else None
+
+
+            def value_at_or_after(steps, values, step):
+                if step is None:
+                    return None
+                idx = np.where(steps >= step)[0]
+                return safe_float(values[idx[0]]) if idx.size else None
+
+
+            def variant_name(path: Path) -> str:
+                return path.parent.parent.name if path.parent.name == "action_dump" else path.parent.name
+
+
+            def replan_from_variant(name: str):
+                match = re.search(r"_rp(\d+)_", name)
+                return int(match.group(1)) if match else None
+
+
+            def arm_metrics(trace, cols, arm, step_marks, contact_threshold, decisive_threshold, tail_window):
+                steps, dist = finite_series(trace, cols, TARGET_COLS[arm])
+                if dist.size == 0:
+                    return {"available": False}
+                min_idx = int(np.argmin(dist))
+                final_step = int(round(float(steps[-1])))
+                tail = dist[steps >= max(0, final_step - tail_window)]
+                first_decisive = first_true_step(
+                    trace, cols, CMD_COLS[arm], lambda values: values < decisive_threshold
+                )
+                close_action_step = first_decisive - 1 if first_decisive is not None else None
+                before_close = value_at_or_before(steps, dist, close_action_step)
+                after_close = value_at_or_after(steps, dist, first_decisive)
+                below = np.where(dist <= contact_threshold)[0]
+                first_grasp = first_true_step(
+                    trace, cols, GRASP_COLS[arm], lambda values: values > 0.5
+                )
+                start = safe_float(dist[0])
+                min_value = safe_float(dist[min_idx])
+                final = safe_float(dist[-1])
+                return {
+                    "available": True,
+                    "start": start,
+                    "min": min_value,
+                    "min_step": int(round(float(steps[min_idx]))),
+                    "final": final,
+                    "last_window_mean": safe_float(np.mean(tail)) if tail.size else None,
+                    "final_minus_min": None if final is None or min_value is None else final - min_value,
+                    "start_to_min_improvement": None if start is None or min_value is None else start - min_value,
+                    "first_step_below_contact_threshold": int(round(float(steps[below[0]]))) if below.size else None,
+                    "first_decisive_close_trace_step": first_decisive,
+                    "first_decisive_close_action_step": close_action_step,
+                    "target_dist_before_decisive_close": before_close,
+                    "target_dist_after_decisive_close": after_close,
+                    "decisive_close_before_contact": None if before_close is None else bool(before_close > contact_threshold),
+                    "first_grasp_step": first_grasp,
+                    "curve": {str(mark): value_at_or_before(steps, dist, mark) for mark in step_marks},
+                }
+
+
+            def analyze_episode(path, step_marks, contact_threshold, decisive_threshold, tail_window):
+                data = np.load(path, allow_pickle=True)
+                trace = np.asarray(data["env_trace"], dtype=np.float64)
+                cols = columns(data)
+                required = {"step", *TARGET_COLS.values(), *CMD_COLS.values(), *GRASP_COLS.values()}
+                missing = sorted(required.difference(cols))
+                if missing:
+                    raise KeyError(f"{path} missing env_trace columns: {missing}")
+                name = variant_name(path)
+                return {
+                    "file": str(path),
+                    "seed": int(np.asarray(data["seed"]).reshape(-1)[0]) if "seed" in data else None,
+                    "success": bool(np.asarray(data["success"]).reshape(-1)[0]) if "success" in data else False,
+                    "variant": name,
+                    "replan": replan_from_variant(name),
+                    "arms": {
+                        arm: arm_metrics(
+                            trace,
+                            cols,
+                            arm,
+                            step_marks,
+                            contact_threshold,
+                            decisive_threshold,
+                            tail_window,
+                        )
+                        for arm in ("left", "right")
+                    },
+                }
+
+
+            def aggregate_arm(episodes, arm, step_marks):
+                metrics = [episode["arms"][arm] for episode in episodes if episode["arms"][arm]["available"]]
+                out = {"episodes": len(metrics)}
+                for key in [
+                    "start",
+                    "min",
+                    "final",
+                    "last_window_mean",
+                    "final_minus_min",
+                    "start_to_min_improvement",
+                    "target_dist_before_decisive_close",
+                    "target_dist_after_decisive_close",
+                    "min_step",
+                    "first_decisive_close_trace_step",
+                    "first_decisive_close_action_step",
+                    "first_grasp_step",
+                    "first_step_below_contact_threshold",
+                ]:
+                    out[key] = summary([m[key] for m in metrics if m.get(key) is not None])
+                out["decisive_close_count"] = sum(int(m.get("first_decisive_close_trace_step") is not None) for m in metrics)
+                out["decisive_close_before_contact_count"] = sum(int(m.get("decisive_close_before_contact") is True) for m in metrics)
+                out["grasp_count"] = sum(int(m.get("first_grasp_step") is not None) for m in metrics)
+                out["contact_reached_count"] = sum(int(m.get("first_step_below_contact_threshold") is not None) for m in metrics)
+                out["curve"] = {
+                    str(mark): summary([m["curve"][str(mark)] for m in metrics if m["curve"].get(str(mark)) is not None])
+                    for mark in step_marks
+                }
+                return out
+
+
+            def analyze_root(eval_root, step_marks, contact_threshold, decisive_threshold, tail_window):
+                grouped = {}
+                for path in sorted(Path(eval_root).rglob("episode_*.npz")):
+                    if path.parent.name == "action_dump":
+                        grouped.setdefault(variant_name(path), []).append(path)
+                if not grouped:
+                    raise FileNotFoundError(f"no action_dump episode npz files under {eval_root}")
+                variants = []
+                for name, paths in sorted(grouped.items()):
+                    episodes = [
+                        analyze_episode(path, step_marks, contact_threshold, decisive_threshold, tail_window)
+                        for path in paths
+                    ]
+                    variants.append(
+                        {
+                            "variant": name,
+                            "replan": replan_from_variant(name),
+                            "episodes": len(episodes),
+                            "success_count": sum(int(e["success"]) for e in episodes),
+                            "contact_threshold": contact_threshold,
+                            "left": aggregate_arm(episodes, "left", step_marks),
+                            "right": aggregate_arm(episodes, "right", step_marks),
+                            "episode_metrics": episodes,
+                        }
+                    )
+                return {
+                    "eval_root": str(eval_root),
+                    "step_marks": list(step_marks),
+                    "contact_threshold": contact_threshold,
+                    "decisive_threshold": decisive_threshold,
+                    "variants": variants,
+                }
+
+
+            def write_summary(result, path):
+                lines = [
+                    f"eval_root={result['eval_root']}",
+                    f"contact_threshold={result['contact_threshold']}",
+                    f"decisive_threshold={result['decisive_threshold']}",
+                    "",
+                    "\t".join(
+                        [
+                            "variant",
+                            "replan",
+                            "episodes",
+                            "success",
+                            "left_min_p50",
+                            "right_min_p50",
+                            "left_final_p50",
+                            "right_final_p50",
+                            "left_before_close_p50",
+                            "right_before_close_p50",
+                            "left_close_far_eps",
+                            "right_close_far_eps",
+                            "left_grasp_eps",
+                            "right_grasp_eps",
+                        ]
+                    ),
+                ]
+                for variant in result["variants"]:
+                    left = variant["left"]
+                    right = variant["right"]
+
+                    def p50(arm, key):
+                        value = arm.get(key, {}).get("p50")
+                        return "nan" if value is None else f"{value:.6f}"
+
+                    lines.append(
+                        "\t".join(
+                            [
+                                variant["variant"],
+                                str(variant["replan"]),
+                                str(variant["episodes"]),
+                                str(variant["success_count"]),
+                                p50(left, "min"),
+                                p50(right, "min"),
+                                p50(left, "final"),
+                                p50(right, "final"),
+                                p50(left, "target_dist_before_decisive_close"),
+                                p50(right, "target_dist_before_decisive_close"),
+                                str(left["decisive_close_before_contact_count"]),
+                                str(right["decisive_close_before_contact_count"]),
+                                str(left["grasp_count"]),
+                                str(right["grasp_count"]),
+                            ]
+                        )
+                    )
+                    lines.append("curve_step\tleft_p50\tright_p50")
+                    for mark in result["step_marks"]:
+                        lv = left["curve"][str(mark)].get("p50")
+                        rv = right["curve"][str(mark)].get("p50")
+                        lines.append(
+                            "\t".join(
+                                [
+                                    str(mark),
+                                    "nan" if lv is None else f"{lv:.6f}",
+                                    "nan" if rv is None else f"{rv:.6f}",
+                                ]
+                            )
+                        )
+                    lines.append("")
+                path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+            def parse_marks(value):
+                return tuple(int(part.strip()) for part in value.split(",") if part.strip())
+
+
+            def main():
+                parser = argparse.ArgumentParser()
+                parser.add_argument("--eval-root", type=Path, required=True)
+                parser.add_argument("--output", type=Path, required=True)
+                parser.add_argument("--summary", type=Path, required=True)
+                parser.add_argument("--step-marks", type=parse_marks, required=True)
+                parser.add_argument("--contact-threshold", type=float, default=0.05)
+                parser.add_argument("--decisive-threshold", type=float, default=-0.5)
+                parser.add_argument("--tail-window", type=int, default=50)
+                args = parser.parse_args()
+                result = analyze_root(
+                    args.eval_root,
+                    args.step_marks,
+                    args.contact_threshold,
+                    args.decisive_threshold,
+                    args.tail_window,
+                )
+                args.output.parent.mkdir(parents=True, exist_ok=True)
+                args.summary.parent.mkdir(parents=True, exist_ok=True)
+                args.output.write_text(json.dumps(result, indent=2, sort_keys=True), encoding="utf-8")
+                write_summary(result, args.summary)
+                print(args.summary.read_text(encoding="utf-8"))
+
+
+            if __name__ == "__main__":
+                main()
+
+default-values:
+  workflow_name: dz-rf-liftbarrier-trace-diagnostics-cpu-xz-20260625
+  run_name: dz-rf-liftbarrier-trace-diagnostics-cpu-xz-20260625
+  eval_s3_uri: s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/dz-rf-gamma-dw-readonlyfix2-lb500-50k-c50000-eval-h100-s1000-s10-best-full-xz-20260625
+  eval_download_regex: ".*(action_dump/episode_[0-9]+\\.npz|action_dump_summary\\.json|scale_sweep_summary\\.json)$"
+  contact_threshold: "0.05"
+  decisive_threshold: "-0.5"
+  step_marks: "0,10,20,30,40,50,52,60,75,100,150,200,250,300"
+  resource_cpu: "8"
+  resource_memory: 32Gi
+  resource_storage: 200Gi

@@ -162,6 +162,10 @@ USE_SPARSE_HUB_ATTENTION=${USE_SPARSE_HUB_ATTENTION:-true}
 SELF_FORCING_TRAIN=${SELF_FORCING_TRAIN:-false}
 SELF_FORCING_WARMUP_STEPS=${SELF_FORCING_WARMUP_STEPS:-0}
 SELF_FORCING_FAST_WRITEBACK=${SELF_FORCING_FAST_WRITEBACK:-false}
+TRAIN_ARCHITECTURE=${TRAIN_ARCHITECTURE:-lora}
+SAVE_LORA_ONLY=${SAVE_LORA_ONLY:-true}
+SKIP_COMPONENT_LOADING=${SKIP_COMPONENT_LOADING:-true}
+DEFER_LORA_INJECTION=${DEFER_LORA_INJECTION:-true}
 
 echo "save_steps=$SAVE_STEPS  save_total_limit=$SAVE_TOTAL_LIMIT"
 echo "train_num_frames=$TRAIN_NUM_FRAMES  train_action_horizon=$TRAIN_ACTION_HORIZON  train_num_frame_per_block=$TRAIN_NUM_FRAME_PER_BLOCK  train_num_action_per_block=$TRAIN_NUM_ACTION_PER_BLOCK  train_max_chunk_size=$TRAIN_MAX_CHUNK_SIZE"
@@ -174,6 +178,7 @@ echo "joint_prefix_loss_weight=$JOINT_PREFIX_LOSS_WEIGHT  joint_prefix_loss_len=
 echo "model_max_state_dim=$MODEL_MAX_STATE_DIM  model_action_dim=$MODEL_ACTION_DIM  agent_state_pad_dim=$AGENT_STATE_PAD_DIM  agent_action_pad_dim=$AGENT_ACTION_PAD_DIM"
 echo "rope_agent_dim=$ROPE_AGENT_DIM  multi_agent_shuffle_agents=$MULTI_AGENT_SHUFFLE_AGENTS  multi_agent_sample_agent_pool=$MULTI_AGENT_SAMPLE_AGENT_POOL  global_video_dropout_prob=$GLOBAL_VIDEO_DROPOUT_PROB  global_video_timestep_mode=$GLOBAL_VIDEO_TIMESTEP_MODE  global_video_attention_mode=$GLOBAL_VIDEO_ATTENTION_MODE  use_sparse_hub_attention=$USE_SPARSE_HUB_ATTENTION"
 echo "self_forcing_train=$SELF_FORCING_TRAIN  self_forcing_warmup_steps=$SELF_FORCING_WARMUP_STEPS  self_forcing_fast_writeback=$SELF_FORCING_FAST_WRITEBACK"
+echo "train_architecture=$TRAIN_ARCHITECTURE  save_lora_only=$SAVE_LORA_ONLY  skip_component_loading=$SKIP_COMPONENT_LOADING  defer_lora_injection=$DEFER_LORA_INJECTION"
 
 WAN_CKPT_DIR=${WAN_CKPT_DIR:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/Wan2.1-I2V-14B-480P"}
 TOKENIZER_DIR=${TOKENIZER_DIR:-"/lustre/fs1/portfolios/nvr/projects/nvr_lpr_agentic/users/xianzhef/checkpoints/umt5-xxl"}
@@ -204,7 +209,7 @@ torchrun --nproc_per_node $NUM_GPUS --standalone groot/vla/experiment/experiment
     wandb_project=$WANDB_PROJECT \
     +training_args.run_name=$WANDB_RUN_NAME \
     data=$DATA_CFG \
-    train_architecture=lora \
+    train_architecture=$TRAIN_ARCHITECTURE \
     num_frames=$TRAIN_NUM_FRAMES \
     action_horizon=$TRAIN_ACTION_HORIZON \
     num_views=3 \
@@ -234,7 +239,7 @@ torchrun --nproc_per_node $NUM_GPUS --standalone groot/vla/experiment/experiment
     dataloader_num_workers=${DATALOADER_NUM_WORKERS:-4} \
     image_resolution_width=320 \
     image_resolution_height=176 \
-    save_lora_only=true \
+    save_lora_only=$SAVE_LORA_ONLY \
     max_chunk_size=$TRAIN_MAX_CHUNK_SIZE \
     frame_seqlen=880 \
     save_strategy=steps \
@@ -249,8 +254,8 @@ torchrun --nproc_per_node $NUM_GPUS --standalone groot/vla/experiment/experiment
     tokenizer_path=$TOKENIZER_DIR \
     pretrained_model_path=$PRETRAINED_DIR \
     pretrained_lora_path=${PRETRAINED_LORA_DIR:-null} \
-    ++action_head_cfg.config.skip_component_loading=true \
-    ++action_head_cfg.config.defer_lora_injection=true \
+    ++action_head_cfg.config.skip_component_loading=$SKIP_COMPONENT_LOADING \
+    ++action_head_cfg.config.defer_lora_injection=$DEFER_LORA_INJECTION \
     ++action_head_cfg.config.dynamics_loss_weight=$DYNAMICS_LOSS_WEIGHT \
     ++action_head_cfg.config.action_loss_weight=$ACTION_LOSS_WEIGHT \
     ++action_head_cfg.config.gripper_action_loss_weight=$GRIPPER_ACTION_LOSS_WEIGHT \

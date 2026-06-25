@@ -10,14 +10,70 @@ branch source and pass both values explicitly when submitting; the container
 fails fast if either value is missing, which prevents accidentally training an
 old cached code snapshot.
 
+Create a code cache from a clean commit:
+
+```bash
+python scripts/osmo/upload_code_cache.py
+```
+
+The helper refuses dirty worktrees, writes `OSMO_CODE_COMMIT` into the uploaded
+source root, and prints:
+
+```text
+code_s3_uri=...
+expected_code_commit=...
+```
+
+Use those exact values when submitting:
+
 ```bash
 osmo workflow submit osmo_workflows/robofactory/train_liftbarrier_gamma_droidwidth_teacher.yaml \
   --pool groot-h100-01 \
   --priority LOW \
   --set-string \
-  code_s3_uri=swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/<current-code-cache> \
-  expected_code_commit=$(git rev-parse HEAD)
+  code_s3_uri=<printed-code_s3_uri> \
+  expected_code_commit=<printed-expected_code_commit>
 ```
+
+## Full-Finetune Teacher Ablation
+
+The droidwidth teacher workflow can run the same DROID-width setup as a true
+full-finetune teacher instead of a LoRA teacher. This is the highest-priority
+ablation after the LiftBarrier action-dump diagnostics showed that the 50k LoRA
+teacher under-commands chunk actions at `scale=1.0`.
+
+Use the same workflow but override the training architecture and save behavior:
+
+```bash
+osmo workflow submit osmo_workflows/robofactory/train_liftbarrier_gamma_droidwidth_teacher.yaml \
+  --pool groot-h100-02 \
+  --set-string \
+  workflow_name=dz-rf-sg-gamma-dwteacher-fullft-lb500-30k-xz-YYYYMMDD \
+  run_name=dz-rf-sg-gamma-dwteacher-fullft-lb500-30k-xz-YYYYMMDD \
+  code_s3_uri=swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/<current-code-cache> \
+  expected_code_commit=$(git rev-parse HEAD) \
+  stage1_max_steps=30000 \
+  train_architecture=full \
+  save_lora_only=false \
+  defer_lora_injection=false \
+  skip_component_loading=true \
+  grad_ckpt=true \
+  save_total_limit=6
+```
+
+Keep `joint_delta_scales=1.0` in the eval grid for this comparison. The first
+decision gate is whether the full-finetune teacher's model-vs-data action p95
+moves toward the dataset horizon p95 and whether `grasp_eps` becomes nonzero;
+do not judge it by an amplified-action eval.
+
+If full-finetune hits H100 memory pressure, keep the same run recipe but add:
+
+```bash
+deepspeed_cfg=groot/vla/configs/deepspeed/zero2_offload.json
+```
+
+That offloads optimizer state to CPU and should be treated as a throughput
+tradeoff, not a different modeling ablation.
 
 ## Staged Gamma Curriculum
 

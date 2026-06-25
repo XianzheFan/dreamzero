@@ -457,7 +457,11 @@ workflow:
               "ATTENTION_BACKEND" \
               "USE_SPARSE_HUB_ATTENTION" \
               "TRAIN_MAX_GRAD_NORM" \
-              "++training_args.max_grad_norm"
+              "++training_args.max_grad_norm" \
+              "TRAIN_ARCHITECTURE" \
+              "SAVE_LORA_ONLY" \
+              "SKIP_COMPONENT_LOADING" \
+              "DEFER_LORA_INJECTION"
             require_code_marker \
               groot/vla/model/dreamzero/action_head/wan_flow_matching_action_tf.py \
               "gripper_binary_action_loss_weight" \
@@ -537,6 +541,12 @@ workflow:
             export TRAIN_ACTION_HORIZON="${TRAIN_ACTION_HORIZON:-{{train_action_horizon}}}"
             export TRAIN_NUM_FRAME_PER_BLOCK="${TRAIN_NUM_FRAME_PER_BLOCK:-{{train_num_frame_per_block}}}"
             export TRAIN_NUM_ACTION_PER_BLOCK="${TRAIN_NUM_ACTION_PER_BLOCK:-{{train_num_action_per_block}}}"
+            export TRAIN_ARCHITECTURE="${TRAIN_ARCHITECTURE:-{{train_architecture}}}"
+            export SAVE_LORA_ONLY="${SAVE_LORA_ONLY:-{{save_lora_only}}}"
+            export SKIP_COMPONENT_LOADING="${SKIP_COMPONENT_LOADING:-{{skip_component_loading}}}"
+            export DEFER_LORA_INJECTION="${DEFER_LORA_INJECTION:-{{defer_lora_injection}}}"
+            export GRAD_CKPT="${GRAD_CKPT:-{{grad_ckpt}}}"
+            export DEEPSPEED_CFG="${DEEPSPEED_CFG:-{{deepspeed_cfg}}}"
             export TRAIN_WARMUP_RATIO="${TRAIN_WARMUP_RATIO:-{{train_warmup_ratio}}}"
             export TRAIN_WEIGHT_DECAY="${TRAIN_WEIGHT_DECAY:-{{train_weight_decay}}}"
             export TRAIN_MAX_CHUNK_SIZE="${TRAIN_MAX_CHUNK_SIZE:-{{train_max_chunk_size}}}"
@@ -985,6 +995,12 @@ workflow:
               echo "TRAIN_ACTION_HORIZON=$TRAIN_ACTION_HORIZON"
               echo "TRAIN_NUM_FRAME_PER_BLOCK=$TRAIN_NUM_FRAME_PER_BLOCK"
               echo "TRAIN_NUM_ACTION_PER_BLOCK=$TRAIN_NUM_ACTION_PER_BLOCK"
+              echo "TRAIN_ARCHITECTURE=$TRAIN_ARCHITECTURE"
+              echo "SAVE_LORA_ONLY=$SAVE_LORA_ONLY"
+              echo "SKIP_COMPONENT_LOADING=$SKIP_COMPONENT_LOADING"
+              echo "DEFER_LORA_INJECTION=$DEFER_LORA_INJECTION"
+              echo "GRAD_CKPT=$GRAD_CKPT"
+              echo "DEEPSPEED_CFG=${DEEPSPEED_CFG:-script-default}"
               echo "TRAIN_WARMUP_RATIO=$TRAIN_WARMUP_RATIO"
               echo "TRAIN_WEIGHT_DECAY=$TRAIN_WEIGHT_DECAY"
               echo "TRAIN_MAX_CHUNK_SIZE=$TRAIN_MAX_CHUNK_SIZE"
@@ -1204,6 +1220,12 @@ default-values:
   train_action_horizon: "24"
   train_num_frame_per_block: "2"
   train_num_action_per_block: "24"
+  train_architecture: lora
+  save_lora_only: "true"
+  skip_component_loading: "true"
+  defer_lora_injection: "true"
+  grad_ckpt: ""
+  deepspeed_cfg: ""
   train_warmup_ratio: "0.0"
   train_weight_decay: "1e-5"
   train_max_chunk_size: "4"

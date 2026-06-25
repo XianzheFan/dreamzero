@@ -457,6 +457,12 @@ def test_liftbarrier_gamma_droidwidth_teacher_workflow_preserves_droid_base_head
     assert defaults["train_action_horizon"] == "24"
     assert defaults["train_num_frame_per_block"] == "2"
     assert defaults["train_num_action_per_block"] == "24"
+    assert defaults["train_architecture"] == "lora"
+    assert defaults["save_lora_only"] == "true"
+    assert defaults["skip_component_loading"] == "true"
+    assert defaults["defer_lora_injection"] == "true"
+    assert defaults["grad_ckpt"] == ""
+    assert defaults["deepspeed_cfg"] == ""
     assert defaults["train_warmup_ratio"] == "0.0"
     assert defaults["train_weight_decay"] == "1e-5"
     assert defaults["train_max_chunk_size"] == "4"
@@ -485,6 +491,12 @@ def test_liftbarrier_gamma_droidwidth_teacher_workflow_preserves_droid_base_head
         'export TRAIN_ACTION_HORIZON="${TRAIN_ACTION_HORIZON:-{{train_action_horizon}}}"',
         'export TRAIN_NUM_FRAME_PER_BLOCK="${TRAIN_NUM_FRAME_PER_BLOCK:-{{train_num_frame_per_block}}}"',
         'export TRAIN_NUM_ACTION_PER_BLOCK="${TRAIN_NUM_ACTION_PER_BLOCK:-{{train_num_action_per_block}}}"',
+        'export TRAIN_ARCHITECTURE="${TRAIN_ARCHITECTURE:-{{train_architecture}}}"',
+        'export SAVE_LORA_ONLY="${SAVE_LORA_ONLY:-{{save_lora_only}}}"',
+        'export SKIP_COMPONENT_LOADING="${SKIP_COMPONENT_LOADING:-{{skip_component_loading}}}"',
+        'export DEFER_LORA_INJECTION="${DEFER_LORA_INJECTION:-{{defer_lora_injection}}}"',
+        'export GRAD_CKPT="${GRAD_CKPT:-{{grad_ckpt}}}"',
+        'export DEEPSPEED_CFG="${DEEPSPEED_CFG:-{{deepspeed_cfg}}}"',
         'export TRAIN_WARMUP_RATIO="${TRAIN_WARMUP_RATIO:-{{train_warmup_ratio}}}"',
         'export TRAIN_WEIGHT_DECAY="${TRAIN_WEIGHT_DECAY:-{{train_weight_decay}}}"',
         'export TRAIN_MAX_CHUNK_SIZE="${TRAIN_MAX_CHUNK_SIZE:-{{train_max_chunk_size}}}"',
@@ -512,6 +524,12 @@ def test_liftbarrier_gamma_droidwidth_teacher_workflow_preserves_droid_base_head
         'echo "TRAIN_ACTION_HORIZON=$TRAIN_ACTION_HORIZON"',
         'echo "TRAIN_NUM_FRAME_PER_BLOCK=$TRAIN_NUM_FRAME_PER_BLOCK"',
         'echo "TRAIN_NUM_ACTION_PER_BLOCK=$TRAIN_NUM_ACTION_PER_BLOCK"',
+        'echo "TRAIN_ARCHITECTURE=$TRAIN_ARCHITECTURE"',
+        'echo "SAVE_LORA_ONLY=$SAVE_LORA_ONLY"',
+        'echo "SKIP_COMPONENT_LOADING=$SKIP_COMPONENT_LOADING"',
+        'echo "DEFER_LORA_INJECTION=$DEFER_LORA_INJECTION"',
+        'echo "GRAD_CKPT=$GRAD_CKPT"',
+        'echo "DEEPSPEED_CFG=${DEEPSPEED_CFG:-script-default}"',
         'echo "TRAIN_WARMUP_RATIO=$TRAIN_WARMUP_RATIO"',
         'echo "TRAIN_WEIGHT_DECAY=$TRAIN_WEIGHT_DECAY"',
         'echo "TRAIN_MAX_CHUNK_SIZE=$TRAIN_MAX_CHUNK_SIZE"',
@@ -544,6 +562,10 @@ def test_liftbarrier_gamma_droidwidth_teacher_workflow_preserves_droid_base_head
         "bash scripts/train/robofactory_bimanual_training.sh",
         "valid_action_dims",
         "per_agent_action_loss",
+        "TRAIN_ARCHITECTURE",
+        "SAVE_LORA_ONLY",
+        "SKIP_COMPONENT_LOADING",
+        "DEFER_LORA_INJECTION",
         REQUIRE_CURRENT_CODE_CACHE_MESSAGE,
         "Pass --set-string code_s3_uri=... expected_code_commit=...",
     ):

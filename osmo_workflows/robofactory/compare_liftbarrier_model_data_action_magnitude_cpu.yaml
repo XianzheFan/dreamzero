@@ -1,0 +1,393 @@
+workflow:
+  timeout:
+    queue_timeout: 1h
+    exec_timeout: 2h
+  name: "{{workflow_name}}"
+  resources:
+    default:
+      cpu: "{{resource_cpu}}"
+      gpu: 0
+      memory: "{{resource_memory}}"
+      storage: "{{resource_storage}}"
+  tasks:
+    - name: compare-model-data-action
+      image: nvcr.io/nvidian/gear-h100-train:latest
+      credentials:
+        gear-aws-cred:
+          AWS_ACCESS_KEY_ID: aws_access_key_id
+          AWS_SECRET_ACCESS_KEY: aws_secret_access_key
+          AWS_DEFAULT_REGION: aws_default_region
+          AWS_ENDPOINT_URL: aws_endpoint_url
+        gear-data-credentials:
+          GEAR_DATA_CREDENTIALS: data_credentials
+      command: ["bash"]
+      environment:
+        ACCEPT_EULA: "Y"
+        NO_NUCLEUS: "Y"
+      args: ["/tmp/compare_liftbarrier_model_data_action.sh"]
+      files:
+        - path: /tmp/compare_liftbarrier_model_data_action.sh
+          contents: |
+            #!/usr/bin/env bash
+            set -euo pipefail
+
+            exec > >(tee /tmp/compare_liftbarrier_model_data_action.log) 2>&1
+
+            RUN_NAME="${RUN_NAME:-{{run_name}}}"
+            export RUN_NAME
+            EVAL_S3_URI="${EVAL_S3_URI:-{{eval_s3_uri}}}"
+            DATA_STATS_S3_URI="${DATA_STATS_S3_URI:-{{data_stats_s3_uri}}}"
+            EVAL_DOWNLOAD_REGEX="${EVAL_DOWNLOAD_REGEX:-{{eval_download_regex}}}"
+            DATA_STATS_DOWNLOAD_REGEX="${DATA_STATS_DOWNLOAD_REGEX:-{{data_stats_download_regex}}}"
+            RUN_S3_ROOT="s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/${RUN_NAME}"
+            OUT_S3_URI="${RUN_S3_ROOT}/model_data_action_compare"
+
+            for uri in "$EVAL_S3_URI" "$DATA_STATS_S3_URI" "$RUN_S3_ROOT" "$OUT_S3_URI"; do
+              case "$uri" in
+                s3://GearHome/users/xianzhef/*) ;;
+                swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/*) ;;
+                *)
+                  echo "Refusing non-xianzhef URI: $uri" >&2
+                  exit 64
+                  ;;
+              esac
+            done
+
+            upload_outputs() {
+              status=$?
+              set +e
+              mkdir -p /workspace/model_data_action_compare_outputs
+              cp -f /tmp/compare_liftbarrier_model_data_action.log /workspace/model_data_action_compare_outputs/compare_liftbarrier_model_data_action.log
+              if [ ! -f /workspace/model_data_action_compare_outputs/summary.txt ]; then
+                {
+                  echo "workflow=${RUN_NAME}"
+                  echo "eval_s3_uri=${EVAL_S3_URI}"
+                  echo "data_stats_s3_uri=${DATA_STATS_S3_URI}"
+                  echo "status=${status}"
+                } > /workspace/model_data_action_compare_outputs/summary.txt
+              fi
+              osmo data upload "${OUT_S3_URI}/" /workspace/model_data_action_compare_outputs || true
+              exit "$status"
+            }
+            trap upload_outputs EXIT
+
+            cat > /tmp/compare_liftbarrier_model_data_action.py <<'PY'
+            from __future__ import annotations
+
+            import argparse
+            import json
+            import re
+            from pathlib import Path
+            from typing import Any
+
+            import numpy as np
+
+
+            def summary(values: np.ndarray) -> dict[str, Any]:
+                arr = np.asarray(values, dtype=np.float64).reshape(-1)
+                if arr.size == 0:
+                    return {"count": 0}
+                return {
+                    "count": int(arr.size),
+                    "mean": float(np.mean(arr)),
+                    "std": float(np.std(arr)),
+                    "min": float(np.min(arr)),
+                    "p50": float(np.quantile(arr, 0.50)),
+                    "p75": float(np.quantile(arr, 0.75)),
+                    "p90": float(np.quantile(arr, 0.90)),
+                    "p95": float(np.quantile(arr, 0.95)),
+                    "p99": float(np.quantile(arr, 0.99)),
+                    "max": float(np.max(arr)),
+                }
+
+
+            def ratio(num: float | None, den: float | None) -> float | None:
+                if num is None or den is None or den == 0:
+                    return None
+                return float(num / den)
+
+
+            def find_one(root: Path, pattern: str) -> Path:
+                matches = sorted(root.rglob(pattern))
+                if not matches:
+                    raise FileNotFoundError(f"no {pattern} under {root}")
+                return matches[0]
+
+
+            def variant_name(path: Path) -> str:
+                if path.parent.name == "action_dump":
+                    return path.parent.parent.name
+                return path.parent.name
+
+
+            def replan_from_variant(name: str) -> int | None:
+                match = re.search(r"_rp(\d+)_", name)
+                return int(match.group(1)) if match else None
+
+
+            def short_variant(name: str) -> str:
+                pieces = []
+                for token in name.split("_"):
+                    if token.startswith("rp") or token in {"raw", "smooth"}:
+                        pieces.append(token)
+                    elif token.startswith("jscale"):
+                        pieces.append(token)
+                    elif token.startswith("clip"):
+                        pieces.append(token)
+                return "_".join(pieces) or name
+
+
+            def collect_npz_stats(paths: list[Path], gripper_dims: tuple[int, ...]) -> dict[str, Any]:
+                first_cmd_abs = []
+                chunk_abs = []
+                by_offset: list[list[np.ndarray]] | None = None
+                exec_step_abs = []
+                pred_step_abs = []
+                episodes = []
+                chunk_len = None
+                action_dim = None
+
+                for path in paths:
+                    data = np.load(path, allow_pickle=True)
+                    if "pred_chunk" not in data or "obs_qpos" not in data:
+                        continue
+                    pred_chunk = np.asarray(data["pred_chunk"], dtype=np.float32)
+                    obs_qpos = np.asarray(data["obs_qpos"], dtype=np.float32)
+                    if pred_chunk.ndim != 3 or obs_qpos.ndim != 2:
+                        continue
+                    n = min(pred_chunk.shape[0], obs_qpos.shape[0])
+                    if n == 0:
+                        continue
+                    pred_chunk = pred_chunk[:n]
+                    obs_qpos = obs_qpos[:n]
+                    action_dim = pred_chunk.shape[-1]
+                    joint_dims = [i for i in range(action_dim) if i not in set(gripper_dims)]
+                    current = obs_qpos[:, joint_dims]
+                    pred_joints = pred_chunk[:, :, joint_dims]
+                    abs_chunk = np.abs(pred_joints - current[:, None, :])
+                    first_cmd_abs.append(abs_chunk[:, 0, :])
+                    chunk_abs.append(abs_chunk.reshape(-1, len(joint_dims)))
+                    if by_offset is None:
+                        by_offset = [[] for _ in range(pred_chunk.shape[1])]
+                    usable_offsets = min(len(by_offset), pred_chunk.shape[1])
+                    for offset in range(usable_offsets):
+                        by_offset[offset].append(abs_chunk[:, offset, :].reshape(-1))
+                    if pred_chunk.shape[1] > 1:
+                        pred_step_abs.append(
+                            np.abs(np.diff(pred_joints, axis=1)).reshape(-1, len(joint_dims))
+                        )
+                    if "exec_action" in data:
+                        exec_action = np.asarray(data["exec_action"], dtype=np.float32)
+                        if exec_action.ndim == 2 and exec_action.shape[0] > 1 and exec_action.shape[1] >= action_dim:
+                            exec_step_abs.append(
+                                np.abs(np.diff(exec_action[:, joint_dims], axis=0))
+                            )
+                    episodes.append(str(path))
+                    chunk_len = pred_chunk.shape[1]
+
+                if not episodes:
+                    raise ValueError("no usable action dump npz files")
+
+                offset_summaries = []
+                if by_offset is not None:
+                    for offset, arrays in enumerate(by_offset):
+                        values = np.concatenate(arrays, axis=0) if arrays else np.asarray([], dtype=np.float32)
+                        item = summary(values)
+                        item["offset"] = offset
+                        offset_summaries.append(item)
+
+                return {
+                    "episodes": len(episodes),
+                    "chunk_len": int(chunk_len or 0),
+                    "action_dim": int(action_dim or 0),
+                    "first_cmd_target_current_abs": summary(np.concatenate(first_cmd_abs, axis=0)),
+                    "pred_chunk_target_current_abs": summary(np.concatenate(chunk_abs, axis=0)),
+                    "pred_chunk_target_current_abs_by_offset": offset_summaries,
+                    "pred_chunk_step_abs": (
+                        summary(np.concatenate(pred_step_abs, axis=0))
+                        if pred_step_abs
+                        else {"count": 0}
+                    ),
+                    "exec_step_abs": (
+                        summary(np.concatenate(exec_step_abs, axis=0))
+                        if exec_step_abs
+                        else {"count": 0}
+                    ),
+                    "files": episodes,
+                }
+
+
+            def compare(model: dict[str, Any], data_ref: dict[str, Any]) -> dict[str, Any]:
+                data_one = data_ref["one_step_target_current_abs"]
+                data_horizon = data_ref["horizon_target_current_abs"]
+                data_offsets = data_ref.get("horizon_target_current_abs_by_offset", [])
+                model_offsets = model.get("pred_chunk_target_current_abs_by_offset", [])
+                last_data = data_offsets[-1] if data_offsets else {}
+                last_model = model_offsets[-1] if model_offsets else {}
+                first = model["first_cmd_target_current_abs"]
+                chunk = model["pred_chunk_target_current_abs"]
+                return {
+                    "first_cmd_p50_over_data_one_step_p50": ratio(first.get("p50"), data_one.get("p50")),
+                    "first_cmd_p95_over_data_one_step_p95": ratio(first.get("p95"), data_one.get("p95")),
+                    "chunk_p50_over_data_horizon_p50": ratio(chunk.get("p50"), data_horizon.get("p50")),
+                    "chunk_p95_over_data_horizon_p95": ratio(chunk.get("p95"), data_horizon.get("p95")),
+                    "last_offset_p50_over_data_last_offset_p50": ratio(last_model.get("p50"), last_data.get("p50")),
+                    "last_offset_p95_over_data_last_offset_p95": ratio(last_model.get("p95"), last_data.get("p95")),
+                }
+
+
+            def main() -> None:
+                parser = argparse.ArgumentParser()
+                parser.add_argument("--eval-root", type=Path, required=True)
+                parser.add_argument("--data-stats-root", type=Path, required=True)
+                parser.add_argument("--output", type=Path, required=True)
+                parser.add_argument("--summary", type=Path, required=True)
+                parser.add_argument("--gripper-dims", default="7,15")
+                args = parser.parse_args()
+
+                gripper_dims = tuple(int(x) for x in args.gripper_dims.split(",") if x)
+                data_stats_path = find_one(args.data_stats_root, "liftbarrier_action_magnitude.json")
+                data_ref = json.loads(data_stats_path.read_text())
+
+                grouped: dict[str, list[Path]] = {}
+                for path in sorted(args.eval_root.rglob("episode_*.npz")):
+                    if path.parent.name != "action_dump":
+                        continue
+                    name = variant_name(path)
+                    grouped.setdefault(name, []).append(path)
+
+                if not grouped:
+                    raise FileNotFoundError(f"no action_dump episode npz files under {args.eval_root}")
+
+                variants = []
+                for name, paths in sorted(grouped.items()):
+                    stats = collect_npz_stats(paths, gripper_dims=gripper_dims)
+                    stats["variant"] = name
+                    stats["short_variant"] = short_variant(name)
+                    stats["replan"] = replan_from_variant(name)
+                    stats["comparison_to_dataset"] = compare(stats, data_ref)
+                    variants.append(stats)
+
+                payload = {
+                    "eval_root": str(args.eval_root),
+                    "data_stats_path": str(data_stats_path),
+                    "dataset": {
+                        "episodes_read": data_ref.get("episodes_read"),
+                        "one_step_target_current_abs": data_ref.get("one_step_target_current_abs"),
+                        "horizon_target_current_abs": data_ref.get("horizon_target_current_abs"),
+                        "horizon_target_current_abs_by_offset_last": (
+                            data_ref.get("horizon_target_current_abs_by_offset", [{}])[-1]
+                        ),
+                        "relative_stats_present": data_ref.get("relative_stats_present"),
+                    },
+                    "variants": variants,
+                }
+
+                args.output.parent.mkdir(parents=True, exist_ok=True)
+                args.output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+
+                lines = [
+                    f"data_stats_path={data_stats_path}",
+                    f"dataset_episodes={data_ref.get('episodes_read')}",
+                    "dataset_one_step_p50={:.6f}".format(data_ref["one_step_target_current_abs"]["p50"]),
+                    "dataset_one_step_p95={:.6f}".format(data_ref["one_step_target_current_abs"]["p95"]),
+                    "dataset_horizon_p50={:.6f}".format(data_ref["horizon_target_current_abs"]["p50"]),
+                    "dataset_horizon_p95={:.6f}".format(data_ref["horizon_target_current_abs"]["p95"]),
+                    "dataset_last_offset_p50={:.6f}".format(
+                        data_ref["horizon_target_current_abs_by_offset"][-1]["p50"]
+                    ),
+                    "dataset_last_offset_p95={:.6f}".format(
+                        data_ref["horizon_target_current_abs_by_offset"][-1]["p95"]
+                    ),
+                    "",
+                    "\t".join(
+                        [
+                            "variant",
+                            "replan",
+                            "episodes",
+                            "first_p50",
+                            "first_p95",
+                            "chunk_p50",
+                            "chunk_p95",
+                            "last_p50",
+                            "last_p95",
+                            "exec_step_p50",
+                            "exec_step_p95",
+                            "chunk_p95_over_data",
+                            "last_p95_over_data",
+                        ]
+                    ),
+                ]
+                for variant in variants:
+                    first = variant["first_cmd_target_current_abs"]
+                    chunk = variant["pred_chunk_target_current_abs"]
+                    offsets = variant["pred_chunk_target_current_abs_by_offset"]
+                    last = offsets[-1] if offsets else {}
+                    exec_step = variant["exec_step_abs"]
+                    comp = variant["comparison_to_dataset"]
+                    lines.append(
+                        "\t".join(
+                            [
+                                variant["short_variant"],
+                                str(variant.get("replan")),
+                                str(variant["episodes"]),
+                                "{:.6f}".format(first.get("p50", float("nan"))),
+                                "{:.6f}".format(first.get("p95", float("nan"))),
+                                "{:.6f}".format(chunk.get("p50", float("nan"))),
+                                "{:.6f}".format(chunk.get("p95", float("nan"))),
+                                "{:.6f}".format(last.get("p50", float("nan"))),
+                                "{:.6f}".format(last.get("p95", float("nan"))),
+                                "{:.6f}".format(exec_step.get("p50", float("nan"))),
+                                "{:.6f}".format(exec_step.get("p95", float("nan"))),
+                                "{:.3f}".format(comp.get("chunk_p95_over_data_horizon_p95") or float("nan")),
+                                "{:.3f}".format(comp.get("last_offset_p95_over_data_last_offset_p95") or float("nan")),
+                            ]
+                        )
+                    )
+
+                text = "\n".join(lines) + "\n"
+                args.summary.write_text(text)
+                print("=== summary.txt ===")
+                print(text)
+
+
+            if __name__ == "__main__":
+                main()
+            PY
+
+            python -m py_compile /tmp/compare_liftbarrier_model_data_action.py
+
+            EVAL_PARENT="/workspace/eval_artifacts"
+            DATA_STATS_PARENT="/workspace/data_action_stats"
+            mkdir -p "$EVAL_PARENT" "$DATA_STATS_PARENT" /workspace/model_data_action_compare_outputs
+
+            echo "Downloading eval artifacts from ${EVAL_S3_URI}/ with regex ${EVAL_DOWNLOAD_REGEX}"
+            osmo data download --resume --regex "$EVAL_DOWNLOAD_REGEX" "${EVAL_S3_URI}/" "$EVAL_PARENT"
+            echo "Downloading dataset action stats from ${DATA_STATS_S3_URI}/ with regex ${DATA_STATS_DOWNLOAD_REGEX}"
+            osmo data download --resume --regex "$DATA_STATS_DOWNLOAD_REGEX" "${DATA_STATS_S3_URI}/" "$DATA_STATS_PARENT"
+
+            echo "Eval action dump file count:"
+            find "$EVAL_PARENT" -path "*/action_dump/episode_*.npz" -type f | wc -l
+            echo "Dataset stats files:"
+            find "$DATA_STATS_PARENT" -type f | sort
+
+            python /tmp/compare_liftbarrier_model_data_action.py \
+              --eval-root "$EVAL_PARENT" \
+              --data-stats-root "$DATA_STATS_PARENT" \
+              --output /workspace/model_data_action_compare_outputs/model_data_action_compare.json \
+              --summary /workspace/model_data_action_compare_outputs/summary.txt
+
+            echo "Uploading outputs to ${OUT_S3_URI}/"
+            osmo data upload "${OUT_S3_URI}/" /workspace/model_data_action_compare_outputs
+            echo "LiftBarrier model-vs-data action magnitude comparison complete."
+
+default-values:
+  workflow_name: dz-rf-liftbarrier-model-data-action-compare-cpu-xz-20260625
+  run_name: dz-rf-liftbarrier-model-data-action-compare-cpu-xz-20260625
+  eval_s3_uri: s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/dz-rf-gamma-dw-readonlyfix2-lb500-50k-c50000-eval-h100-s1000-s10-best-full-xz-20260625
+  data_stats_s3_uri: s3://GearHome/users/xianzhef/oci-migration/dreamzero_runs/dz-rf-liftbarrier-action-magnitude-cpu-xz-20260625-v2/action_magnitude
+  eval_download_regex: ".*(action_dump_summary\\.json|scale_sweep_summary\\.json|action_dump/episode_[0-9]+\\.npz)$"
+  data_stats_download_regex: ".*(liftbarrier_action_magnitude\\.json|summary\\.txt)$"
+  resource_cpu: "8"
+  resource_memory: 32Gi
+  resource_storage: 200Gi

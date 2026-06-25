@@ -187,5 +187,28 @@ def test_robofactory_training_script_supports_separate_lora_warm_start():
     assert "pretrained_lora_path=${PRETRAINED_LORA_DIR:-null}" in script
 
 
+def test_robofactory_training_script_parameterizes_train_architecture_and_lora_save():
+    script = SCRIPT_PATH.read_text()
+
+    for marker in (
+        "TRAIN_ARCHITECTURE=${TRAIN_ARCHITECTURE:-lora}",
+        "SAVE_LORA_ONLY=${SAVE_LORA_ONLY:-true}",
+        "SKIP_COMPONENT_LOADING=${SKIP_COMPONENT_LOADING:-true}",
+        "DEFER_LORA_INJECTION=${DEFER_LORA_INJECTION:-true}",
+        "train_architecture=$TRAIN_ARCHITECTURE",
+        "save_lora_only=$SAVE_LORA_ONLY",
+        "skip_component_loading=$SKIP_COMPONENT_LOADING",
+        "defer_lora_injection=$DEFER_LORA_INJECTION",
+        "++action_head_cfg.config.skip_component_loading=$SKIP_COMPONENT_LOADING",
+        "++action_head_cfg.config.defer_lora_injection=$DEFER_LORA_INJECTION",
+    ):
+        assert marker in script
+
+    assert "train_architecture=lora \\" not in script
+    assert "save_lora_only=true \\" not in script
+    assert "++action_head_cfg.config.skip_component_loading=true \\" not in script
+    assert "++action_head_cfg.config.defer_lora_injection=true \\" not in script
+
+
 def test_robofactory_training_script_is_valid_bash():
     subprocess.run(["bash", "-n", str(SCRIPT_PATH)], check=True)
