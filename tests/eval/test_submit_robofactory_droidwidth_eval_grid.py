@@ -170,6 +170,80 @@ def test_main_prints_eval_window_overrides(monkeypatch, capsys):
     assert "eval_action_horizon=24" in out
 
 
+def test_fullft_gate_preset_prints_three_10_seed_scale1_eval_commands(monkeypatch, capsys):
+    module = _load_module()
+    monkeypatch.setattr(module, "current_git_head", lambda: "abc123")
+
+    status = module.main(
+        [
+            "--workflow",
+            "eval.yaml",
+            "--tag",
+            "20260625",
+            "--preset",
+            "fullft-gate",
+        ]
+    )
+
+    assert status == 0
+    out = capsys.readouterr().out
+    assert out.count("osmo workflow submit eval.yaml") == 3
+    assert "ckpt_setting=checkpoint-10000" in out
+    assert "ckpt_setting=checkpoint-20000" in out
+    assert "ckpt_setting=checkpoint-30000" in out
+    assert " ckpt_setting=checkpoint-2000 " not in out
+    assert (
+        "workflow_name=dz-rf-gamma-dwteacher-fullft-lb500-30k-c10000-"
+        "eval-h100-s1000-s10-xz-20260625"
+    ) in out
+    assert (
+        "ckpt_run_name=dz-rf-sg-gamma-dwteacher-fullft-lb500-30k-xz-20260625-teacher"
+        in out
+    )
+    assert "num_episodes=10" in out
+    assert "video_pred_rollout_modes=action" in out
+    assert "'replan_everys=24 12'" in out
+    assert "joint_delta_scales=1.0" in out
+    assert "joint_target_accel_limits=0" in out
+    assert "'smoothing_profile_names=raw smooth'" in out
+    assert "'smoothing_profile_blend_steps=0 4'" in out
+    assert "'smoothing_profile_ensemble_decays=0 0.6'" in out
+
+
+def test_fullft_gate_preset_respects_explicit_steps_run_name_and_set_string(monkeypatch, capsys):
+    module = _load_module()
+    monkeypatch.setattr(module, "current_git_head", lambda: "abc123")
+
+    status = module.main(
+        [
+            "--workflow",
+            "eval.yaml",
+            "--tag",
+            "20260625",
+            "--preset",
+            "fullft-gate",
+            "--steps",
+            "12000",
+            "--ckpt-run-name",
+            "custom-fullft-teacher",
+            "--name-template",
+            "custom-c{step}-{tag}",
+            "--set-string",
+            "num_episodes=3",
+        ]
+    )
+
+    assert status == 0
+    out = capsys.readouterr().out
+    assert "workflow_name=custom-c12000-20260625" in out
+    assert "ckpt_setting=checkpoint-12000" in out
+    assert "ckpt_setting=checkpoint-10000" not in out
+    assert "ckpt_run_name=custom-fullft-teacher" in out
+    assert "num_episodes=3" in out
+    assert "num_episodes=10" not in out
+    assert "joint_delta_scales=1.0" in out
+
+
 def test_main_rejects_explicit_off_grid_steps_by_default():
     module = _load_module()
 

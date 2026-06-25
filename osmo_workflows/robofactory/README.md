@@ -66,6 +66,27 @@ decision gate is whether the full-finetune teacher's model-vs-data action p95
 moves toward the dataset horizon p95 and whether `grasp_eps` becomes nonzero;
 do not judge it by an amplified-action eval.
 
+After the run starts, submit the fixed gate evals as checkpoints become ready:
+
+```bash
+python scripts/eval/submit_robofactory_droidwidth_eval_grid.py \
+  --preset fullft-gate \
+  --tag YYYYMMDD \
+  --only-ready \
+  --skip-existing \
+  --ready-check-source train-workflow \
+  --ready-train-workflow dz-rf-sg-gamma-dwteacher-fullft-lb500-30k-xz-YYYYMMDD-1 \
+  --submit
+```
+
+`--preset fullft-gate` evaluates `checkpoint-10000`, `checkpoint-20000`, and
+`checkpoint-30000` with `num_episodes=10`, `joint_delta_scales=1.0`,
+`video_pred_rollout_modes=action`, `replan_everys="24 12"`, and paired
+`raw`/`smooth` smoothing profiles. It intentionally disables the extra accel
+limit sweep (`joint_target_accel_limits=0`) so the first gate measures whether
+the teacher itself learned usable scale-1.0 actions before adding execution
+regularizers.
+
 If full-finetune hits H100 memory pressure, keep the same run recipe but add:
 
 ```bash

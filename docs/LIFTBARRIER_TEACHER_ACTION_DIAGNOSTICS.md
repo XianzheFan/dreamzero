@@ -324,6 +324,26 @@ dataset horizon p95. If memory is tight, add
 `deepspeed_cfg=groot/vla/configs/deepspeed/zero2_offload.json` as a throughput
 tradeoff rather than changing the modeling setup.
 
+Use the fixed eval preset for the first full-finetune gate:
+
+```text
+python scripts/eval/submit_robofactory_droidwidth_eval_grid.py \
+  --preset fullft-gate \
+  --tag YYYYMMDD \
+  --only-ready \
+  --skip-existing \
+  --ready-check-source train-workflow \
+  --ready-train-workflow dz-rf-sg-gamma-dwteacher-fullft-lb500-30k-xz-YYYYMMDD-1 \
+  --submit
+```
+
+The preset evaluates `checkpoint-10000`, `checkpoint-20000`, and
+`checkpoint-30000` with 10 seeds, `joint_delta_scales=1.0`, action rollout
+mode, `replan=24/12`, and raw/smooth profiles. It disables the extra accel
+limit sweep so the first decision is about whether the teacher learned usable
+actions at native scale, not whether an execution regularizer can hide a weak
+action distribution.
+
 Before submitting that workflow, commit the intended source state and create a
 matching OSMO code cache:
 

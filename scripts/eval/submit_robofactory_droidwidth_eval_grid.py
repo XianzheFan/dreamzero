@@ -34,6 +34,24 @@ DEFAULT_CKPT_AMLFS_RUNS_PREFIX = "/mnt/amlfs-01/home/xianzhef/osmo_cache/dreamze
 DEFAULT_DREAMZERO_GIT_REF = "gamma"
 DEFAULT_READY_TRAIN_TASK = "train"
 DEFAULT_READY_TRAIN_OUTPUT_DIR = "/workspace/outputs/robofactory_liftbarrier_gamma_droidwidth_teacher/teacher"
+FULLFT_GATE_STEPS = [10000, 20000, 30000]
+FULLFT_GATE_NAME_TEMPLATE = (
+    "dz-rf-gamma-dwteacher-fullft-lb500-30k-c{step}-eval-h100-s1000-s10-xz-{tag}"
+)
+FULLFT_GATE_LOCAL_ROOT_TEMPLATE = (
+    "gamma_droidwidth_teacher_fullft_lb500_30k_c{step}_slim_eval_h100_seed1000_s10"
+)
+FULLFT_GATE_CKPT_RUN_NAME_TEMPLATE = "dz-rf-sg-gamma-dwteacher-fullft-lb500-30k-xz-{tag}-teacher"
+FULLFT_GATE_SET_STRING_DEFAULTS = (
+    ("num_episodes", "10"),
+    ("video_pred_rollout_modes", "action"),
+    ("replan_everys", "24 12"),
+    ("joint_delta_scales", "1.0"),
+    ("joint_target_accel_limits", "0"),
+    ("smoothing_profile_names", "raw smooth"),
+    ("smoothing_profile_blend_steps", "0 4"),
+    ("smoothing_profile_ensemble_decays", "0 0.6"),
+)
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MODEL_MARKERS = ("model.safetensors", "model.safetensors.index.json")
 
@@ -362,6 +380,34 @@ def shell_quote(command: Sequence[str]) -> str:
     return " ".join(shlex.quote(part) for part in command)
 
 
+def option_was_provided(argv: Sequence[str], option: str) -> bool:
+    return any(part == option or part.startswith(option + "=") for part in argv)
+
+
+def set_string_key(value: str) -> str:
+    return value.split("=", 1)[0]
+
+
+def add_set_string_defaults(set_strings: list[str], defaults: Sequence[tuple[str, str]]) -> None:
+    existing_keys = {set_string_key(value) for value in set_strings}
+    for key, value in defaults:
+        if key not in existing_keys:
+            set_strings.append(f"{key}={value}")
+            existing_keys.add(key)
+
+
+def apply_fullft_gate_preset(args: argparse.Namespace, raw_argv: Sequence[str]) -> None:
+    if not option_was_provided(raw_argv, "--steps"):
+        args.steps = list(FULLFT_GATE_STEPS)
+    if not option_was_provided(raw_argv, "--name-template"):
+        args.name_template = FULLFT_GATE_NAME_TEMPLATE
+    if not option_was_provided(raw_argv, "--local-root-template"):
+        args.local_root_template = FULLFT_GATE_LOCAL_ROOT_TEMPLATE
+    if not option_was_provided(raw_argv, "--ckpt-run-name"):
+        args.ckpt_run_name = FULLFT_GATE_CKPT_RUN_NAME_TEMPLATE.format(tag=args.tag)
+    add_set_string_defaults(args.set_string, FULLFT_GATE_SET_STRING_DEFAULTS)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -372,6 +418,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--workflow", type=Path, default=Path(DEFAULT_WORKFLOW))
     parser.add_argument("--pool", default=DEFAULT_POOL)
     parser.add_argument("--priority", default="LOW", choices=("HIGH", "NORMAL", "LOW"))
+    parser.add_argument(
+        "--preset",
+        choices=("fullft-gate",),
+        help=(
+            "Apply a named eval recipe. fullft-gate evaluates checkpoints "
+            "10000/20000/30000 with 10 episodes, scale=1.0, action rollout only, "
+            "and raw/smooth replan=24/12 settings."
+        ),
+    )
     parser.add_argument("--start-step", type=int, default=2000)
     parser.add_argument("--max-step", type=int, default=50000)
     parser.add_argument("--interval", type=int, default=2000)
@@ -499,8 +554,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(raw_argv)
+    if args.preset == "fullft-gate":
+        apply_fullft_gate_preset(args, raw_argv)
     steps = args.steps or checkpoint_steps(args.start_step, args.max_step, args.interval)
     ckpt_s3_base_value = args.ckpt_s3_base or checkpoint_s3_base(args.ckpt_run_name)
     ckpt_amlfs_base_value = args.ckpt_amlfs_base or checkpoint_amlfs_base(args.ckpt_run_name)
