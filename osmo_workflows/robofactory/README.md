@@ -58,13 +58,17 @@ osmo workflow submit osmo_workflows/robofactory/train_liftbarrier_gamma_droidwid
   defer_lora_injection=false \
   skip_component_loading=true \
   grad_ckpt=true \
+  action_delta_loss_weight=0.0 \
   save_total_limit=6
 ```
 
 Keep `joint_delta_scales=1.0` in the eval grid for this comparison. The first
 decision gate is whether the full-finetune teacher's model-vs-data action p95
 moves toward the dataset horizon p95 and whether `grasp_eps` becomes nonzero;
-do not judge it by an amplified-action eval.
+do not judge it by an amplified-action eval. The teacher workflow default also
+keeps `action_delta_loss_weight=0.0`, matching the lower-level training script,
+so this ablation does not add a clean-action smoothing loss while diagnosing
+under-commanding.
 
 After the run starts, submit the fixed gate evals as checkpoints become ready:
 

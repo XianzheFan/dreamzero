@@ -467,6 +467,8 @@ def test_liftbarrier_gamma_droidwidth_teacher_workflow_preserves_droid_base_head
     assert defaults["train_weight_decay"] == "1e-5"
     assert defaults["train_max_chunk_size"] == "4"
     assert defaults["train_max_grad_norm"] == "0.1"
+    assert defaults["action_delta_loss_weight"] == "0.0"
+    assert defaults["action_jerk_loss_weight"] == "0.0"
 
     train_task = _task_by_name(workflow, "train")
     assert train_task["args"] == ["/tmp/train_liftbarrier_gamma_droidwidth_teacher.sh"]
@@ -501,6 +503,7 @@ def test_liftbarrier_gamma_droidwidth_teacher_workflow_preserves_droid_base_head
         'export TRAIN_WEIGHT_DECAY="${TRAIN_WEIGHT_DECAY:-{{train_weight_decay}}}"',
         'export TRAIN_MAX_CHUNK_SIZE="${TRAIN_MAX_CHUNK_SIZE:-{{train_max_chunk_size}}}"',
         'export TRAIN_MAX_GRAD_NORM="${TRAIN_MAX_GRAD_NORM:-{{train_max_grad_norm}}}"',
+        'export BASE_ACTION_DELTA_LOSS_WEIGHT="${ACTION_DELTA_LOSS_WEIGHT:-{{action_delta_loss_weight}}}"',
         'export BASE_ACTION_JERK_LOSS_WEIGHT="${ACTION_JERK_LOSS_WEIGHT:-{{action_jerk_loss_weight}}}"',
         'export GLOBAL_VIDEO_DROPOUT_PROB="${GLOBAL_VIDEO_DROPOUT_PROB:-0.1}"',
         'export GLOBAL_VIDEO_ATTENTION_MODE="${GLOBAL_VIDEO_ATTENTION_MODE:-read_only}"',

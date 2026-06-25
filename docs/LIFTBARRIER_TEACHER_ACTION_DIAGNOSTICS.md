@@ -306,6 +306,7 @@ SAVE_LORA_ONLY=false
 DEFER_LORA_INJECTION=false
 SKIP_COMPONENT_LOADING=true
 GRAD_CKPT=true
+ACTION_DELTA_LOSS_WEIGHT=0.0
 ```
 
 The default workflow remains LoRA for continuity, but a full-finetune teacher
@@ -316,11 +317,13 @@ osmo_workflows/robofactory/train_liftbarrier_gamma_droidwidth_teacher.yaml
 ```
 
 with `--set-string train_architecture=full save_lora_only=false
-defer_lora_injection=false skip_component_loading=true grad_ckpt=true`. A 30k
-eval-gated full-finetune run is the cleanest next training experiment: compare
-it to the LoRA teacher using the same 10-seed `scale=1.0` eval, then rerun the
-model-vs-data action comparison to see whether chunk p95 moves toward the
-dataset horizon p95. If memory is tight, add
+defer_lora_injection=false skip_component_loading=true grad_ckpt=true
+action_delta_loss_weight=0.0`. A 30k eval-gated full-finetune run is the
+cleanest next training experiment: compare it to the LoRA teacher using the
+same 10-seed `scale=1.0` eval, then rerun the model-vs-data action comparison
+to see whether chunk p95 moves toward the dataset horizon p95. Keeping
+`action_delta_loss_weight=0.0` avoids adding an adjacent-action smoothing loss
+while the main diagnosis is under-commanding. If memory is tight, add
 `deepspeed_cfg=groot/vla/configs/deepspeed/zero2_offload.json` as a throughput
 tradeoff rather than changing the modeling setup.
 
