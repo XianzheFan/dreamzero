@@ -413,25 +413,26 @@ Keeping `action_delta_loss_weight=0.0` avoids adding an adjacent-action
 smoothing loss while the main diagnosis is under-commanding. CPU optimizer
 offload is a throughput tradeoff rather than a modeling change.
 
-Use the fixed eval preset for the first full-finetune gate:
+Use the 2k-spaced eval preset for the first full-finetune trend gate:
 
 ```text
 python scripts/eval/submit_robofactory_droidwidth_eval_grid.py \
-  --preset fullft-gate \
+  --preset fullft-2k-gate \
   --tag YYYYMMDD \
   --only-ready \
   --skip-existing \
   --ready-check-source train-workflow \
-  --ready-train-workflow dz-rf-sg-gamma-dwteacher-fullft-lb500-30k-xz-YYYYMMDD-1 \
+  --ready-train-workflow dz-rf-sg-gamma-dwteacher-fullft-offload-lb500-30k-xz-YYYYMMDD-1 \
   --submit
 ```
 
-The preset evaluates `checkpoint-10000`, `checkpoint-20000`, and
+The preset evaluates every 2k checkpoint from `checkpoint-2000` through
 `checkpoint-30000` with 10 seeds, `joint_delta_scales=1.0`, action rollout
 mode, `replan=24/12`, and raw/smooth profiles. It disables the extra accel
-limit sweep so the first decision is about whether the teacher learned usable
+limit sweep so the trend decision is about whether the teacher learns usable
 actions at native scale, not whether an execution regularizer can hide a weak
-action distribution.
+action distribution. The older `fullft-gate` preset is still available for the
+coarser `10k/20k/30k` decision gate.
 
 Close timing should stay out of that primary metric. The H100 eval workflow now
 exposes `gripper_close_pairs` as a template override while keeping the default

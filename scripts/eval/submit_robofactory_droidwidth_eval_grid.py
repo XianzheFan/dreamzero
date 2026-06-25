@@ -35,13 +35,16 @@ DEFAULT_DREAMZERO_GIT_REF = "gamma"
 DEFAULT_READY_TRAIN_TASK = "train"
 DEFAULT_READY_TRAIN_OUTPUT_DIR = "/workspace/outputs/robofactory_liftbarrier_gamma_droidwidth_teacher/teacher"
 FULLFT_GATE_STEPS = [10000, 20000, 30000]
+FULLFT_2K_GATE_STEPS = list(range(2000, 30001, 2000))
 FULLFT_GATE_NAME_TEMPLATE = (
-    "dz-rf-gamma-dwteacher-fullft-lb500-30k-c{step}-eval-h100-s1000-s10-xz-{tag}"
+    "dz-rf-gamma-dwteacher-fullft-offload-lb500-30k-c{step}-eval-h100-s1000-s10-xz-{tag}"
 )
 FULLFT_GATE_LOCAL_ROOT_TEMPLATE = (
-    "gamma_droidwidth_teacher_fullft_lb500_30k_c{step}_slim_eval_h100_seed1000_s10"
+    "gamma_droidwidth_teacher_fullft_offload_lb500_30k_c{step}_slim_eval_h100_seed1000_s10"
 )
-FULLFT_GATE_CKPT_RUN_NAME_TEMPLATE = "dz-rf-sg-gamma-dwteacher-fullft-lb500-30k-xz-{tag}-teacher"
+FULLFT_GATE_CKPT_RUN_NAME_TEMPLATE = (
+    "dz-rf-sg-gamma-dwteacher-fullft-offload-lb500-30k-xz-{tag}-teacher"
+)
 FULLFT_GATE_SET_STRING_DEFAULTS = (
     ("num_episodes", "10"),
     ("video_pred_rollout_modes", "action"),
@@ -399,9 +402,14 @@ def add_set_string_defaults(set_strings: list[str], defaults: Sequence[tuple[str
             existing_keys.add(key)
 
 
-def apply_fullft_gate_preset(args: argparse.Namespace, raw_argv: Sequence[str]) -> None:
+def apply_fullft_gate_preset(
+    args: argparse.Namespace,
+    raw_argv: Sequence[str],
+    *,
+    default_steps: Sequence[int] = FULLFT_GATE_STEPS,
+) -> None:
     if not option_was_provided(raw_argv, "--steps"):
-        args.steps = list(FULLFT_GATE_STEPS)
+        args.steps = list(default_steps)
     if not option_was_provided(raw_argv, "--name-template"):
         args.name_template = FULLFT_GATE_NAME_TEMPLATE
     if not option_was_provided(raw_argv, "--local-root-template"):
@@ -423,11 +431,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--priority", default="LOW", choices=("HIGH", "NORMAL", "LOW"))
     parser.add_argument(
         "--preset",
-        choices=("fullft-gate",),
+        choices=("fullft-gate", "fullft-2k-gate"),
         help=(
             "Apply a named eval recipe. fullft-gate evaluates checkpoints "
             "10000/20000/30000 with 10 episodes, scale=1.0, action rollout only, "
-            "and raw/smooth replan=24/12 settings."
+            "and raw/smooth replan=24/12 settings. fullft-2k-gate applies the "
+            "same metric to every 2k checkpoint from 2000 through 30000."
         ),
     )
     parser.add_argument("--start-step", type=int, default=2000)
@@ -570,6 +579,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(raw_argv)
     if args.preset == "fullft-gate":
         apply_fullft_gate_preset(args, raw_argv)
+    elif args.preset == "fullft-2k-gate":
+        apply_fullft_gate_preset(args, raw_argv, default_steps=FULLFT_2K_GATE_STEPS)
     if args.close_timing_diagnostic:
         add_set_string_defaults(args.set_string, CLOSE_TIMING_DIAGNOSTIC_SET_STRING_DEFAULTS)
     steps = args.steps or checkpoint_steps(args.start_step, args.max_step, args.interval)

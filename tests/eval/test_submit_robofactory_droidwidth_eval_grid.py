@@ -193,11 +193,11 @@ def test_fullft_gate_preset_prints_three_10_seed_scale1_eval_commands(monkeypatc
     assert "ckpt_setting=checkpoint-30000" in out
     assert " ckpt_setting=checkpoint-2000 " not in out
     assert (
-        "workflow_name=dz-rf-gamma-dwteacher-fullft-lb500-30k-c10000-"
+        "workflow_name=dz-rf-gamma-dwteacher-fullft-offload-lb500-30k-c10000-"
         "eval-h100-s1000-s10-xz-20260625"
     ) in out
     assert (
-        "ckpt_run_name=dz-rf-sg-gamma-dwteacher-fullft-lb500-30k-xz-20260625-teacher"
+        "ckpt_run_name=dz-rf-sg-gamma-dwteacher-fullft-offload-lb500-30k-xz-20260625-teacher"
         in out
     )
     assert "num_episodes=10" in out
@@ -208,6 +208,41 @@ def test_fullft_gate_preset_prints_three_10_seed_scale1_eval_commands(monkeypatc
     assert "'smoothing_profile_names=raw smooth'" in out
     assert "'smoothing_profile_blend_steps=0 4'" in out
     assert "'smoothing_profile_ensemble_decays=0 0.6'" in out
+
+
+def test_fullft_2k_gate_preset_prints_2k_spaced_scale1_eval_commands(monkeypatch, capsys):
+    module = _load_module()
+    monkeypatch.setattr(module, "current_git_head", lambda: "abc123")
+
+    status = module.main(
+        [
+            "--workflow",
+            "eval.yaml",
+            "--tag",
+            "20260625",
+            "--preset",
+            "fullft-2k-gate",
+        ]
+    )
+
+    assert status == 0
+    out = capsys.readouterr().out
+    assert out.count("osmo workflow submit eval.yaml") == 15
+    assert "ckpt_setting=checkpoint-2000" in out
+    assert "ckpt_setting=checkpoint-4000" in out
+    assert "ckpt_setting=checkpoint-30000" in out
+    assert "ckpt_setting=checkpoint-32000" not in out
+    assert (
+        "workflow_name=dz-rf-gamma-dwteacher-fullft-offload-lb500-30k-c2000-"
+        "eval-h100-s1000-s10-xz-20260625"
+    ) in out
+    assert (
+        "ckpt_run_name=dz-rf-sg-gamma-dwteacher-fullft-offload-lb500-30k-xz-20260625-teacher"
+        in out
+    )
+    assert "num_episodes=10" in out
+    assert "video_pred_rollout_modes=action" in out
+    assert "joint_delta_scales=1.0" in out
 
 
 def test_fullft_gate_preset_respects_explicit_steps_run_name_and_set_string(monkeypatch, capsys):
