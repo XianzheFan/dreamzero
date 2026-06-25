@@ -21,6 +21,7 @@ Primary same-config evals:
 | `checkpoint-50000` | `dz-rf-gamma-dw-readonlyfix2-lb500-50k-c50000-eval-h100-s1000-s10-best-full-xz-20260625-1` | `COMPLETED` | seeds `1000..1009`, `replan=24,12`, `scale=1.0` |
 | dataset target inspection | `dz-rf-liftbarrier-action-magnitude-cpu-xz-20260625-v2-1` | `COMPLETED` | OSMO CPU scan of all 500 LiftBarrier episodes |
 | model-vs-data comparison | `dz-rf-liftbarrier-model-data-action-compare-cpu-xz-20260625-1` | `COMPLETED` | OSMO CPU comparison of 50k action dumps vs dataset target stats |
+| full-finetune teacher | `dz-rf-sg-gamma-dwteacher-fullft-lb500-30k-xz-20260625-1` | `RUNNING` | 8xH100 full-finetune teacher, 30k max steps, 2k checkpoint cadence |
 
 The `checkpoint-50000` eval completed with exit code 0 and uploaded outputs to:
 
@@ -215,12 +216,48 @@ Raising scale increases joint movement, but those runs are single-seed
 diagnostics and should not define the main metric. If scale helps, it should be
 treated as evidence of an action-magnitude gap, not as a deployment fix.
 
-## What Is Still Not Proven
+## Normalization / Denormalization Audit
 
 The absolute q99 normalization round-trip is proven from the dataset
 `meta/stats.json`: p99 error is `0.002396`, with `1.75%` clip fraction. What is
-not proven is relative-action normalization, because
-`meta/relative_stats_dreamzero.json` is not present in this dataset artifact.
+not proven by that dataset artifact alone is relative-action normalization,
+because `meta/relative_stats_dreamzero.json` is not present in the raw
+downloaded LiftBarrier dataset.
+
+The train/eval code path closes that gap for actual checkpoints:
+
+- training config uses `relative_action=true`,
+  `relative_action_keys=[panda0_joint_pos, panda1_joint_pos]`, and
+  `use_global_metadata=false`;
+- `LeRobotSingleDataset` computes missing relative stats locally from
+  target-current joint offsets, inserts those stats into
+  `train_dataset.merged_metadata`, and `BaseExperiment` writes that merged
+  metadata to `experiment_cfg/metadata.json`;
+- the bimanual eval server loads the checkpoint's `metadata.json`, denormalizes
+  the model's q99-normalized action output with those stats, and raises if
+  required `q01/q99` stats are missing or shape-mismatched;
+- for `relative_action` checkpoints, the server declares
+  `action_representation=absolute_qpos` and adds the latest observed qpos back
+  to the denormalized joint offsets for both arms before the eval client applies
+  any scale/blend/slew logic;
+- the action dumps therefore contain `action_norm_raw` /
+  `action_norm_clipped` in model-normalized space, while `pred_chunk` is the
+  physical 16-D denormalized action chunk that the eval client consumes.
+
+Read: a silent eval-side denormalization shrink from missing or mismatched
+LiftBarrier stats is now unlikely. If stats are absent, the server should fail
+instead of producing small actions. The under-commanding evidence is therefore
+more consistent with the learned action distribution than with an eval
+normalization bug.
+
+For droid-width checkpoints, the model action head is padded to 32 dimensions
+per agent (`MODEL_ACTION_DIM=32`, `AGENT_ACTION_PAD_DIM=32`), but the physical
+RoboFactory action used by eval is still the first 8 dimensions per arm:
+7 joints plus 1 gripper, flattened to a 16-D environment action. The eval tests
+cover this path and preserve the full 64-D normalized prediction only as debug
+metadata.
+
+## What Is Still Not Proven
 
 The model-side p50/p95 action magnitude comparison is now complete for the 50k
 eval action dumps. Remaining uncertainty is no longer "is there an action-size
@@ -273,7 +310,6 @@ Evidence:
 
 Not yet excluded:
 
-- normalization/denormalization shrink from mismatched LiftBarrier stats;
 - temporal/horizon mismatch in the actual action target distribution;
 - contact geometry/planning error despite adequate action magnitude.
 
@@ -310,20 +346,44 @@ ACTION_DELTA_LOSS_WEIGHT=0.0
 ```
 
 The default workflow remains LoRA for continuity, but a full-finetune teacher
-can be submitted through:
+has now been submitted through:
 
 ```text
 osmo_workflows/robofactory/train_liftbarrier_gamma_droidwidth_teacher.yaml
 ```
 
-with `--set-string train_architecture=full save_lora_only=false
-defer_lora_injection=false skip_component_loading=true grad_ckpt=true
-action_delta_loss_weight=0.0`. A 30k eval-gated full-finetune run is the
-cleanest next training experiment: compare it to the LoRA teacher using the
-same 10-seed `scale=1.0` eval, then rerun the model-vs-data action comparison
-to see whether chunk p95 moves toward the dataset horizon p95. Keeping
-`action_delta_loss_weight=0.0` avoids adding an adjacent-action smoothing loss
-while the main diagnosis is under-commanding. If memory is tight, add
+Run:
+
+```text
+dz-rf-sg-gamma-dwteacher-fullft-lb500-30k-xz-20260625-1
+```
+
+Submission details:
+
+```text
+pool=groot-h100-02
+priority=LOW
+code_commit=72659ca34e5cf7a4c5a3c9604473dc2bcbe36073
+code_s3_uri=swift://pdx.s8k.io/AUTH_team-gear/datasets/users/xianzhef/oci-migration/dreamzero_code_gamma_72659ca3_20260625
+stage1_max_steps=30000
+train_architecture=full
+save_lora_only=false
+defer_lora_injection=false
+skip_component_loading=true
+grad_ckpt=true
+action_delta_loss_weight=0.0
+save_total_limit=6
+```
+
+Early logs confirm the code cache commit self-check passed, the job started
+from DreamZero-DROID with no restore run, `MODEL_ACTION_DIM=32`,
+`AGENT_ACTION_PAD_DIM=32`, `save_steps=2000`, and 8 distributed ranks reached
+`Run name: teacher`. This is the cleanest next training experiment: compare it
+to the LoRA teacher using the same 10-seed `scale=1.0` eval, then rerun the
+model-vs-data action comparison to see whether chunk p95 moves toward the
+dataset horizon p95. Keeping `action_delta_loss_weight=0.0` avoids adding an
+adjacent-action smoothing loss while the main diagnosis is under-commanding.
+If memory is tight, add
 `deepspeed_cfg=groot/vla/configs/deepspeed/zero2_offload.json` as a throughput
 tradeoff rather than changing the modeling setup.
 
