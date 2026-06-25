@@ -378,12 +378,19 @@ save_total_limit=6
 Early logs confirm the code cache commit self-check passed, the job started
 from DreamZero-DROID with no restore run, `MODEL_ACTION_DIM=32`,
 `AGENT_ACTION_PAD_DIM=32`, `save_steps=2000`, and 8 distributed ranks reached
-`Run name: teacher`. This is the cleanest next training experiment: compare it
-to the LoRA teacher using the same 10-seed `scale=1.0` eval, then rerun the
-model-vs-data action comparison to see whether chunk p95 moves toward the
-dataset horizon p95. Keeping `action_delta_loss_weight=0.0` avoids adding an
-adjacent-action smoothing loss while the main diagnosis is under-commanding.
-If memory is tight, add
+`Run name: teacher`. The run is not LoRA: it reports
+`Trainable parameters in diffusion model: 16,484,333,408`. Runtime logs also
+confirm the training dataset computed missing relative stats for
+`panda0_joint_pos` and `panda1_joint_pos`, collecting `933024` relative
+target-current samples per arm before writing those stats into the training
+metadata path.
+
+This is the cleanest next training experiment: compare it to the LoRA teacher
+using the same 10-seed `scale=1.0` eval, then rerun the model-vs-data action
+comparison to see whether chunk p95 moves toward the dataset horizon p95.
+Keeping `action_delta_loss_weight=0.0` avoids adding an adjacent-action
+smoothing loss while the main diagnosis is under-commanding. If memory is
+tight, add
 `deepspeed_cfg=groot/vla/configs/deepspeed/zero2_offload.json` as a throughput
 tradeoff rather than changing the modeling setup.
 
