@@ -81,6 +81,7 @@ if [ "$NUM_ARMS" -ge 3 ]; then GRAD_CKPT=true; fi
 # Training architecture is needed early so the DeepSpeed default can avoid
 # full-finetune optimizer-state OOM before the rest of the run knobs are set.
 TRAIN_ARCHITECTURE=${TRAIN_ARCHITECTURE:-lora}
+TRAIN_ARCHITECTURE_LOWER=$(printf '%s' "$TRAIN_ARCHITECTURE" | tr '[:upper:]' '[:lower:]')
 
 # DeepSpeed stage. ZeRO-2 keeps params replicated (46 GB/rank for the 23B
 # model), which is fine for P=2 LoRA but leaves no headroom for either the
@@ -95,7 +96,7 @@ TRAIN_ARCHITECTURE=${TRAIN_ARCHITECTURE:-lora}
 # for 23B params), enough to fit P=3/4 activations or full-finetune Adam
 # state without touching the VAE codepath.
 # Cost: optim step is ~1.3-2x slower due to PCIe traffic.
-if [ "$NUM_ARMS" -ge 3 ] || [ "${TRAIN_ARCHITECTURE,,}" = "full" ]; then
+if [ "$NUM_ARMS" -ge 3 ] || [ "$TRAIN_ARCHITECTURE_LOWER" = "full" ]; then
     DEEPSPEED_CFG=${DEEPSPEED_CFG:-groot/vla/configs/deepspeed/zero2_offload.json}
 else
     DEEPSPEED_CFG=${DEEPSPEED_CFG:-groot/vla/configs/deepspeed/zero2.json}

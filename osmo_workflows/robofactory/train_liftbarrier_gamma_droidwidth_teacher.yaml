@@ -459,7 +459,7 @@ workflow:
               "TRAIN_MAX_GRAD_NORM" \
               "++training_args.max_grad_norm" \
               "TRAIN_ARCHITECTURE" \
-              "TRAIN_ARCHITECTURE,,}" \
+              "TRAIN_ARCHITECTURE_LOWER" \
               "SAVE_LORA_ONLY" \
               "SKIP_COMPONENT_LOADING" \
               "DEFER_LORA_INJECTION"

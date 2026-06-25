@@ -168,7 +168,11 @@ def test_robofactory_training_script_uses_offload_for_full_finetune():
 
     assert "TRAIN_ARCHITECTURE=${TRAIN_ARCHITECTURE:-lora}" in script
     assert (
-        'if [ "$NUM_ARMS" -ge 3 ] || [ "${TRAIN_ARCHITECTURE,,}" = "full" ]; then'
+        "TRAIN_ARCHITECTURE_LOWER=$(printf '%s' \"$TRAIN_ARCHITECTURE\" | tr '[:upper:]' '[:lower:]')"
+        in script
+    )
+    assert (
+        'if [ "$NUM_ARMS" -ge 3 ] || [ "$TRAIN_ARCHITECTURE_LOWER" = "full" ]; then'
         in script
     )
     assert (
