@@ -49,9 +49,9 @@ workflow:
           DROID_HF_REPO="GEAR-Dreams/DreamZero-DROID"
           PORT=5011
           TASK="LiftBarrier-rf"
-          NUM_EPISODES=1
-          SEED_START=1000
-          MAX_STEPS=300
+          NUM_EPISODES="{{num_episodes}}"
+          SEED_START="{{seed_start}}"
+          MAX_STEPS="{{max_steps}}"
           INFERENCE_MODES="${INFERENCE_MODES:-causal_flowmatch}"
           RESET_CAUSAL_STATE_EACH_INFERS="${RESET_CAUSAL_STATE_EACH_INFERS:-1}"
           VIDEO_PRED_ROLLOUT_MODES="${VIDEO_PRED_ROLLOUT_MODES:-{{video_pred_rollout_modes}}}"
@@ -1308,6 +1308,9 @@ default-values:
   dreamzero_git_ref: gamma
   dreamzero_expected_git_commit: ""
   local_eval_ckpt_root: gamma_droidwidth_teacher_actionlossfix2_lb500_50k_c2000_slim_eval_h100_1seed1000
+  num_episodes: "1"
+  seed_start: "1000"
+  max_steps: "300"
   eval_num_frames: "33"
   eval_action_horizon: "24"
   video_pred_rollout_modes: "action noncausal"

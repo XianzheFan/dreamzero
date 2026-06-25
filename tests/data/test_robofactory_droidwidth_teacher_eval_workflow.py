@@ -169,6 +169,9 @@ def test_droidwidth_teacher_h100_eval_targets_h100_pool_resources():
     )
     assert defaults["eval_num_frames"] == "33"
     assert defaults["eval_action_horizon"] == "24"
+    assert defaults["num_episodes"] == "1"
+    assert defaults["seed_start"] == "1000"
+    assert defaults["max_steps"] == "300"
     assert defaults["video_pred_rollout_modes"] == "action noncausal"
     assert defaults["video_pred_wrist_window_mode"] == "action"
     assert defaults["replan_everys"] == "24 12"
@@ -203,6 +206,10 @@ def test_droidwidth_teacher_h100_eval_targets_h100_pool_resources():
     assert 'LOCAL_EVAL_CKPT_ROOT="/workspace/eval_ckpts/{{local_eval_ckpt_root}}"' in script
     assert 'EVAL_NUM_FRAMES="{{eval_num_frames}}"' in script
     assert 'EVAL_ACTION_HORIZON="{{eval_action_horizon}}"' in script
+    assert 'NUM_EPISODES="{{num_episodes}}"' in script
+    assert 'SEED_START="{{seed_start}}"' in script
+    assert 'MAX_STEPS="{{max_steps}}"' in script
+    assert "NUM_EPISODES=1" not in script
     assert 'export CKPT_SETTING LOCAL_EVAL_CKPT_ROOT EVAL_NUM_FRAMES EVAL_ACTION_HORIZON' in script
     assert '--num-frames "$EVAL_NUM_FRAMES"' in script
     assert '--action-horizon "$EVAL_ACTION_HORIZON"' in script
