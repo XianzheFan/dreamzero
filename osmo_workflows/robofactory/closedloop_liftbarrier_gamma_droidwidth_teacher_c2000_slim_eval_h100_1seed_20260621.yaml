@@ -98,7 +98,7 @@ workflow:
             echo "FATAL: smoothing profile arrays must have equal lengths: names=${SMOOTHING_PROFILE_NAMES}, blend=${SMOOTHING_PROFILE_BLEND_STEPS}, ensemble=${SMOOTHING_PROFILE_ENSEMBLE_DECAYS}" >&2
             exit 27
           fi
-          DUMP_RGB_TRACE="${DUMP_RGB_TRACE:-1}"
+          DUMP_RGB_TRACE="${DUMP_RGB_TRACE:-{{dump_rgb_trace}}}"
           DUMP_RGB_TRACE_FLAG=""
           if [ "${DUMP_RGB_TRACE}" = "1" ]; then
             DUMP_RGB_TRACE_FLAG="--dump-rgb-trace"
@@ -1274,9 +1274,9 @@ workflow:
   name: "{{workflow_name}}"
   resources:
     default:
-      cpu: 84
+      cpu: "{{resource_cpu}}"
       gpu: 8
-      memory: 1681Gi
+      memory: "{{resource_memory}}"
       nodesExcluded:
       - aks-gpu-61109112-vmss00000v
       - aks-gpu-61109112-vmss000012
@@ -1293,7 +1293,7 @@ workflow:
       - aks-gpu-92777625-vmss00002g
       - aks-gpu-92777625-vmss00007h
       platform: dgx-h100
-      storage: 620Gi
+      storage: "{{resource_storage}}"
   timeout:
     exec_timeout: 10h
     queue_timeout: 2h
@@ -1311,6 +1311,10 @@ default-values:
   num_episodes: "1"
   seed_start: "1000"
   max_steps: "300"
+  dump_rgb_trace: "1"
+  resource_cpu: "84"
+  resource_memory: 1681Gi
+  resource_storage: 620Gi
   eval_num_frames: "33"
   eval_action_horizon: "24"
   video_pred_rollout_modes: "action noncausal"

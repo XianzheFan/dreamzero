@@ -172,6 +172,10 @@ def test_droidwidth_teacher_h100_eval_targets_h100_pool_resources():
     assert defaults["num_episodes"] == "1"
     assert defaults["seed_start"] == "1000"
     assert defaults["max_steps"] == "300"
+    assert defaults["dump_rgb_trace"] == "1"
+    assert defaults["resource_cpu"] == "84"
+    assert defaults["resource_memory"] == "1681Gi"
+    assert defaults["resource_storage"] == "620Gi"
     assert defaults["video_pred_rollout_modes"] == "action noncausal"
     assert defaults["video_pred_wrist_window_mode"] == "action"
     assert defaults["replan_everys"] == "24 12"
@@ -222,7 +226,7 @@ def test_droidwidth_teacher_h100_eval_targets_h100_pool_resources():
     assert 'ROBOFACTORY_ENABLE_SHADOW="${ROBOFACTORY_ENABLE_SHADOW:-0}"' in script
     assert 'ROBOFACTORY_SHADER_PACK="${ROBOFACTORY_SHADER_PACK:-default}"' in script
     assert 'ROBOFACTORY_RENDER_PREFLIGHT="${ROBOFACTORY_RENDER_PREFLIGHT:-1}"' in script
-    assert 'DUMP_RGB_TRACE="${DUMP_RGB_TRACE:-1}"' in script
+    assert 'DUMP_RGB_TRACE="${DUMP_RGB_TRACE:-{{dump_rgb_trace}}}"' in script
     assert 'DUMP_RGB_TRACE_FLAG="--dump-rgb-trace"' in script
     assert "--dump-rgb-trace" in script
     assert "--future-rgb-trace-dir /workspace/eval_outputs" in script
@@ -285,9 +289,9 @@ def test_droidwidth_teacher_h100_eval_targets_h100_pool_resources():
     resources = workflow["workflow"]["resources"]["default"]
     assert resources["platform"] == "dgx-h100"
     assert resources["gpu"] == 8
-    assert resources["cpu"] == 84
-    assert resources["memory"] == "1681Gi"
-    assert resources["storage"] == "620Gi"
+    assert resources["cpu"] == "{{resource_cpu}}"
+    assert resources["memory"] == "{{resource_memory}}"
+    assert resources["storage"] == "{{resource_storage}}"
 
 
 def test_droidwidth_teacher_h100_eval_embedded_script_is_valid_bash():
