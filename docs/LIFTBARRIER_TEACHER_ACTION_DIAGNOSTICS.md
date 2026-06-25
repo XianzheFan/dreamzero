@@ -347,6 +347,19 @@ limit sweep so the first decision is about whether the teacher learned usable
 actions at native scale, not whether an execution regularizer can hide a weak
 action distribution.
 
+Close timing should stay out of that primary metric. The H100 eval workflow now
+exposes `gripper_close_pairs` as a template override while keeping the default
+at `52:52`. For a one-off contact-phase diagnostic after a checkpoint reaches
+near the target, run an explicit step subset with:
+
+```text
+--close-timing-diagnostic
+```
+
+That adds `gripper_close_pairs="33:33 52:52"` so the dataset-like close timing
+(`33:33`, near the dataset first-close p50) can be compared against the current
+standing eval close timing (`52:52`) without redefining the main 10-seed gate.
+
 Before submitting that workflow, commit the intended source state and create a
 matching OSMO code cache:
 

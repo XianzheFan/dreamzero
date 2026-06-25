@@ -244,6 +244,54 @@ def test_fullft_gate_preset_respects_explicit_steps_run_name_and_set_string(monk
     assert "joint_delta_scales=1.0" in out
 
 
+def test_close_timing_diagnostic_adds_gripper_close_pair_sweep(monkeypatch, capsys):
+    module = _load_module()
+    monkeypatch.setattr(module, "current_git_head", lambda: "abc123")
+
+    status = module.main(
+        [
+            "--workflow",
+            "eval.yaml",
+            "--tag",
+            "20260625",
+            "--preset",
+            "fullft-gate",
+            "--steps",
+            "10000",
+            "--close-timing-diagnostic",
+        ]
+    )
+
+    assert status == 0
+    out = capsys.readouterr().out
+    assert "ckpt_setting=checkpoint-10000" in out
+    assert "'gripper_close_pairs=33:33 52:52'" in out
+
+
+def test_close_timing_diagnostic_respects_explicit_gripper_close_pairs(monkeypatch, capsys):
+    module = _load_module()
+    monkeypatch.setattr(module, "current_git_head", lambda: "abc123")
+
+    status = module.main(
+        [
+            "--workflow",
+            "eval.yaml",
+            "--tag",
+            "20260625",
+            "--steps",
+            "10000",
+            "--close-timing-diagnostic",
+            "--set-string",
+            "gripper_close_pairs=44:44",
+        ]
+    )
+
+    assert status == 0
+    out = capsys.readouterr().out
+    assert "gripper_close_pairs=44:44" in out
+    assert "33:33 52:52" not in out
+
+
 def test_main_rejects_explicit_off_grid_steps_by_default():
     module = _load_module()
 

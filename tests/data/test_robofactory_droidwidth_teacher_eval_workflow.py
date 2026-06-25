@@ -178,6 +178,7 @@ def test_droidwidth_teacher_h100_eval_targets_h100_pool_resources():
     assert defaults["resource_storage"] == "620Gi"
     assert defaults["video_pred_rollout_modes"] == "action noncausal"
     assert defaults["video_pred_wrist_window_mode"] == "action"
+    assert defaults["gripper_close_pairs"] == "52:52"
     assert defaults["replan_everys"] == "24 12"
     assert defaults["joint_delta_scales"] == "1.0"
     assert defaults["joint_target_accel_limits"] == "0 0.08"
@@ -206,6 +207,8 @@ def test_droidwidth_teacher_h100_eval_targets_h100_pool_resources():
     )
     assert "_vpred_${rollout_tag}_rp${REPLAN_EVERY}" in script
     assert 'REPLAN_EVERYS="${REPLAN_EVERYS:-{{replan_everys}}}"' in script
+    assert 'GRIPPER_CLOSE_PAIRS="${GRIPPER_CLOSE_PAIRS:-{{gripper_close_pairs}}}"' in script
+    assert 'GRIPPER_CLOSE_PAIRS="52:52"' not in script
     assert 'CKPT_SETTING="{{ckpt_setting}}"' in script
     assert 'LOCAL_EVAL_CKPT_ROOT="/workspace/eval_ckpts/{{local_eval_ckpt_root}}"' in script
     assert 'EVAL_NUM_FRAMES="{{eval_num_frames}}"' in script

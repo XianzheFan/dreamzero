@@ -70,7 +70,7 @@ workflow:
           GRIPPER_POLICY_CLOSE_THRESHOLD="0.0"
           GRIPPER_POLICY_CLOSE_MIN_STEP=0
           GRIPPER_CLOSE_AFTER_STEP=52
-          GRIPPER_CLOSE_PAIRS="52:52"
+          GRIPPER_CLOSE_PAIRS="${GRIPPER_CLOSE_PAIRS:-{{gripper_close_pairs}}}"
           JOINT_DELTA_SCALES="${JOINT_DELTA_SCALES:-{{joint_delta_scales}}}"
           JOINT_DELTA_OUTPUT_CLIP="0.35"
           JOINT_DELTA_SCALE_REFERENCE="observed"
@@ -1319,6 +1319,7 @@ default-values:
   eval_action_horizon: "24"
   video_pred_rollout_modes: "action noncausal"
   video_pred_wrist_window_mode: "action"
+  gripper_close_pairs: "52:52"
   replan_everys: "24 12"
   joint_delta_scales: "1.0"
   joint_target_accel_limits: "0 0.08"

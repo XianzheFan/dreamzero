@@ -52,6 +52,9 @@ FULLFT_GATE_SET_STRING_DEFAULTS = (
     ("smoothing_profile_blend_steps", "0 4"),
     ("smoothing_profile_ensemble_decays", "0 0.6"),
 )
+CLOSE_TIMING_DIAGNOSTIC_SET_STRING_DEFAULTS = (
+    ("gripper_close_pairs", "33:33 52:52"),
+)
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MODEL_MARKERS = ("model.safetensors", "model.safetensors.index.json")
 
@@ -492,6 +495,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override the eval server --action-horizon template value for action-window ablations.",
     )
     parser.add_argument(
+        "--close-timing-diagnostic",
+        action="store_true",
+        help=(
+            "Add a gripper-close timing sweep. This appends gripper_close_pairs='33:33 52:52' "
+            "unless gripper_close_pairs is already provided through --set-string."
+        ),
+    )
+    parser.add_argument(
         "--set-string",
         action="append",
         default=[],
@@ -559,6 +570,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(raw_argv)
     if args.preset == "fullft-gate":
         apply_fullft_gate_preset(args, raw_argv)
+    if args.close_timing_diagnostic:
+        add_set_string_defaults(args.set_string, CLOSE_TIMING_DIAGNOSTIC_SET_STRING_DEFAULTS)
     steps = args.steps or checkpoint_steps(args.start_step, args.max_step, args.interval)
     ckpt_s3_base_value = args.ckpt_s3_base or checkpoint_s3_base(args.ckpt_run_name)
     ckpt_amlfs_base_value = args.ckpt_amlfs_base or checkpoint_amlfs_base(args.ckpt_run_name)

@@ -86,10 +86,22 @@ python scripts/eval/submit_robofactory_droidwidth_eval_grid.py \
 `--preset fullft-gate` evaluates `checkpoint-10000`, `checkpoint-20000`, and
 `checkpoint-30000` with `num_episodes=10`, `joint_delta_scales=1.0`,
 `video_pred_rollout_modes=action`, `replan_everys="24 12"`, and paired
-`raw`/`smooth` smoothing profiles. It intentionally disables the extra accel
-limit sweep (`joint_target_accel_limits=0`) so the first gate measures whether
-the teacher itself learned usable scale-1.0 actions before adding execution
+`raw`/`smooth` smoothing profiles. It keeps the standing close timing
+`gripper_close_pairs="52:52"`. It intentionally disables the extra accel limit
+sweep (`joint_target_accel_limits=0`) so the first gate measures whether the
+teacher itself learned usable scale-1.0 actions before adding execution
 regularizers.
+
+For a one-off close-timing diagnostic, use an explicit step subset and add:
+
+```bash
+--close-timing-diagnostic
+```
+
+That adds `gripper_close_pairs="33:33 52:52"` unless a custom
+`gripper_close_pairs=...` override is already provided through `--set-string`.
+Use this after the main gate if the model reaches near the target but still has
+`grasp_eps=0`; do not mix this sweep into the primary 10k/20k/30k metric.
 
 If full-finetune hits H100 memory pressure, keep the same run recipe but add:
 
