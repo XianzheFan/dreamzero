@@ -21,7 +21,7 @@ Primary same-config evals:
 | `checkpoint-50000` | `dz-rf-gamma-dw-readonlyfix2-lb500-50k-c50000-eval-h100-s1000-s10-best-full-xz-20260625-1` | `COMPLETED` | seeds `1000..1009`, `replan=24,12`, `scale=1.0` |
 | dataset target inspection | `dz-rf-liftbarrier-action-magnitude-cpu-xz-20260625-v2-1` | `COMPLETED` | OSMO CPU scan of all 500 LiftBarrier episodes |
 | model-vs-data comparison | `dz-rf-liftbarrier-model-data-action-compare-cpu-xz-20260625-1` | `COMPLETED` | OSMO CPU comparison of 50k action dumps vs dataset target stats |
-| full-finetune teacher | `dz-rf-sg-gamma-dwteacher-fullft-lb500-30k-xz-20260625-1` | `RUNNING` | 8xH100 full-finetune teacher, 30k max steps, 2k checkpoint cadence |
+| full-finetune teacher attempt 1 | `dz-rf-sg-gamma-dwteacher-fullft-lb500-30k-xz-20260625-1` | `FAILED` | reached first optimizer step, then ZeRO2 Adam-state CUDA OOM before any checkpoint |
 
 The `checkpoint-50000` eval completed with exit code 0 and uploaded outputs to:
 
@@ -385,14 +385,33 @@ confirm the training dataset computed missing relative stats for
 target-current samples per arm before writing those stats into the training
 metadata path.
 
+That first full-finetune attempt failed at the first optimizer step, before any
+checkpoint was produced:
+
+```text
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 7.68 GiB.
+GPU has ~79.18 GiB total, ~71.6 GiB already in use.
+```
+
+The failing config used `training_args.deepspeed=zero2.json`. The failure is
+specifically Adam optimizer-state allocation for full finetuning, not data
+loading, code cache restore, DreamZero-DROID loading, relative stats, or the
+first forward pass. The training script now treats `TRAIN_ARCHITECTURE=full` as
+a memory-tight case and defaults to:
+
+```text
+groot/vla/configs/deepspeed/zero2_offload.json
+```
+
+unless `DEEPSPEED_CFG` is explicitly set. This keeps 2-arm LoRA on regular
+ZeRO2 while forcing full-finetune to offload optimizer state to CPU.
+
 This is the cleanest next training experiment: compare it to the LoRA teacher
 using the same 10-seed `scale=1.0` eval, then rerun the model-vs-data action
 comparison to see whether chunk p95 moves toward the dataset horizon p95.
 Keeping `action_delta_loss_weight=0.0` avoids adding an adjacent-action
-smoothing loss while the main diagnosis is under-commanding. If memory is
-tight, add
-`deepspeed_cfg=groot/vla/configs/deepspeed/zero2_offload.json` as a throughput
-tradeoff rather than changing the modeling setup.
+smoothing loss while the main diagnosis is under-commanding. CPU optimizer
+offload is a throughput tradeoff rather than a modeling change.
 
 Use the fixed eval preset for the first full-finetune gate:
 

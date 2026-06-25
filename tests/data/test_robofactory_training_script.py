@@ -163,6 +163,21 @@ def test_robofactory_training_script_uses_droid_base_head_width_by_default():
     assert "AGENT_ACTION_PAD_DIM=${AGENT_ACTION_PAD_DIM:-null}" not in script
 
 
+def test_robofactory_training_script_uses_offload_for_full_finetune():
+    script = SCRIPT_PATH.read_text()
+
+    assert "TRAIN_ARCHITECTURE=${TRAIN_ARCHITECTURE:-lora}" in script
+    assert (
+        'if [ "$NUM_ARMS" -ge 3 ] || [ "${TRAIN_ARCHITECTURE,,}" = "full" ]; then'
+        in script
+    )
+    assert (
+        "DEEPSPEED_CFG=${DEEPSPEED_CFG:-groot/vla/configs/deepspeed/zero2_offload.json}"
+        in script
+    )
+    assert "DEEPSPEED_CFG=${DEEPSPEED_CFG:-groot/vla/configs/deepspeed/zero2.json}" in script
+
+
 def test_robofactory_training_script_passes_self_forcing_knobs_default_off():
     script = SCRIPT_PATH.read_text()
 

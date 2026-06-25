@@ -78,19 +78,24 @@ fi
 GRAD_CKPT=${GRAD_CKPT:-false}
 if [ "$NUM_ARMS" -ge 3 ]; then GRAD_CKPT=true; fi
 
+# Training architecture is needed early so the DeepSpeed default can avoid
+# full-finetune optimizer-state OOM before the rest of the run knobs are set.
+TRAIN_ARCHITECTURE=${TRAIN_ARCHITECTURE:-lora}
+
 # DeepSpeed stage. ZeRO-2 keeps params replicated (46 GB/rank for the 23B
-# model), which is fine for P=2 but leaves no headroom for the extra
-# ~15 GB/agent activation in P=3/4 — OOM on cross-attn FFN.
+# model), which is fine for P=2 LoRA but leaves no headroom for either the
+# extra ~15 GB/agent activation in P=3/4 or full-finetune Adam state on H100.
 #
 # We tried ZeRO-3 first but it breaks Wan VAE's causal feat_cache: the VAE
 # is called under torch.no_grad() with 9 sequential chunk forwards per
 # encode, and ZeRO-3's per-forward param all-gather/release interleaves
 # with the cache state, producing a shape mismatch on torch.cat
 # (cache_x vs x). So we stay on ZeRO-2 but offload optimizer state to
-# CPU: that frees ~34.5 GB/rank (sharded Adam state for 23B params),
-# enough to fit P=3/4 activations without touching the VAE codepath.
+# CPU when memory is tight: that frees ~34.5 GB/rank (sharded Adam state
+# for 23B params), enough to fit P=3/4 activations or full-finetune Adam
+# state without touching the VAE codepath.
 # Cost: optim step is ~1.3-2x slower due to PCIe traffic.
-if [ "$NUM_ARMS" -ge 3 ]; then
+if [ "$NUM_ARMS" -ge 3 ] || [ "${TRAIN_ARCHITECTURE,,}" = "full" ]; then
     DEEPSPEED_CFG=${DEEPSPEED_CFG:-groot/vla/configs/deepspeed/zero2_offload.json}
 else
     DEEPSPEED_CFG=${DEEPSPEED_CFG:-groot/vla/configs/deepspeed/zero2.json}
@@ -162,7 +167,6 @@ USE_SPARSE_HUB_ATTENTION=${USE_SPARSE_HUB_ATTENTION:-true}
 SELF_FORCING_TRAIN=${SELF_FORCING_TRAIN:-false}
 SELF_FORCING_WARMUP_STEPS=${SELF_FORCING_WARMUP_STEPS:-0}
 SELF_FORCING_FAST_WRITEBACK=${SELF_FORCING_FAST_WRITEBACK:-false}
-TRAIN_ARCHITECTURE=${TRAIN_ARCHITECTURE:-lora}
 SAVE_LORA_ONLY=${SAVE_LORA_ONLY:-true}
 SKIP_COMPONENT_LOADING=${SKIP_COMPONENT_LOADING:-true}
 DEFER_LORA_INJECTION=${DEFER_LORA_INJECTION:-true}

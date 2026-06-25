@@ -566,6 +566,7 @@ def test_liftbarrier_gamma_droidwidth_teacher_workflow_preserves_droid_base_head
         "valid_action_dims",
         "per_agent_action_loss",
         "TRAIN_ARCHITECTURE",
+        "TRAIN_ARCHITECTURE,,}",
         "SAVE_LORA_ONLY",
         "SKIP_COMPONENT_LOADING",
         "DEFER_LORA_INJECTION",
